@@ -27,7 +27,7 @@ from flask_cors import CORS
 
 from config import (
     PORT, DEBUG, SECRET_KEY, FACE_MATCH_TOLERANCE,
-    CACHE_TTL_SECONDS, SELF_URL, ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM,
+    CACHE_TTL_SECONDS, SELF_URL, ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_REPORT,
     RENDER_API_KEY, RENDER_SERVICE_ID, ADMIN_SECRET,
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER,
 )
@@ -56,38 +56,31 @@ att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
 # ─── Per-scope face cache ──────────────────────────────────────────────────────
-_batch_caches: dict[str, FaceCache] = {}
-_batch_caches_lock = threading.Lock()
+_scope_caches: dict[str, FaceCache] = {}
+_scope_caches_lock = threading.Lock()
 
 
-def _build_scope_key(batch_id: str = None, centers: list = None) -> str:
-    """Deterministic cache key from batch + centers."""
+def _build_scope_key(centers: list = None) -> str:
     if centers:
-        center_part = "C:" + ",".join(sorted(str(c) for c in centers))
-        return f"{batch_id}|{center_part}" if batch_id else center_part
-    return batch_id or "ALL"
+        return "C:" + ",".join(sorted(str(c) for c in centers))
+    return "ALL"
 
 
-def _get_cache(batch_id: str = None, centers: list = None) -> FaceCache:
-    key = _build_scope_key(batch_id, centers)
-    with _batch_caches_lock:
-        if key not in _batch_caches:
-            _batch_caches[key] = FaceCache(ttl=CACHE_TTL_SECONDS)
-        return _batch_caches[key]
+def _get_cache(centers: list = None) -> FaceCache:
+    key = _build_scope_key(centers)
+    with _scope_caches_lock:
+        if key not in _scope_caches:
+            _scope_caches[key] = FaceCache(ttl=CACHE_TTL_SECONDS)
+        return _scope_caches[key]
 
 
-def get_students_cached(batch_id: str = None, centers: list = None) -> list:
-    cache = _get_cache(batch_id=batch_id, centers=centers)
+def get_students_cached(centers: list = None) -> list:
+    cache = _get_cache(centers=centers)
     students = cache.get()
     if students is None:
-        if centers:
-            scope = f"centers {centers}"
-        elif batch_id:
-            scope = f"batch {batch_id}"
-        else:
-            scope = "all students"
+        scope = f"centers {centers}" if centers else "all students"
         logger.info(f"Cache miss — loading {scope} from Zoho Creator...")
-        students = zoho.get_students(batch_id=batch_id, centers=centers)
+        students = zoho.get_students(centers=centers)
         cache.set(students)
     else:
         logger.info(f"Cache hit — {cache.size} students (age: {cache.age_seconds:.0f}s)")
@@ -143,13 +136,13 @@ def index():
 
 @app.route("/api/health")
 def health():
-    total_cached = sum(c.size for c in _batch_caches.values())
+    total_cached = sum(c.size for c in _scope_caches.values())
     queue_status = att_queue.get_status_summary()
     return jsonify({
         "status":           "ok",
         "version":          "3.0.0",
         "total_cached":     total_cached,
-        "batch_scopes":     list(_batch_caches.keys()),
+        "scopes":           list(_scope_caches.keys()),
         "keepalive_active": bool(SELF_URL),
         "queue": {
             "pending": queue_status["pending"],
@@ -162,7 +155,7 @@ def health():
 @app.route("/api/cache/status")
 def cache_status():
     status = {}
-    for key, cache in _batch_caches.items():
+    for key, cache in _scope_caches.items():
         status[key] = {
             "students_cached": cache.size,
             "age_seconds":     cache.age_seconds,
@@ -174,7 +167,6 @@ def cache_status():
 @app.route("/api/cache/refresh", methods=["POST"])
 def cache_refresh():
     body       = request.get_json(silent=True) or {}
-    batch_id   = request.args.get("batch_id")   or body.get("batch_id")   or None
     user_email = request.args.get("user_email") or body.get("user_email") or None
 
     centers = None
@@ -186,10 +178,10 @@ def cache_refresh():
             centers = fetched
 
     try:
-        cache = _get_cache(batch_id=batch_id, centers=centers)
+        cache = _get_cache(centers=centers)
         cache.invalidate()
-        students = get_students_cached(batch_id=batch_id, centers=centers)
-        scope = f"centres {centers}" if centers else (batch_id or "ALL")
+        students = get_students_cached(centers=centers)
+        scope = f"centres {centers}" if centers else "ALL"
         return jsonify({
             "success":         True,
             "students_loaded": len(students),
@@ -219,8 +211,7 @@ def verify():
     {
         "image":          "<base64 JPEG>",
         "blink_verified": true,
-        "batch_id":       "...",   ← optional
-        "session_id":     "..."    ← optional
+        "user_email":     "..."    ← optional (for center-scoped matching)
     }
 
     Performance path (all hot-path Zoho API calls eliminated):
@@ -245,18 +236,16 @@ def verify():
                 "error": "Liveness check failed. Please blink naturally in front of the camera.",
             }), 400
 
-        batch_id   = data.get("batch_id")   or None
-        session_id = data.get("session_id") or None
         user_email = data.get("user_email") or None
 
-        # Resolve the logged-in user's centres; fall back to full/batch load if unknown
+        # Resolve the logged-in user's centres; fall back to full load if unknown
         centers = None
         if user_email:
             fetched = get_user_centers_cached(user_email)
             if fetched:
                 centers = fetched
             else:
-                logger.info(f"No centres found for {user_email} — loading all students in scope")
+                logger.info(f"No centres found for {user_email} — loading all students")
 
         # ── 1. Decode image ───────────────────────────────────────────────────
         try:
@@ -285,12 +274,12 @@ def verify():
                 "error":   "Live face not detected. Please ensure you are in front of the camera.",
             }), 400
 
-        # ── 4. Load student encodings (centre-scoped or batch-scoped cache) ────
-        students = get_students_cached(batch_id=batch_id, centers=centers)
+        # ── 4. Load student encodings (centre-scoped cache) ──────────────────
+        students = get_students_cached(centers=centers)
         if not students:
             return jsonify({
                 "success": False,
-                "error":   "No students with face photos found in this batch.",
+                "error":   "No students with face photos found.",
             }), 404
 
         # ── 5. Match ──────────────────────────────────────────────────────────
@@ -309,7 +298,7 @@ def verify():
 
         # ── 6. Dedup check (in-memory O(1) + SQLite <1ms — no Zoho call) ──────
         today_str = datetime.now().strftime("%d-%b-%Y")
-        if att_queue.is_already_marked(best_match["id"], today_str, session_id=session_id):
+        if att_queue.is_already_marked(best_match["id"], today_str):
             logger.info(f"Duplicate blocked for {best_match['name']}")
             return jsonify({
                 "success":           True,
@@ -329,7 +318,6 @@ def verify():
             student_id=best_match["id"],
             student_name=best_match["name"],
             date_str=today_str,
-            session_id=session_id,
         )
         logger.info(
             f"Attendance queued for {best_match['name']} "
@@ -384,7 +372,6 @@ def admin_sync_status():
           <td>#{r['id']}</td>
           <td>{r['student_name']}</td>
           <td>{r['date_str']}</td>
-          <td>{r.get('session_id') or '—'}</td>
           <td>{r['attempts']}</td>
           <td style="color:#f87171;font-size:12px">{(r['last_error'] or '')[:120]}</td>
           <td style="font-size:11px;color:#6b7280">{r['created_at'][:19]}</td>
@@ -458,7 +445,7 @@ def admin_sync_status():
   <h3>Failed Records</h3>
   <table>
     <thead><tr>
-      <th>#</th><th>Student</th><th>Date</th><th>Session</th>
+      <th>#</th><th>Student</th><th>Date</th>
       <th>Attempts</th><th>Last Error</th><th>Created</th>
     </tr></thead>
     <tbody>{failed_rows_html}</tbody>
@@ -672,7 +659,7 @@ def debug_students():
         s_resp = req.get(s_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
         s_resp.raise_for_status()
         s_records = s_resp.json().get("data", [])
-        a_url  = f"{zoho._base_url}/report/All_Attendances"
+        a_url  = f"{zoho._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
         a_resp = req.get(a_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
         a_records = a_resp.json().get("data", []) if a_resp.status_code == 200 else []
         return jsonify({

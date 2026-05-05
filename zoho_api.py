@@ -2,13 +2,6 @@
 Zoho Creator API Client.
 Handles OAuth token refresh, fetching student records with photos,
 and posting attendance records.
-
-Changes:
-  - Batch-scoped student loading (batch_id filter)
-  - Pre-computed embedding: reads Face_Embedding field before downloading photo
-  - save_embedding(): writes 512-d vector back to the student record
-  - post_attendance(): optional session_id context
-  - check_duplicate_attendance(): blocks same student being marked twice on same date
 """
 
 import logging
@@ -23,9 +16,9 @@ from config import (
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
     ZOHO_USER_MGMT_REPORT, FIELD_USER_EMAIL, FIELD_USER_CENTERS,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
-    FIELD_STUDENT_PHOTO, FIELD_STUDENT_BATCH, FIELD_STUDENT_EMBEDDING,
+    FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ATT_SESSION,
+    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
 
@@ -146,17 +139,15 @@ class ZohoCreatorAPI:
 
     # ─── Students ──────────────────────────────────────────────────────────────
 
-    def get_students(self, batch_id: str = None, centers: list = None) -> list[dict]:
+    def get_students(self, centers: list = None) -> list[dict]:
         """
         Fetch student records from Zoho Creator, encode face embeddings, and
         return a list of student dicts.
 
         Args:
-            batch_id: Zoho system record ID of the Batch to scope to (optional).
             centers:  List of center IDs/names from the logged-in user's profile.
                       When provided, only students whose Center field matches one
-                      of these values are returned — significantly reduces the
-                      comparison pool when the database has many centres.
+                      of these values are returned.
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
         students = []
@@ -164,13 +155,7 @@ class ZohoCreatorAPI:
         page_size = 200
 
         center_set = set(centers) if centers else set()
-
-        if centers:
-            scope_label = f"centers {centers}"
-        elif batch_id:
-            scope_label = f"batch {batch_id}"
-        else:
-            scope_label = "all students"
+        scope_label = f"centers {centers}" if centers else "all students"
         logger.info(f"Fetching students from Zoho Creator ({scope_label})...")
 
         while True:
@@ -183,21 +168,6 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                # ── Batch filter (Python-side — avoids Zoho criteria quirks) ──
-                if batch_id:
-                    batch_field = record.get(FIELD_STUDENT_BATCH)
-                    record_batch_id = None
-                    if isinstance(batch_field, dict):
-                        record_batch_id = (
-                            batch_field.get("ID")
-                            or batch_field.get("id")
-                            or batch_field.get("display_value")
-                        )
-                    elif isinstance(batch_field, str):
-                        record_batch_id = batch_field
-                    if record_batch_id != batch_id:
-                        continue
-
                 # ── Center filter — scope to logged-in user's centres ─────────
                 if center_set:
                     center_field = record.get(FIELD_STUDENT_CENTER)
@@ -229,7 +199,7 @@ class ZohoCreatorAPI:
         logger.info(f"Total students loaded ({scope_label}): {len(students)}")
         return students
 
-    def get_students_list(self, batch_id: str = None) -> list[dict]:
+    def get_students_list(self) -> list[dict]:
         """
         Lightweight fetch of student names + IDs only (no photo download / encoding).
         Used for the manual attendance dropdown.
@@ -249,20 +219,6 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                if batch_id:
-                    batch_field = record.get(FIELD_STUDENT_BATCH)
-                    record_batch_id = None
-                    if isinstance(batch_field, dict):
-                        record_batch_id = (
-                            batch_field.get("ID")
-                            or batch_field.get("id")
-                            or batch_field.get("display_value")
-                        )
-                    elif isinstance(batch_field, str):
-                        record_batch_id = batch_field
-                    if record_batch_id != batch_id:
-                        continue
-
                 student_id = record.get("ID") or record.get("id")
                 name_raw = record.get(FIELD_STUDENT_NAME)
                 if isinstance(name_raw, dict):
@@ -429,16 +385,8 @@ class ZohoCreatorAPI:
 
     # ─── Duplicate Attendance Guard ────────────────────────────────────────────
 
-    def check_duplicate_attendance(
-        self,
-        student_id: str,
-        date_str:   str,
-        session_id: str = None,
-    ) -> bool:
-        """
-        Returns True if attendance already exists for this student on date_str.
-        If session_id is provided, only blocks duplicates within the same session.
-        """
+    def check_duplicate_attendance(self, student_id: str, date_str: str) -> bool:
+        """Returns True if attendance already exists for this student on date_str."""
         try:
             url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
             criteria = f'({FIELD_ATT_DATE}=="{date_str}")'
@@ -464,20 +412,7 @@ class ZohoCreatorAPI:
                     rec_sid = str(rec_student or "")
 
                 if rec_sid == student_id:
-                    if session_id:
-                        # Scoped check — only duplicate if same session
-                        rec_session = rec.get(FIELD_ATT_SESSION)
-                        if isinstance(rec_session, dict):
-                            rec_session_id = (
-                                rec_session.get("ID")
-                                or rec_session.get("display_value", "")
-                            )
-                        else:
-                            rec_session_id = str(rec_session or "")
-                        if rec_session_id == session_id:
-                            return True
-                    else:
-                        return True
+                    return True
 
             return False
 
@@ -492,12 +427,8 @@ class ZohoCreatorAPI:
         student_id:        str,
         student_name:      str,
         verification_type: str = "face_blink_verified",
-        session_id:        str = None,
     ) -> dict:
-        """
-        Post a new attendance record to Zoho Creator.
-        Optionally links to a Session record via session_id (system record ID).
-        """
+        """Post a new attendance record to Zoho Creator."""
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
 
@@ -506,9 +437,6 @@ class ZohoCreatorAPI:
             FIELD_ATT_DATE:    now.strftime("%d-%b-%Y"),
             FIELD_ATT_STATUS:  "Present",
         }
-
-        if session_id:
-            data_payload[FIELD_ATT_SESSION] = session_id
 
         payload = {"data": data_payload}
         logger.info(f"Posting attendance — {student_name} | payload: {payload}")

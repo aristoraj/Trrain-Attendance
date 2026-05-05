@@ -89,8 +89,6 @@ class AttendanceQueue:
 
         # In-memory fast-path dedup {date_str: set_of_student_ids}
         self._global_marked: dict[str, set] = {}
-        # {(date_str, session_id): set_of_student_ids}
-        self._session_marked: dict[tuple, set] = {}
 
         if self._is_postgres:
             logger.info("AttendanceQueue: using PostgreSQL (DATABASE_URL set).")
@@ -250,7 +248,6 @@ class AttendanceQueue:
                     student_id    TEXT    NOT NULL,
                     student_name  TEXT    NOT NULL,
                     date_str      TEXT    NOT NULL,
-                    session_id    TEXT    NOT NULL DEFAULT '',
                     status        TEXT    NOT NULL DEFAULT 'PENDING',
                     attempts      INTEGER NOT NULL DEFAULT 0,
                     last_error    TEXT,
@@ -265,7 +262,7 @@ class AttendanceQueue:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_student_date "
-                "ON attendance_queue(student_id, date_str, session_id)"
+                "ON attendance_queue(student_id, date_str)"
             )
             self._migrate_embeddings_schema(conn)
             self._create_embeddings_table(conn)
@@ -275,74 +272,58 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT student_id, session_id FROM attendance_queue "
+                    "SELECT student_id FROM attendance_queue "
                     "WHERE date_str=? AND status IN ('PENDING','PROCESSING','POSTED')"
                 ),
                 (today,),
             ).fetchall()
         with self._lock:
             for row in rows:
-                self._mark_in_memory(row["student_id"], today, row["session_id"] or None)
+                self._mark_in_memory(row["student_id"], today)
         logger.info(f"Dedup set: {len(rows)} students already marked today.")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def is_already_marked(self, student_id: str, date_str: str, session_id: Optional[str] = None) -> bool:
-        sid = session_id or ""
+    def is_already_marked(self, student_id: str, date_str: str) -> bool:
         with self._lock:
-            if sid:
-                if student_id in self._session_marked.get((date_str, sid), set()):
-                    return True
-            else:
-                if student_id in self._global_marked.get(date_str, set()):
-                    return True
+            if student_id in self._global_marked.get(date_str, set()):
+                return True
 
         with self._db() as conn:
-            if sid:
-                count = conn.execute(
-                    self._q(
-                        "SELECT COUNT(*) AS cnt FROM attendance_queue "
-                        "WHERE student_id=? AND date_str=? AND session_id=? "
-                        "AND status IN ('PENDING','PROCESSING','POSTED')"
-                    ),
-                    (student_id, date_str, sid),
-                ).fetchone()["cnt"]
-            else:
-                count = conn.execute(
-                    self._q(
-                        "SELECT COUNT(*) AS cnt FROM attendance_queue "
-                        "WHERE student_id=? AND date_str=? "
-                        "AND status IN ('PENDING','PROCESSING','POSTED')"
-                    ),
-                    (student_id, date_str),
-                ).fetchone()["cnt"]
+            count = conn.execute(
+                self._q(
+                    "SELECT COUNT(*) AS cnt FROM attendance_queue "
+                    "WHERE student_id=? AND date_str=? "
+                    "AND status IN ('PENDING','PROCESSING','POSTED')"
+                ),
+                (student_id, date_str),
+            ).fetchone()["cnt"]
 
         if count > 0:
             with self._lock:
-                self._mark_in_memory(student_id, date_str, session_id)
+                self._mark_in_memory(student_id, date_str)
             return True
         return False
 
-    def enqueue(self, student_id: str, student_name: str, date_str: str, session_id: Optional[str] = None) -> int:
+    def enqueue(self, student_id: str, student_name: str, date_str: str) -> int:
         now = datetime.now().isoformat()
-        sid = session_id or ""
         sql = self._q("""
             INSERT INTO attendance_queue
-                (student_id, student_name, date_str, session_id,
+                (student_id, student_name, date_str,
                  status, attempts, created_at, updated_at, next_retry_at)
-            VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
         with self._db() as conn:
-            cur = conn.execute(sql, (student_id, student_name, date_str, sid, now, now, now))
+            cur = conn.execute(sql, (student_id, student_name, date_str, now, now, now))
             if self._is_postgres:
                 rec_id = cur.fetchone()["id"]
             else:
                 rec_id = cur.lastrowid
 
         with self._lock:
-            self._mark_in_memory(student_id, date_str, session_id)
+            self._mark_in_memory(student_id, date_str)
 
         logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
         return rec_id
@@ -360,7 +341,7 @@ class AttendanceQueue:
             counts = {row["status"]: row["cnt"] for row in rows}
 
             failed = conn.execute(
-                "SELECT id, student_name, date_str, session_id, attempts, last_error, created_at "
+                "SELECT id, student_name, date_str, attempts, last_error, created_at "
                 "FROM attendance_queue WHERE status='FAILED' "
                 "ORDER BY created_at DESC LIMIT 50"
             ).fetchall()
@@ -464,16 +445,11 @@ class AttendanceQueue:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _mark_in_memory(self, student_id: str, date_str: str, session_id: Optional[str]):
+    def _mark_in_memory(self, student_id: str, date_str: str):
         """Must be called while holding self._lock."""
         if date_str not in self._global_marked:
             self._global_marked[date_str] = set()
         self._global_marked[date_str].add(student_id)
-        if session_id:
-            key = (date_str, session_id)
-            if key not in self._session_marked:
-                self._session_marked[key] = set()
-            self._session_marked[key].add(student_id)
 
     # ── Background drain loop ─────────────────────────────────────────────────
 
@@ -502,7 +478,7 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT id, student_id, student_name, date_str, session_id, attempts "
+                    "SELECT id, student_id, student_name, date_str, attempts "
                     "FROM attendance_queue "
                     "WHERE status='PENDING' AND next_retry_at <= ? "
                     "ORDER BY created_at ASC LIMIT 10"
@@ -525,14 +501,12 @@ class AttendanceQueue:
 
             name       = row["student_name"]
             student_id = row["student_id"]
-            session_id = row["session_id"] or None
             attempts   = row["attempts"]
             try:
                 result = self._zoho.post_attendance(
                     student_id=student_id,
                     student_name=name,
                     verification_type="face_blink_verified",
-                    session_id=session_id,
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)

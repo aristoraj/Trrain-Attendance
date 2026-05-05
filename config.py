@@ -15,36 +15,29 @@ ZOHO_CLIENT_SECRET = os.environ.get("ZOHO_CLIENT_SECRET", "")
 ZOHO_REFRESH_TOKEN = os.environ.get("ZOHO_REFRESH_TOKEN", "")
 
 # ─── Zoho Creator App Config ──────────────────────────────────────────────────
-ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "2demoedzola1")
-ZOHO_APP_NAME      = os.environ.get("ZOHO_APP_NAME", "attendance-tracking")
-ZOHO_DATA_CENTER   = os.environ.get("ZOHO_DATA_CENTER", "com")
+ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "admin_trrainfoundation")
+ZOHO_APP_NAME      = os.environ.get("ZOHO_APP_NAME", "trrain")
+ZOHO_DATA_CENTER   = os.environ.get("ZOHO_DATA_CENTER", "in")
 
 # Report / form link names
-ZOHO_STUDENT_REPORT   = os.environ.get("ZOHO_STUDENT_REPORT",   "All_Student_Databases")
-ZOHO_ATTENDANCE_FORM  = os.environ.get("ZOHO_ATTENDANCE_FORM",  "Attendance")
-ZOHO_ATTENDANCE_REPORT = os.environ.get("ZOHO_ATTENDANCE_REPORT", "All_Attendances")
+ZOHO_STUDENT_REPORT   = os.environ.get("ZOHO_STUDENT_REPORT",   "All_Trainees")
+ZOHO_ATTENDANCE_FORM  = os.environ.get("ZOHO_ATTENDANCE_FORM",  "Face_Attendance")
+ZOHO_ATTENDANCE_REPORT = os.environ.get("ZOHO_ATTENDANCE_REPORT", "All_Face_Attendances")
 
 # ─── Student Database field names ─────────────────────────────────────────────
 FIELD_STUDENT_ID        = "ID"   # Zoho system record ID — always present
-FIELD_STUDENT_NUMBER    = os.environ.get("FIELD_STUDENT_NUMBER",    "Student_ID")
+FIELD_STUDENT_NUMBER    = os.environ.get("FIELD_STUDENT_NUMBER",    "Registration_No")
 FIELD_STUDENT_NAME      = os.environ.get("FIELD_STUDENT_NAME",      "Name")
-FIELD_STUDENT_PHOTO     = os.environ.get("FIELD_STUDENT_PHOTO",     "Photo")
-
-# Lookup field linking student to a Batch record
-FIELD_STUDENT_BATCH     = os.environ.get("FIELD_STUDENT_BATCH",     "Batch")
+FIELD_STUDENT_PHOTO     = os.environ.get("FIELD_STUDENT_PHOTO",     "Upload_Photo1")
 
 # Multi-line text field to cache the pre-computed 512-d ArcFace embedding (JSON list)
 # Add this field in Zoho Creator: Student Database → Multi Line field → link name: Face_Embedding
 FIELD_STUDENT_EMBEDDING = os.environ.get("FIELD_STUDENT_EMBEDDING", "Face_Embedding")
 
 # ─── Attendance form field names ──────────────────────────────────────────────
-FIELD_ATT_STUDENT = os.environ.get("FIELD_ATT_STUDENT", "Student_ID")   # lookup
+FIELD_ATT_STUDENT = os.environ.get("FIELD_ATT_STUDENT", "Trainee")   # lookup
 FIELD_ATT_DATE    = os.environ.get("FIELD_ATT_DATE",    "Date_field")
 FIELD_ATT_STATUS  = os.environ.get("FIELD_ATT_STATUS",  "Attendance")   # dropdown
-
-# Optional: lookup field linking attendance to a Session record
-# Add this field in Zoho Creator: Attendance → Lookup → Sessions → link name: Session
-FIELD_ATT_SESSION = os.environ.get("FIELD_ATT_SESSION", "Session")
 
 # ─── Face Recognition Settings ────────────────────────────────────────────────
 FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
@@ -54,11 +47,11 @@ CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
 # Report link name of the User Management form/report in Zoho Creator
 ZOHO_USER_MGMT_REPORT = os.environ.get("ZOHO_USER_MGMT_REPORT", "All_Users")
 # Field link name of the email field in the user management form
-FIELD_USER_EMAIL   = os.environ.get("FIELD_USER_EMAIL",   "Email")
+FIELD_USER_EMAIL   = os.environ.get("FIELD_USER_EMAIL",   "Zoho_ID")
 # Field link name of the multiselect Centers lookup in user management
-FIELD_USER_CENTERS = os.environ.get("FIELD_USER_CENTERS", "Centers")
+FIELD_USER_CENTERS = os.environ.get("FIELD_USER_CENTERS", "Centre_List")
 # Field link name of the Center lookup in the student database
-FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Center")
+FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 
 # ─── App Settings ─────────────────────────────────────────────────────────────
 PORT       = int(os.environ.get("PORT", 5000))

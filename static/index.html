@@ -63,17 +63,6 @@
     }
     .app-header h1 { font-size: 17px; font-weight: 600; line-height: 1.2; }
     .app-header p  { font-size: 12px; color: var(--text-muted); }
-    .batch-badge {
-      background: rgba(37,99,235,0.15);
-      border: 1px solid rgba(37,99,235,0.4);
-      color: #93c5fd;
-      border-radius: 6px;
-      padding: 3px 10px;
-      font-size: 12px;
-      font-weight: 500;
-      white-space: nowrap;
-    }
-
     /* ── Main Layout ─────────────────────────────────────────────────────── */
     .main {
       flex: 1;
@@ -329,9 +318,6 @@
     <h1>Student Face Verification</h1>
     <p id="header-subtitle">Zoho Creator · Attendance Module</p>
   </div>
-  <div id="batch-badge-wrap" style="display:none; margin-left:12px;">
-    <span class="batch-badge" id="batch-badge-text"></span>
-  </div>
   <button id="btn-refresh-cache" onclick="refreshCache()" title="Reload student face database"
     style="margin-left:auto;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;">
     <i class="bi bi-arrow-clockwise"></i> Refresh Students
@@ -433,9 +419,6 @@
 
 // ── URL Params ────────────────────────────────────────────────────────────────
 const urlParams  = new URLSearchParams(window.location.search);
-const BATCH_ID   = urlParams.get('batch_id')   || '';   // Zoho system record ID of Batch
-const SESSION_ID = urlParams.get('session_id') || '';   // Zoho system record ID of Session
-const BATCH_NAME = urlParams.get('batch_name') || '';   // Human-readable batch name (display only)
 
 // ── Logged-in user (from Zoho Creator portal) ─────────────────────────────────
 let USER_EMAIL = '';
@@ -498,19 +481,6 @@ const resultCard   = document.getElementById('result-card');
 const resultBadge  = document.getElementById('result-badge');
 const studentInfo  = document.getElementById('student-info');
 
-// ── Init: apply URL params ────────────────────────────────────────────────────
-(function applyUrlParams() {
-  if (BATCH_NAME || BATCH_ID) {
-    const label = BATCH_NAME || `Batch ${BATCH_ID.slice(-6)}`;
-    document.getElementById('batch-badge-text').textContent = label;
-    document.getElementById('batch-badge-wrap').style.display = 'block';
-    document.getElementById('header-subtitle').textContent =
-      `Zoho Creator · ${label}`;
-  }
-  if (SESSION_ID) {
-    document.title = `Attendance — Session ${SESSION_ID.slice(-6)}`;
-  }
-})();
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 async function startCamera() {
@@ -686,8 +656,6 @@ async function captureAndVerify() {
       image:          imageData,
       blink_verified: true,
     };
-    if (BATCH_ID)   body.batch_id   = BATCH_ID;
-    if (SESSION_ID) body.session_id = SESSION_ID;
     if (USER_EMAIL) body.user_email = USER_EMAIL;
 
     const resp = await fetch(`${API_BASE}/api/verify`, {
@@ -763,7 +731,6 @@ function showSuccess(data) {
     <div class="confidence-bar"><div class="confidence-fill" style="width:${confPct}%"></div></div>
     <div class="info-row"><span class="info-key">Attendance</span>${attStatus}</div>
     <div class="info-row"><span class="info-key">Verified via</span><span class="info-value">Face + Eye Blink</span></div>
-    ${SESSION_ID ? `<div class="info-row"><span class="info-key">Session</span><span class="info-value">${SESSION_ID.slice(-6)}</span></div>` : ''}
   `;
 
   resultCard.classList.add('show', 'success');
@@ -875,7 +842,6 @@ async function refreshCache() {
   btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Refreshing...';
   try {
     const params = new URLSearchParams();
-    if (BATCH_ID)   params.set('batch_id',   BATCH_ID);
     if (USER_EMAIL) params.set('user_email', USER_EMAIL);
     const qs  = params.toString();
     const url = `${API_BASE}/api/cache/refresh${qs ? '?' + qs : ''}`;
