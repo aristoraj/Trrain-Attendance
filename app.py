@@ -584,8 +584,10 @@ def admin_reauth_submit():
 
     import config as cfg
     cfg.ZOHO_REFRESH_TOKEN = new_refresh_token
-    zoho._access_token = tokens.get("access_token")
     os.environ["ZOHO_REFRESH_TOKEN"] = new_refresh_token
+    # Reset cached token so the next request fetches a fresh one via the new refresh_token
+    zoho._access_token = None
+    zoho._token_expiry = 0.0
     logger.info("Zoho refresh token hot-reloaded.")
 
     render_updated = False

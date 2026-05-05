@@ -91,6 +91,18 @@ class ZohoCreatorAPI:
             "Content-Type":  "application/json",
         }
 
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Authenticated HTTP request with one automatic retry on 401 (token refresh)."""
+        kwargs["headers"] = self._headers()
+        resp = getattr(requests, method)(url, **kwargs)
+        if resp.status_code == 401:
+            logger.warning("401 from Zoho — forcing token refresh and retrying once.")
+            self._access_token = None
+            self._token_expiry = 0.0
+            kwargs["headers"] = self._headers()
+            resp = getattr(requests, method)(url, **kwargs)
+        return resp
+
     # ─── User Management ──────────────────────────────────────────────────────
 
     def get_user_centers(self, email: str) -> list[str]:
@@ -103,9 +115,8 @@ class ZohoCreatorAPI:
         url = f"{self._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
         criteria = f'({FIELD_USER_EMAIL}=="{email}")'
         try:
-            resp = requests.get(
-                url,
-                headers=self._headers(),
+            resp = self._request(
+                "get", url,
                 params={"criteria": criteria, "limit": 1},
                 timeout=15,
             )
@@ -160,7 +171,7 @@ class ZohoCreatorAPI:
 
         while True:
             params = {"from": page_start, "limit": page_size}
-            resp = requests.get(url, headers=self._headers(), params=params, timeout=30)
+            resp = self._request("get", url, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
 
@@ -211,7 +222,7 @@ class ZohoCreatorAPI:
 
         while True:
             params = {"from": page_start, "limit": page_size}
-            resp = requests.get(url, headers=self._headers(), params=params, timeout=30)
+            resp = self._request("get", url, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
 
@@ -363,7 +374,7 @@ class ZohoCreatorAPI:
         }
 
     def _download_and_encode(self, url: str):
-        resp = requests.get(url, headers=self._headers(), timeout=20)
+        resp = self._request("get", url, timeout=20)
         resp.raise_for_status()
         encoding, det_score, err = encode_face_from_bytes(resp.content)
         return encoding, det_score, err
@@ -376,7 +387,7 @@ class ZohoCreatorAPI:
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_system_id}"
         payload = {"data": {FIELD_STUDENT_EMBEDDING: embedding_to_json(embedding)}}
-        resp = requests.patch(url, headers=self._headers(), json=payload, timeout=15)
+        resp = self._request("patch", url, json=payload, timeout=15)
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"PATCH embedding failed HTTP {resp.status_code}: {resp.text[:200]}"
@@ -390,9 +401,8 @@ class ZohoCreatorAPI:
         try:
             url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
             criteria = f'({FIELD_ATT_DATE}=="{date_str}")'
-            resp = requests.get(
-                url,
-                headers=self._headers(),
+            resp = self._request(
+                "get", url,
                 params={"criteria": criteria, "limit": 200},
                 timeout=15,
             )
@@ -442,7 +452,7 @@ class ZohoCreatorAPI:
         logger.info(f"Posting attendance — {student_name} | payload: {payload}")
 
         try:
-            resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+            resp = self._request("post", url, json=payload, timeout=15)
             logger.info(f"Zoho response HTTP {resp.status_code}: {resp.text[:500]}")
             resp.raise_for_status()
 
@@ -467,7 +477,7 @@ class ZohoCreatorAPI:
     def test_connection(self) -> dict:
         try:
             url = f"https://creator.zoho.{ZOHO_DATA_CENTER}/api/v2/meta/app/{ZOHO_APP_NAME}"
-            resp = requests.get(url, headers=self._headers(), timeout=10)
+            resp = self._request("get", url, timeout=10)
             return {"connected": resp.status_code == 200, "status_code": resp.status_code}
         except Exception as e:
             return {"connected": False, "error": str(e)}
