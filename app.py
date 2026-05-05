@@ -59,6 +59,10 @@ zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoh
 _scope_caches: dict[str, FaceCache] = {}
 _scope_caches_lock = threading.Lock()
 
+# Track keys that are currently being loaded in a background thread
+_preloading_keys: set[str] = set()
+_preloading_lock  = threading.Lock()
+
 
 def _build_scope_key(centers: list = None) -> str:
     if centers:
@@ -74,22 +78,31 @@ def _get_cache(centers: list = None) -> FaceCache:
         return _scope_caches[key]
 
 
-def get_students_cached(centers: list = None) -> list:
-    cache = _get_cache(centers=centers)
-    students = cache.get()
-    if students is None:
-        # Step 1: resolve ongoing batch IDs for this center scope
+def _load_students_bg(centers: list = None) -> None:
+    """Background worker: load + cache students without blocking an HTTP request."""
+    key = _build_scope_key(centers)
+    try:
         batch_ids = None
         if centers:
             batch_ids = get_batch_ids_cached(centers) or None
-
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
-        logger.info(f"Cache miss — loading students ({scope}) from Zoho Creator...")
+        logger.info(f"[BG] Loading students ({scope})...")
         students = zoho.get_students(centers=centers, batch_ids=batch_ids)
-        cache.set(students)
-    else:
+        _get_cache(centers).set(students)
+        logger.info(f"[BG] Cache warm — {len(students)} students ({scope})")
+    except Exception as e:
+        logger.error(f"[BG] Student load failed: {e}")
+    finally:
+        with _preloading_lock:
+            _preloading_keys.discard(key)
+
+
+def get_students_cached(centers: list = None) -> list:
+    cache = _get_cache(centers=centers)
+    students = cache.get()
+    if students is not None:
         logger.info(f"Cache hit — {cache.size} students (age: {cache.age_seconds:.0f}s)")
-    return students
+    return students  # None means cache is cold (caller should trigger background load)
 
 
 # ─── User-centers cache (email → list[center_id/name], TTL 5 min) ─────────────
@@ -209,13 +222,20 @@ def cache_refresh():
     try:
         cache = _get_cache(centers=centers)
         cache.invalidate()
-        students = get_students_cached(centers=centers)
+        # Trigger background reload so the HTTP response isn't blocked
+        key = _build_scope_key(centers)
+        with _preloading_lock:
+            if key not in _preloading_keys:
+                _preloading_keys.add(key)
+                threading.Thread(
+                    target=_load_students_bg, args=(centers,), daemon=True
+                ).start()
         scope = f"centres {centers}" if centers else "ALL"
         return jsonify({
             "success":         True,
-            "students_loaded": len(students),
+            "students_loaded": 0,
             "scope":           scope,
-            "message":         f"Cache refreshed. {len(students)} student encodings loaded.",
+            "message":         f"Cache refresh started in background. Students will be ready in ~15s.",
         })
     except Exception as e:
         logger.exception("Cache refresh failed")
@@ -305,6 +325,21 @@ def verify():
 
         # ── 4. Load student encodings (centre-scoped cache) ──────────────────
         students = get_students_cached(centers=centers)
+        if students is None:
+            # Cache is cold — start background load and ask frontend to retry
+            key = _build_scope_key(centers)
+            with _preloading_lock:
+                if key not in _preloading_keys:
+                    _preloading_keys.add(key)
+                    threading.Thread(
+                        target=_load_students_bg, args=(centers,), daemon=True
+                    ).start()
+            return jsonify({
+                "success":     False,
+                "loading":     True,
+                "retry_after": 15,
+                "error":       "Loading student data, please wait and try again in 15 seconds.",
+            }), 503
         if not students:
             return jsonify({
                 "success": False,

@@ -11,7 +11,8 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
   <!-- Zoho Creator Widget SDK (provides ZOHO.CREATOR.init for logged-in user) -->
-  <script src="https://js.zohostatic.com/creator/widgets/version/2/widgets.js"></script>
+  <!-- version/2.0 is the correct path; version/2 returns 404 -->
+  <script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgets.js"></script>
 
   <!-- MediaPipe Face Mesh -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
@@ -430,9 +431,15 @@ const urlParams  = new URLSearchParams(window.location.search);
 // ── Logged-in user (from Zoho Creator portal) ─────────────────────────────────
 let USER_EMAIL = '';
 
-(function initZohoUser() {
-  if (typeof ZOHO === 'undefined' || !ZOHO.CREATOR) {
-    console.warn('[FaceVerify] ZOHO.CREATOR SDK not available');
+// Retry up to 20 times (10 s) waiting for Zoho to inject the ZOHO global
+let _zohoInitAttempts = 0;
+function tryInitZohoUser() {
+  if (typeof ZOHO === 'undefined' || !ZOHO.CREATOR || typeof ZOHO.CREATOR.init !== 'function') {
+    if (++_zohoInitAttempts < 20) {
+      setTimeout(tryInitZohoUser, 500);
+    } else {
+      console.warn('[FaceVerify] ZOHO.CREATOR SDK not available after 10 s');
+    }
     return;
   }
   ZOHO.CREATOR.init()
@@ -440,7 +447,6 @@ let USER_EMAIL = '';
       console.log('[FaceVerify] ZOHO.CREATOR.init data:', JSON.stringify(data));
       if (!data) return;
 
-      // Try every known field where Zoho puts the logged-in user email
       const user = data.loggedInUser;
       if (typeof user === 'string' && user) {
         USER_EMAIL = user;
@@ -448,8 +454,6 @@ let USER_EMAIL = '';
         USER_EMAIL = user.email || user.EmailID || user.Email
                   || user.loginName || user.loginname || user.Login || '';
       }
-
-      // Fallback: top-level fields some SDK versions use
       if (!USER_EMAIL) {
         USER_EMAIL = data.email || data.EmailID || data.loginName || '';
       }
@@ -458,13 +462,14 @@ let USER_EMAIL = '';
         console.log('[FaceVerify] Logged in as:', USER_EMAIL);
         fetchAndShowCenters(USER_EMAIL);
       } else {
-        console.warn('[FaceVerify] Could not extract email from init data');
+        console.warn('[FaceVerify] Could not extract email — raw data:', JSON.stringify(data));
       }
     })
     .catch(function (e) {
       console.warn('[FaceVerify] ZOHO.CREATOR.init failed:', e);
     });
-})();
+}
+tryInitZohoUser();
 
 function fetchAndShowCenters(email) {
   fetch('/api/user/centers?user_email=' + encodeURIComponent(email))
@@ -710,14 +715,25 @@ async function captureAndVerify() {
       data = await resp.json();
     } catch (_) {
       spinnerEl.classList.remove('show');
-      const msg = resp.status === 502 || resp.status === 503
-        ? 'Server is temporarily unavailable. Please try again in a moment.'
+      const msg = resp.status === 502
+        ? 'Server is starting up, please wait 15 seconds and try again.'
         : `Server error (${resp.status}). Please try again.`;
       showError(msg);
       resetForRetry();
       return;
     }
     spinnerEl.classList.remove('show');
+
+    // 503 with loading:true — cache is warming up, auto-retry
+    if (resp.status === 503 && data.loading) {
+      const secs = data.retry_after || 15;
+      showInfo(`Loading student data... retrying in ${secs}s`);
+      setTimeout(() => {
+        state.verifying = false;
+        captureAndVerify();
+      }, secs * 1000);
+      return;
+    }
 
     if (!resp.ok) {
       showError(data.error || 'Verification failed.');
@@ -816,6 +832,11 @@ function showError(msg) {
   toast(msg, 'danger');
   setStatus('error', msg);
   setFrameClass('no-match');
+}
+
+function showInfo(msg) {
+  toast(msg, 'info');
+  setStatus('active', msg);
 }
 
 // ── Reset ─────────────────────────────────────────────────────────────────────
