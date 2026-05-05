@@ -317,6 +317,9 @@
 </head>
 <body>
 
+<!-- ── SDK debug banner (temporary, remove after email issue resolved) ───── -->
+<div id="sdk-debug" style="display:none;background:#1a1a2e;color:#f0c040;font-size:11px;padding:6px 12px;word-break:break-all;font-family:monospace;"></div>
+
 <!-- ── Header ─────────────────────────────────────────────────────────────── -->
 <header class="app-header">
   <div class="logo"><i class="bi bi-person-badge" style="color:#fff"></i></div>
@@ -473,20 +476,29 @@ function tryInitZohoUser() {
       return ZOHO.CREATOR.UTIL.getInitParams();
     })
     .then(function (params) {
-      console.log('[FaceVerify] getInitParams:', JSON.stringify(params));
+      const raw = JSON.stringify(params);
+      console.log('[FaceVerify] getInitParams:', raw);
+      _showSdkDebug('params: ' + raw);
       USER_EMAIL = (params && (params.loginUser || params.loginName || params.email)) || '';
       if (USER_EMAIL) {
         console.log('[FaceVerify] Logged in as:', USER_EMAIL);
         fetchAndShowCenters(USER_EMAIL);
       } else {
-        console.warn('[FaceVerify] No email in params:', JSON.stringify(params));
+        console.warn('[FaceVerify] No email in params:', raw);
       }
       _zohoInitDone = true;
     })
     .catch(function (e) {
+      const msg = e && (e.message || String(e));
       console.warn('[FaceVerify] Zoho SDK init failed:', e);
+      _showSdkDebug('SDK error: ' + msg);
       _zohoInitDone = true;
     });
+}
+
+function _showSdkDebug(msg) {
+  const el = document.getElementById('sdk-debug');
+  if (el) { el.textContent = msg; el.style.display = 'block'; }
 }
 
 // Wait for Zoho init to finish (up to maxMs), then resolve
