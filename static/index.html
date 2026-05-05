@@ -63,6 +63,12 @@
     }
     .app-header h1 { font-size: 17px; font-weight: 600; line-height: 1.2; }
     .app-header p  { font-size: 12px; color: var(--text-muted); }
+    .center-badges { display: inline-flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+    .center-badge  {
+      display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px;
+      background: rgba(37,99,235,0.18); color: #60a5fa;
+      border: 1px solid rgba(37,99,235,0.35); font-weight: 500;
+    }
     /* ── Main Layout ─────────────────────────────────────────────────────── */
     .main {
       flex: 1;
@@ -317,6 +323,7 @@
   <div>
     <h1>Student Face Verification</h1>
     <p id="header-subtitle">Zoho Creator · Attendance Module</p>
+    <div id="center-badges" class="center-badges" style="display:none"></div>
   </div>
   <button id="btn-refresh-cache" onclick="refreshCache()" title="Reload student face database"
     style="margin-left:auto;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;">
@@ -435,12 +442,30 @@ let USER_EMAIL = '';
       }
       if (USER_EMAIL) {
         console.log('[FaceVerify] Logged in as:', USER_EMAIL);
+        fetchAndShowCenters(USER_EMAIL);
       }
     })
     .catch(function (e) {
       console.warn('[FaceVerify] ZOHO.CREATOR.init failed:', e);
     });
 })();
+
+function fetchAndShowCenters(email) {
+  fetch('/api/user/centers?user_email=' + encodeURIComponent(email))
+    .then(r => r.json())
+    .then(function (data) {
+      const centers = (data.centers || []).filter(Boolean);
+      if (!centers.length) return;
+      const wrap = document.getElementById('center-badges');
+      if (!wrap) return;
+      wrap.innerHTML = centers.map(c =>
+        '<span class="center-badge"><i class="bi bi-geo-alt-fill" style="font-size:9px;margin-right:3px"></i>' +
+        c + '</span>'
+      ).join('');
+      wrap.style.display = 'flex';
+    })
+    .catch(function () {});
+}
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const API_BASE         = '';

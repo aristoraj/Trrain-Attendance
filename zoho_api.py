@@ -14,6 +14,7 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN,
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_DATA_CENTER,
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
+    ZOHO_BATCHES_REPORT, FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
     ZOHO_USER_MGMT_REPORT, FIELD_USER_EMAIL, FIELD_USER_CENTERS,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
@@ -148,29 +149,86 @@ class ZohoCreatorAPI:
             logger.warning(f"Could not fetch centers for {email}: {e} — falling back to full load")
             return []
 
+    # ─── Batches ───────────────────────────────────────────────────────────────
+
+    def get_ongoing_batch_ids(self, centers: list) -> list[str]:
+        """
+        Return Zoho record IDs of all Ongoing batches that belong to the given centers.
+        Used to scope the student cache to active trainees only.
+        """
+        url = f"{self._base_url}/report/{ZOHO_BATCHES_REPORT}"
+        criteria = f'({FIELD_BATCH_STATUS}=="Ongoing")'
+        center_set = set(centers)
+        batch_ids: list[str] = []
+        page_start = 1
+
+        while True:
+            resp = self._request(
+                "get", url,
+                params={"criteria": criteria, "from": page_start, "limit": 200},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            records = resp.json().get("data", [])
+            if not records:
+                break
+
+            for rec in records:
+                center_field = rec.get(FIELD_BATCH_CENTER)
+                if isinstance(center_field, dict):
+                    c_id   = str(center_field.get("ID") or "")
+                    c_name = str(center_field.get("display_value") or "")
+                elif isinstance(center_field, str):
+                    c_id, c_name = "", center_field.strip()
+                else:
+                    c_id = c_name = ""
+
+                if c_id in center_set or c_name in center_set:
+                    bid = rec.get("ID") or rec.get("id")
+                    if bid:
+                        batch_ids.append(str(bid))
+
+            if len(records) < 200:
+                break
+            page_start += 200
+
+        logger.info(f"Found {len(batch_ids)} ongoing batch(es) for centers {centers}")
+        return batch_ids
+
     # ─── Students ──────────────────────────────────────────────────────────────
 
-    def get_students(self, centers: list = None) -> list[dict]:
+    def get_students(self, centers: list = None, batch_ids: list = None) -> list[dict]:
         """
         Fetch student records from Zoho Creator, encode face embeddings, and
         return a list of student dicts.
 
         Args:
-            centers:  List of center IDs/names from the logged-in user's profile.
-                      When provided, only students whose Center field matches one
-                      of these values are returned.
+            centers:   List of center IDs/names — Python-side fallback filter.
+            batch_ids: Ongoing batch record IDs — passed as server-side criteria
+                       so Zoho only returns students in those batches (much faster).
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
         students = []
         page_start = 1
         page_size = 200
 
+        # Build server-side criteria from batch_ids to reduce response size
+        if batch_ids:
+            batch_criteria = "||".join(
+                f'({FIELD_STUDENT_BATCH}=="{bid}")' for bid in batch_ids
+            )
+            scope_label = f"{len(batch_ids)} ongoing batch(es)"
+        else:
+            batch_criteria = None
+            scope_label = f"centers {centers}" if centers else "all students"
+
         center_set = set(centers) if centers else set()
-        scope_label = f"centers {centers}" if centers else "all students"
         logger.info(f"Fetching students from Zoho Creator ({scope_label})...")
 
         while True:
-            params = {"from": page_start, "limit": page_size}
+            params: dict = {"from": page_start, "limit": page_size}
+            if batch_criteria:
+                params["criteria"] = batch_criteria
             resp = self._request("get", url, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
@@ -179,8 +237,8 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                # ── Center filter — scope to logged-in user's centres ─────────
-                if center_set:
+                # Center filter — Python-side safety net when no batch filter
+                if center_set and not batch_ids:
                     center_field = record.get(FIELD_STUDENT_CENTER)
                     if isinstance(center_field, dict):
                         record_center_id   = str(center_field.get("ID") or "")

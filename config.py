@@ -43,6 +43,12 @@ FIELD_ATT_STATUS  = os.environ.get("FIELD_ATT_STATUS",  "Attendance")   # dropdo
 FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
 CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
 
+# ─── Batch filtering (ongoing batches only) ──────────────────────────────────
+ZOHO_BATCHES_REPORT = os.environ.get("ZOHO_BATCHES_REPORT", "All_Batches")
+FIELD_BATCH_STATUS  = os.environ.get("FIELD_BATCH_STATUS",  "Batch_Status")
+FIELD_BATCH_CENTER  = os.environ.get("FIELD_BATCH_CENTER",  "Centres")
+FIELD_STUDENT_BATCH = os.environ.get("FIELD_STUDENT_BATCH", "Batch_ID")
+
 # ─── User Management (for center-scoped student lookup) ───────────────────────
 # Report link name of the User Management form/report in Zoho Creator
 ZOHO_USER_MGMT_REPORT = os.environ.get("ZOHO_USER_MGMT_REPORT", "All_Users")

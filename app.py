@@ -78,9 +78,14 @@ def get_students_cached(centers: list = None) -> list:
     cache = _get_cache(centers=centers)
     students = cache.get()
     if students is None:
-        scope = f"centers {centers}" if centers else "all students"
-        logger.info(f"Cache miss — loading {scope} from Zoho Creator...")
-        students = zoho.get_students(centers=centers)
+        # Step 1: resolve ongoing batch IDs for this center scope
+        batch_ids = None
+        if centers:
+            batch_ids = get_batch_ids_cached(centers) or None
+
+        scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
+        logger.info(f"Cache miss — loading students ({scope}) from Zoho Creator...")
+        students = zoho.get_students(centers=centers, batch_ids=batch_ids)
         cache.set(students)
     else:
         logger.info(f"Cache hit — {cache.size} students (age: {cache.age_seconds:.0f}s)")
@@ -104,6 +109,26 @@ def get_user_centers_cached(email: str) -> list[str]:
     with _user_centers_lock:
         _user_centers_cache[email] = (centers, time.time())
     return centers
+
+
+# ─── Ongoing-batch IDs cache (scope_key → list[batch_id], TTL 30 min) ─────────
+_batch_ids_cache: dict[str, tuple[list, float]] = {}
+_batch_ids_lock  = threading.Lock()
+_BATCH_IDS_TTL   = 1800   # 30 minutes — batches don't change status often
+
+
+def get_batch_ids_cached(centers: list) -> list[str]:
+    key = _build_scope_key(centers)
+    with _batch_ids_lock:
+        if key in _batch_ids_cache:
+            batch_ids, ts = _batch_ids_cache[key]
+            if time.time() - ts < _BATCH_IDS_TTL:
+                logger.info(f"Batch IDs cache hit for {key}: {len(batch_ids)} batch(es)")
+                return batch_ids
+    batch_ids = zoho.get_ongoing_batch_ids(centers)
+    with _batch_ids_lock:
+        _batch_ids_cache[key] = (batch_ids, time.time())
+    return batch_ids
 
 
 # ─── Always-on keepalive (Render free tier) ───────────────────────────────────
@@ -172,10 +197,14 @@ def cache_refresh():
     centers = None
     if user_email:
         with _user_centers_lock:
-            _user_centers_cache.pop(user_email, None)   # bust the centres cache too
+            _user_centers_cache.pop(user_email, None)
         fetched = get_user_centers_cached(user_email)
         if fetched:
             centers = fetched
+            # Bust batch IDs cache for this scope so fresh batches are fetched
+            scope_key = _build_scope_key(centers)
+            with _batch_ids_lock:
+                _batch_ids_cache.pop(scope_key, None)
 
     try:
         cache = _get_cache(centers=centers)
@@ -594,10 +623,24 @@ def admin_reauth_submit():
     render_msg = ""
     if RENDER_API_KEY and RENDER_SERVICE_ID:
         try:
+            # Fetch existing env vars first so we only update ZOHO_REFRESH_TOKEN
+            # (Render PUT /env-vars is a full replace — sending only one key wipes the rest)
+            get_resp = req.get(
+                f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars",
+                headers={"Authorization": f"Bearer {RENDER_API_KEY}"},
+                timeout=15,
+            )
+            existing = []
+            if get_resp.status_code == 200:
+                existing = get_resp.json()
+
+            updated = [e for e in existing if e.get("key") != "ZOHO_REFRESH_TOKEN"]
+            updated.append({"key": "ZOHO_REFRESH_TOKEN", "value": new_refresh_token})
+
             render_resp = req.put(
                 f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars",
                 headers={"Authorization": f"Bearer {RENDER_API_KEY}", "Content-Type": "application/json"},
-                json=[{"key": "ZOHO_REFRESH_TOKEN", "value": new_refresh_token}],
+                json=updated,
                 timeout=15,
             )
             if render_resp.status_code in (200, 201):
@@ -647,6 +690,20 @@ def _reauth_result(success, message, secret, render_updated=False, token_preview
 </div>
 </body>
 </html>"""
+
+
+# ─── User centers API ─────────────────────────────────────────────────────────
+
+@app.route("/api/user/centers")
+def user_centers_api():
+    """Return display names of the logged-in user's centres (used by the header UI)."""
+    email = request.args.get("user_email", "").strip()
+    if not email:
+        return jsonify({"centers": []})
+    raw = get_user_centers_cached(email)
+    # raw contains both numeric IDs and display names — keep only human-readable names
+    display = [c for c in raw if not c.strip().isdigit()]
+    return jsonify({"centers": display})
 
 
 # ─── Debug ────────────────────────────────────────────────────────────────────
