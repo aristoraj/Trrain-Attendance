@@ -447,38 +447,45 @@ if (USER_EMAIL) {
 }
 
 function tryInitZohoUser() {
-  const ready = typeof ZOHO !== 'undefined'
+  // SDK must expose at least ZOHO.CREATOR.UTIL.getInitParams
+  const hasUtil = typeof ZOHO !== 'undefined'
     && ZOHO.CREATOR
-    && typeof ZOHO.CREATOR.init === 'function';
+    && ZOHO.CREATOR.UTIL
+    && typeof ZOHO.CREATOR.UTIL.getInitParams === 'function';
 
-  if (!ready) {
+  if (!hasUtil) {
     if (++_zohoInitAttempts < 20) {
       setTimeout(tryInitZohoUser, 500);
     } else {
       console.warn('[FaceVerify] ZOHO.CREATOR SDK not available after 10 s');
-      _zohoInitDone = true;   // give up — proceed without email
+      _zohoInitDone = true;
     }
     return;
   }
 
-  ZOHO.CREATOR.init()
+  // init() may or may not exist depending on SDK version — skip if absent
+  const initPromise = (typeof ZOHO.CREATOR.init === 'function')
+    ? ZOHO.CREATOR.init()
+    : Promise.resolve();
+
+  initPromise
     .then(function () {
       return ZOHO.CREATOR.UTIL.getInitParams();
     })
     .then(function (params) {
       console.log('[FaceVerify] getInitParams:', JSON.stringify(params));
-      USER_EMAIL = params.loginUser || params.loginName || params.email || '';
+      USER_EMAIL = (params && (params.loginUser || params.loginName || params.email)) || '';
       if (USER_EMAIL) {
         console.log('[FaceVerify] Logged in as:', USER_EMAIL);
         fetchAndShowCenters(USER_EMAIL);
       } else {
-        console.warn('[FaceVerify] Could not find email in params:', JSON.stringify(params));
+        console.warn('[FaceVerify] No email in params:', JSON.stringify(params));
       }
       _zohoInitDone = true;
     })
     .catch(function (e) {
       console.warn('[FaceVerify] Zoho SDK init failed:', e);
-      _zohoInitDone = true;   // failed — proceed without email
+      _zohoInitDone = true;
     });
 }
 
