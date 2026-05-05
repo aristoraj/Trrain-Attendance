@@ -431,18 +431,34 @@ const urlParams  = new URLSearchParams(window.location.search);
 let USER_EMAIL = '';
 
 (function initZohoUser() {
-  if (typeof ZOHO === 'undefined' || !ZOHO.CREATOR) return;
+  if (typeof ZOHO === 'undefined' || !ZOHO.CREATOR) {
+    console.warn('[FaceVerify] ZOHO.CREATOR SDK not available');
+    return;
+  }
   ZOHO.CREATOR.init()
     .then(function (data) {
-      const user = data && data.loggedInUser;
+      console.log('[FaceVerify] ZOHO.CREATOR.init data:', JSON.stringify(data));
+      if (!data) return;
+
+      // Try every known field where Zoho puts the logged-in user email
+      const user = data.loggedInUser;
       if (typeof user === 'string' && user) {
         USER_EMAIL = user;
-      } else if (user && (user.email || user.EmailID || user.Email)) {
-        USER_EMAIL = user.email || user.EmailID || user.Email;
+      } else if (user && typeof user === 'object') {
+        USER_EMAIL = user.email || user.EmailID || user.Email
+                  || user.loginName || user.loginname || user.Login || '';
       }
+
+      // Fallback: top-level fields some SDK versions use
+      if (!USER_EMAIL) {
+        USER_EMAIL = data.email || data.EmailID || data.loginName || '';
+      }
+
       if (USER_EMAIL) {
         console.log('[FaceVerify] Logged in as:', USER_EMAIL);
         fetchAndShowCenters(USER_EMAIL);
+      } else {
+        console.warn('[FaceVerify] Could not extract email from init data');
       }
     })
     .catch(function (e) {
