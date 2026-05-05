@@ -1,0 +1,9 @@
+/**/.DS_Store
+/**/.orig
+node_modules/
+unittest/
+output/
+coverage/
+screenShots/
+reports/
+npm-debug.log

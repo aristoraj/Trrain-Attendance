@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="UTF-8">
+	<title>Zoho Desk - Apps</title>
+</head>
+
+<body>
+
+	<h2>This is a sample App built using ZET CLI.</h2>
+
+	<script src="https://static.zohocdn.com/zohodeskmarketplacesdkstatic/developer_sdk/v1/js/ZohoDeskClientSDK.min.js"></script>
+	<script>
+	window.onload = function () {
+	 ZOHODESK.extension.onload().then(function (App) {
+
+		//Get ticket related data
+		ZOHODESK.get('ticket.email').then(function (res) {
+				//response Handling
+			}).catch(function (err) {
+				//error Handling
+			});
+		/*	
+					//To Set data in Desk UI Client
+					ZOHODESK.set('ticket.comment', { 'content': "Test comment" }).then(function (res) {
+						//response Handling
+					}).catch(function (err) {
+						//error Handling
+					});
+		
+					//Access Data Storage for an extension
+					//Get the saved data of an extension from data storage
+					ZOHODESK.get('database', { 'key': 'key1', 'queriableValue': 'value1' }).then(function (response) {
+						//response Handling
+					}).catch(function (err) {
+						//error Handling
+					})            
+					
+					//Save data in to data staorage
+					ZOHODESK.set('database', { 'key': 'key_1', 'value': { 'id': 123 }, 'queriableValue': 'value1' }).then(function (response) {
+						//response Handling
+					}).catch(function (err) {
+						//error Handling
+					})
+		
+					//Change tabs in ticket detailview
+					ZOHODESK.invoke('ROUTE_TO', 'ticket.attachments');
+		
+					//To Insert the content in the current opened reply editor from extension
+					ZOHODESK.invoke('Insert', 'ticket.replyEditor', { content: "<p>your content</p>" });
+		
+					//To listen to an event in desk
+					App.instance.on('comment_Added', function(data){
+						//data handling 
+					});
+		
+					//To access locale
+					App.locale;
+		
+					//To access localresources
+					App.localeResource            
+						
+					//To Know more on these, please read the documentation
+				*/
+	});
+};
+</script>
+
+	<script src="./js/extension.js" charset="utf-8"></script>
+
+</body>
+
+</html>

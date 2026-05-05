@@ -10,9 +10,8 @@
   <!-- Bootstrap Icons -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
-  <!-- Zoho Creator Widget SDK (provides ZOHO.CREATOR.init for logged-in user) -->
-  <!-- version/2.0 is the correct path; version/2 returns 404 -->
-  <script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgets.js"></script>
+  <!-- Zoho Creator Widget SDK v2 — correct domain is static.zohocdn.com -->
+  <script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
 
   <!-- MediaPipe Face Mesh -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
@@ -431,10 +430,14 @@ const urlParams  = new URLSearchParams(window.location.search);
 // ── Logged-in user (from Zoho Creator portal) ─────────────────────────────────
 let USER_EMAIL = '';
 
-// Retry up to 20 times (10 s) waiting for Zoho to inject the ZOHO global
+// Retry up to 20 times (10 s) — Zoho SDK loads asynchronously
 let _zohoInitAttempts = 0;
 function tryInitZohoUser() {
-  if (typeof ZOHO === 'undefined' || !ZOHO.CREATOR || typeof ZOHO.CREATOR.init !== 'function') {
+  const ready = typeof ZOHO !== 'undefined'
+    && ZOHO.CREATOR
+    && typeof ZOHO.CREATOR.init === 'function';
+
+  if (!ready) {
     if (++_zohoInitAttempts < 20) {
       setTimeout(tryInitZohoUser, 500);
     } else {
@@ -442,31 +445,25 @@ function tryInitZohoUser() {
     }
     return;
   }
+
   ZOHO.CREATOR.init()
-    .then(function (data) {
-      console.log('[FaceVerify] ZOHO.CREATOR.init data:', JSON.stringify(data));
-      if (!data) return;
-
-      const user = data.loggedInUser;
-      if (typeof user === 'string' && user) {
-        USER_EMAIL = user;
-      } else if (user && typeof user === 'object') {
-        USER_EMAIL = user.email || user.EmailID || user.Email
-                  || user.loginName || user.loginname || user.Login || '';
-      }
-      if (!USER_EMAIL) {
-        USER_EMAIL = data.email || data.EmailID || data.loginName || '';
-      }
-
+    .then(function () {
+      // getInitParams() is the correct v2 API for the logged-in user
+      return ZOHO.CREATOR.UTIL.getInitParams();
+    })
+    .then(function (params) {
+      console.log('[FaceVerify] getInitParams:', JSON.stringify(params));
+      // v2 SDK returns loginUser for the logged-in user's email
+      USER_EMAIL = params.loginUser || params.loginName || params.email || '';
       if (USER_EMAIL) {
         console.log('[FaceVerify] Logged in as:', USER_EMAIL);
         fetchAndShowCenters(USER_EMAIL);
       } else {
-        console.warn('[FaceVerify] Could not extract email — raw data:', JSON.stringify(data));
+        console.warn('[FaceVerify] Could not find email in params:', JSON.stringify(params));
       }
     })
     .catch(function (e) {
-      console.warn('[FaceVerify] ZOHO.CREATOR.init failed:', e);
+      console.warn('[FaceVerify] Zoho SDK init failed:', e);
     });
 }
 tryInitZohoUser();
