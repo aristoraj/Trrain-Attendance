@@ -428,11 +428,23 @@
 const urlParams  = new URLSearchParams(window.location.search);
 
 // ── Logged-in user (from Zoho Creator portal) ─────────────────────────────────
-let USER_EMAIL = '';
+// Priority 1: URL param ?user_email=... set by Zoho Creator page config
+// Priority 2: Zoho Widget SDK getInitParams()
+let USER_EMAIL = (urlParams.get('user_email') || urlParams.get('email') || '').trim();
 
 // Tracks whether Zoho init has completed (success or exhausted retries)
 let _zohoInitDone = false;
 let _zohoInitAttempts = 0;
+
+if (USER_EMAIL) {
+  // Got email from URL — no need to wait for SDK
+  console.log('[FaceVerify] Got email from URL param:', USER_EMAIL);
+  _zohoInitDone = true;
+  fetchAndShowCenters(USER_EMAIL);
+} else {
+  // Fall back to Zoho Widget SDK
+  tryInitZohoUser();
+}
 
 function tryInitZohoUser() {
   const ready = typeof ZOHO !== 'undefined'
@@ -469,7 +481,6 @@ function tryInitZohoUser() {
       _zohoInitDone = true;   // failed — proceed without email
     });
 }
-tryInitZohoUser();
 
 // Wait for Zoho init to finish (up to maxMs), then resolve
 function waitForZohoInit(maxMs) {
