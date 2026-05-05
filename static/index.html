@@ -430,8 +430,10 @@ const urlParams  = new URLSearchParams(window.location.search);
 // ── Logged-in user (from Zoho Creator portal) ─────────────────────────────────
 let USER_EMAIL = '';
 
-// Retry up to 20 times (10 s) — Zoho SDK loads asynchronously
+// Tracks whether Zoho init has completed (success or exhausted retries)
+let _zohoInitDone = false;
 let _zohoInitAttempts = 0;
+
 function tryInitZohoUser() {
   const ready = typeof ZOHO !== 'undefined'
     && ZOHO.CREATOR
@@ -442,18 +444,17 @@ function tryInitZohoUser() {
       setTimeout(tryInitZohoUser, 500);
     } else {
       console.warn('[FaceVerify] ZOHO.CREATOR SDK not available after 10 s');
+      _zohoInitDone = true;   // give up — proceed without email
     }
     return;
   }
 
   ZOHO.CREATOR.init()
     .then(function () {
-      // getInitParams() is the correct v2 API for the logged-in user
       return ZOHO.CREATOR.UTIL.getInitParams();
     })
     .then(function (params) {
       console.log('[FaceVerify] getInitParams:', JSON.stringify(params));
-      // v2 SDK returns loginUser for the logged-in user's email
       USER_EMAIL = params.loginUser || params.loginName || params.email || '';
       if (USER_EMAIL) {
         console.log('[FaceVerify] Logged in as:', USER_EMAIL);
@@ -461,12 +462,26 @@ function tryInitZohoUser() {
       } else {
         console.warn('[FaceVerify] Could not find email in params:', JSON.stringify(params));
       }
+      _zohoInitDone = true;
     })
     .catch(function (e) {
       console.warn('[FaceVerify] Zoho SDK init failed:', e);
+      _zohoInitDone = true;   // failed — proceed without email
     });
 }
 tryInitZohoUser();
+
+// Wait for Zoho init to finish (up to maxMs), then resolve
+function waitForZohoInit(maxMs) {
+  return new Promise(function (resolve) {
+    if (_zohoInitDone) { resolve(); return; }
+    const deadline = Date.now() + maxMs;
+    (function poll() {
+      if (_zohoInitDone || Date.now() >= deadline) { resolve(); return; }
+      setTimeout(poll, 150);
+    })();
+  });
+}
 
 function fetchAndShowCenters(email) {
   fetch('/api/user/centers?user_email=' + encodeURIComponent(email))
@@ -679,17 +694,40 @@ function drawPath(landmarks, indices, w, h, color, lineWidth, close) {
 }
 
 // ── Capture & Verify ──────────────────────────────────────────────────────────
-async function captureAndVerify() {
+async function captureAndVerify(cachedImage = null) {
   state.verifying = true;
 
-  const captureCanvas = document.createElement('canvas');
-  captureCanvas.width  = videoEl.videoWidth;
-  captureCanvas.height = videoEl.videoHeight;
-  const cCtx = captureCanvas.getContext('2d');
-  cCtx.translate(captureCanvas.width, 0);
-  cCtx.scale(-1, 1);
-  cCtx.drawImage(videoEl, 0, 0);
-  const imageData = captureCanvas.toDataURL('image/jpeg', 0.92);
+  // Ensure Zoho init has resolved so USER_EMAIL is set before the cache loads
+  if (!_zohoInitDone) {
+    setStatus('active', 'Authenticating user…');
+    await waitForZohoInit(5000);
+  }
+
+  let imageData = cachedImage;
+
+  if (!imageData) {
+    // Guard: camera must have a valid frame before sending
+    if (!videoEl.videoWidth || !videoEl.videoHeight) {
+      console.warn('[FaceVerify] Camera not ready — aborting verify');
+      state.verifying = false;
+      return;
+    }
+
+    const captureCanvas = document.createElement('canvas');
+    captureCanvas.width  = videoEl.videoWidth;
+    captureCanvas.height = videoEl.videoHeight;
+    const cCtx = captureCanvas.getContext('2d');
+    cCtx.translate(captureCanvas.width, 0);
+    cCtx.scale(-1, 1);
+    cCtx.drawImage(videoEl, 0, 0);
+    imageData = captureCanvas.toDataURL('image/jpeg', 0.92);
+
+    if (!imageData || imageData === 'data:,') {
+      console.warn('[FaceVerify] Canvas capture empty — aborting verify');
+      state.verifying = false;
+      return;
+    }
+  }
 
   spinnerEl.classList.add('show');
   resultCard.classList.remove('show', 'success', 'danger', 'warning');
@@ -721,13 +759,20 @@ async function captureAndVerify() {
     }
     spinnerEl.classList.remove('show');
 
-    // 503 with loading:true — cache is warming up, auto-retry
+    // 503 with loading:true — cache warming up; reuse same captured image on retry
     if (resp.status === 503 && data.loading) {
       const secs = data.retry_after || 15;
+      let countdown = secs;
+      const countdownInterval = setInterval(() => {
+        countdown--;
+        setStatus('active', `Loading student data... retrying in ${countdown}s`);
+        if (countdown <= 0) clearInterval(countdownInterval);
+      }, 1000);
       showInfo(`Loading student data... retrying in ${secs}s`);
       setTimeout(() => {
+        clearInterval(countdownInterval);
         state.verifying = false;
-        captureAndVerify();
+        captureAndVerify(imageData);   // reuse the same verified photo
       }, secs * 1000);
       return;
     }
