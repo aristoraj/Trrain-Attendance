@@ -244,8 +244,10 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                # Layer 1b — Python-side status double-check (guards against criteria quirks)
-                if (batch_ids or centers) and record.get("Batch_ID.Batch_Status") != "Ongoing":
+                # Layer 1b — only skip when status field is present AND not Ongoing
+                # (if field is absent from report columns, None → don't skip)
+                batch_status = record.get("Batch_ID.Batch_Status")
+                if batch_status and batch_status != "Ongoing":
                     continue
 
                 # Layer 2 — Python-side batch ID match (lookup dict .ID or .display_value)
@@ -282,7 +284,7 @@ class ZohoCreatorAPI:
                     if c_id not in center_set and c_name not in center_set:
                         continue
 
-                student = self._process_record(record)
+                student = self._process_record(record, env=env)
                 if student:
                     students.append(student)
 
@@ -341,7 +343,7 @@ class ZohoCreatorAPI:
 
         return students
 
-    def _process_record(self, record: dict) -> dict | None:
+    def _process_record(self, record: dict, env: str = "") -> dict | None:
         """Parse a raw Zoho Creator record into a student dict with face encodings."""
         student_id = record.get("ID") or record.get("id")
 
@@ -451,7 +453,7 @@ class ZohoCreatorAPI:
             return None
 
         try:
-            encoding, det_score, err = self._download_and_encode(current_photo_url)
+            encoding, det_score, err = self._download_and_encode(current_photo_url, env=env)
         except Exception as e:
             logger.warning(f"Skipping '{name}': {e}")
             return None
@@ -493,8 +495,8 @@ class ZohoCreatorAPI:
             "encodings":      [encoding],
         }
 
-    def _download_and_encode(self, url: str):
-        resp = self._request("get", url, timeout=20)
+    def _download_and_encode(self, url: str, env: str = ""):
+        resp = self._request("get", url, env=env, timeout=20)
         resp.raise_for_status()
         encoding, det_score, err = encode_face_from_bytes(resp.content)
         return encoding, det_score, err
