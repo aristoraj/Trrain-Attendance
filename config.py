@@ -60,7 +60,7 @@ ZOHO_CENTRES_REPORT      = os.environ.get("ZOHO_CENTRES_REPORT",      "All_Centr
 # Field link name of the login email field in the Centres form
 FIELD_CENTRE_LOGIN_EMAIL = os.environ.get("FIELD_CENTRE_LOGIN_EMAIL", "Email")
 # Field link name of the centre display name in the Centres form
-FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Name")
+FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Centre_Name")
 # Field link name of the Center lookup in the student database
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 
