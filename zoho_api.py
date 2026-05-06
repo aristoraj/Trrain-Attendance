@@ -85,27 +85,25 @@ class ZohoCreatorAPI:
             return self._access_token
         return self._refresh_token()
 
-    def _headers(self) -> dict:
+    def _headers(self, env: str = "") -> dict:
         token = self._get_token()   # cached — only calls Zoho when token expires
-        return {
+        headers = {
             "Authorization": f"Zoho-oauthtoken {token}",
             "Content-Type":  "application/json",
         }
+        if env:
+            headers["environment"] = env
+        return headers
 
-    @staticmethod
-    def _env_param(env: str) -> dict:
-        """Return {'environment': env} query param when env is set, else empty dict."""
-        return {"environment": env} if env else {}
-
-    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def _request(self, method: str, url: str, env: str = "", **kwargs) -> requests.Response:
         """Authenticated HTTP request with one automatic retry on 401 (token refresh)."""
-        kwargs["headers"] = self._headers()
+        kwargs["headers"] = self._headers(env=env)
         resp = getattr(requests, method)(url, **kwargs)
         if resp.status_code == 401:
             logger.warning("401 from Zoho — forcing token refresh and retrying once.")
             self._access_token = None
             self._token_expiry = 0.0
-            kwargs["headers"] = self._headers()
+            kwargs["headers"] = self._headers(env=env)
             resp = getattr(requests, method)(url, **kwargs)
         return resp
 
@@ -122,8 +120,8 @@ class ZohoCreatorAPI:
         criteria = f'({FIELD_CENTRE_LOGIN_EMAIL}=="{email}")'
         try:
             resp = self._request(
-                "get", url,
-                params={"criteria": criteria, "limit": 200, **self._env_param(env)},
+                "get", url, env=env,
+                params={"criteria": criteria, "limit": 200},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -170,9 +168,8 @@ class ZohoCreatorAPI:
 
         while True:
             resp = self._request(
-                "get", url,
-                params={"criteria": criteria, "from": page_start, "limit": 200,
-                        **self._env_param(env)},
+                "get", url, env=env,
+                params={"criteria": criteria, "from": page_start, "limit": 200},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -233,13 +230,13 @@ class ZohoCreatorAPI:
         logger.info(f"Fetching students from Zoho Creator ({scope_label})...")
 
         while True:
-            params: dict = {"from": page_start, "limit": page_size, **self._env_param(env)}
+            params: dict = {"from": page_start, "limit": page_size}
             # Layer 1 — server-side: only students whose batch is currently Ongoing.
             # Batch_ID.Batch_Status is a Zoho joined field available in the Trainees report.
             if batch_ids or centers:
                 params["criteria"] = '(Batch_ID.Batch_Status=="Ongoing")'
 
-            resp = self._request("get", url, params=params, timeout=30)
+            resp = self._request("get", url, env=env, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
 
@@ -312,8 +309,8 @@ class ZohoCreatorAPI:
         page_size = 200
 
         while True:
-            params = {"from": page_start, "limit": page_size, **self._env_param(env)}
-            resp = self._request("get", url, params=params, timeout=30)
+            params = {"from": page_start, "limit": page_size}
+            resp = self._request("get", url, env=env, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
 
@@ -510,8 +507,7 @@ class ZohoCreatorAPI:
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_system_id}"
         payload = {"data": {FIELD_STUDENT_EMBEDDING: embedding_to_json(embedding)}}
-        resp = self._request("patch", url, json=payload,
-                             params=self._env_param(env), timeout=15)
+        resp = self._request("patch", url, env=env, json=payload, timeout=15)
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"PATCH embedding failed HTTP {resp.status_code}: {resp.text[:200]}"
@@ -526,8 +522,8 @@ class ZohoCreatorAPI:
             url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
             criteria = f'({FIELD_ATT_DATE}=="{date_str}")'
             resp = self._request(
-                "get", url,
-                params={"criteria": criteria, "limit": 200, **self._env_param(env)},
+                "get", url, env=env,
+                params={"criteria": criteria, "limit": 200},
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -577,8 +573,7 @@ class ZohoCreatorAPI:
         logger.info(f"Posting attendance — {student_name} | payload: {payload}")
 
         try:
-            resp = self._request("post", url, json=payload,
-                                 params=self._env_param(env), timeout=15)
+            resp = self._request("post", url, env=env, json=payload, timeout=15)
             logger.info(f"Zoho response HTTP {resp.status_code}: {resp.text[:500]}")
             resp.raise_for_status()
 
