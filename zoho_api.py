@@ -15,7 +15,7 @@ from config import (
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_DATA_CENTER,
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
     ZOHO_BATCHES_REPORT, FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
-    ZOHO_USER_MGMT_REPORT, FIELD_USER_EMAIL, FIELD_USER_CENTERS,
+    ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
@@ -113,45 +113,45 @@ class ZohoCreatorAPI:
 
     def get_user_centers(self, email: str, env: str = "") -> list[str]:
         """
-        Look up a user by email in the User Management report and return the
-        set of center identifiers (IDs + display names) from their multiselect
-        Centers field.  Returns an empty list if the user is not found or has
-        no centres assigned.
+        Look up the logged-in user's centres by querying the All_Centres report
+        where FIELD_CENTRE_LOGIN_EMAIL (link name: "Email") matches the email.
+        Each matching record IS a centre — returns both the Zoho record ID and
+        the display name so student filtering can match by either.
         """
-        url = f"{self._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
-        criteria = f'({FIELD_USER_EMAIL}=="{email}")'
+        url = f"{self._base_url}/report/{ZOHO_CENTRES_REPORT}"
+        criteria = f'({FIELD_CENTRE_LOGIN_EMAIL}=="{email}")'
         try:
             resp = self._request(
                 "get", url,
-                params={"criteria": criteria, "limit": 1, **self._env_param(env)},
+                params={"criteria": criteria, "limit": 200, **self._env_param(env)},
                 timeout=15,
             )
             resp.raise_for_status()
             records = resp.json().get("data", [])
             if not records:
-                logger.warning(f"No user management record found for email: {email}")
+                logger.warning(f"No centre record found for email: {email}")
                 return []
 
-            centers_field = records[0].get(FIELD_USER_CENTERS, [])
             centers: list[str] = []
+            for rec in records:
+                # Zoho system record ID (matches student Centre_Name lookup ID)
+                rec_id = rec.get("ID") or rec.get("id")
+                if rec_id:
+                    centers.append(str(rec_id))
 
-            if isinstance(centers_field, list):
-                for item in centers_field:
-                    if isinstance(item, dict):
-                        if item.get("ID"):
-                            centers.append(str(item["ID"]))
-                        if item.get("display_value"):
-                            centers.append(str(item["display_value"]))
-                    elif isinstance(item, str) and item.strip():
-                        centers.append(item.strip())
-            elif isinstance(centers_field, str) and centers_field.strip():
-                centers.append(centers_field.strip())
+                # Display name — try the configured field name first, then common fallbacks
+                name_raw = rec.get(FIELD_CENTRE_NAME) or rec.get("Name") or rec.get("display_value")
+                if isinstance(name_raw, dict):
+                    name_raw = name_raw.get("display_value") or name_raw.get("value") or ""
+                name = str(name_raw).strip() if name_raw else ""
+                if name:
+                    centers.append(name)
 
-            logger.info(f"User {email} assigned to centers: {centers}")
+            logger.info(f"User {email} found in centres: {centers}")
             return centers
 
         except Exception as e:
-            logger.warning(f"Could not fetch centers for {email}: {e} — falling back to full load")
+            logger.warning(f"Could not fetch centres for {email}: {e} — falling back to full load")
             return []
 
     # ─── Batches ───────────────────────────────────────────────────────────────

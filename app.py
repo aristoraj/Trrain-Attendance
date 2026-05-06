@@ -126,8 +126,10 @@ def get_user_centers_cached(email: str, env: str = "") -> list[str]:
                 logger.info(f"Centers cache hit for {cache_key}: {centers}")
                 return centers
     centers = zoho.get_user_centers(email, env=env)
-    with _user_centers_lock:
-        _user_centers_cache[cache_key] = (centers, time.time())
+    # Only cache non-empty results so a Zoho hiccup doesn't lock the user out
+    if centers:
+        with _user_centers_lock:
+            _user_centers_cache[cache_key] = (centers, time.time())
     return centers
 
 

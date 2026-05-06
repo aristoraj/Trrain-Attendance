@@ -54,13 +54,13 @@ FIELD_BATCH_STATUS  = os.environ.get("FIELD_BATCH_STATUS",  "Batch_Status")
 FIELD_BATCH_CENTER  = os.environ.get("FIELD_BATCH_CENTER",  "Centres")
 FIELD_STUDENT_BATCH = os.environ.get("FIELD_STUDENT_BATCH", "Batch_ID")
 
-# ─── User Management (for center-scoped student lookup) ───────────────────────
-# Report link name of the User Management form/report in Zoho Creator
-ZOHO_USER_MGMT_REPORT = os.environ.get("ZOHO_USER_MGMT_REPORT", "All_Users")
-# Field link name of the email field in the user management form
-FIELD_USER_EMAIL   = os.environ.get("FIELD_USER_EMAIL",   "Zoho_ID")
-# Field link name of the multiselect Centers lookup in user management
-FIELD_USER_CENTERS = os.environ.get("FIELD_USER_CENTERS", "Centre_List")
+# ─── Centres report (for center-scoped student lookup) ───────────────────────
+# Report link name of the Centres report in Zoho Creator
+ZOHO_CENTRES_REPORT      = os.environ.get("ZOHO_CENTRES_REPORT",      "All_Centres")
+# Field link name of the login email field in the Centres form
+FIELD_CENTRE_LOGIN_EMAIL = os.environ.get("FIELD_CENTRE_LOGIN_EMAIL", "Email")
+# Field link name of the centre display name in the Centres form
+FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Name")
 # Field link name of the Center lookup in the student database
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 
