@@ -92,6 +92,11 @@ class ZohoCreatorAPI:
             "Content-Type":  "application/json",
         }
 
+    @staticmethod
+    def _env_param(env: str) -> dict:
+        """Return {'environment': env} query param when env is set, else empty dict."""
+        return {"environment": env} if env else {}
+
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Authenticated HTTP request with one automatic retry on 401 (token refresh)."""
         kwargs["headers"] = self._headers()
@@ -106,7 +111,7 @@ class ZohoCreatorAPI:
 
     # ─── User Management ──────────────────────────────────────────────────────
 
-    def get_user_centers(self, email: str) -> list[str]:
+    def get_user_centers(self, email: str, env: str = "") -> list[str]:
         """
         Look up a user by email in the User Management report and return the
         set of center identifiers (IDs + display names) from their multiselect
@@ -118,7 +123,7 @@ class ZohoCreatorAPI:
         try:
             resp = self._request(
                 "get", url,
-                params={"criteria": criteria, "limit": 1},
+                params={"criteria": criteria, "limit": 1, **self._env_param(env)},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -151,7 +156,7 @@ class ZohoCreatorAPI:
 
     # ─── Batches ───────────────────────────────────────────────────────────────
 
-    def get_ongoing_batch_ids(self, centers: list) -> list[str]:
+    def get_ongoing_batch_ids(self, centers: list, env: str = "") -> list[str]:
         """
         Return Zoho record IDs of all Ongoing batches that belong to the given centers.
         Used to scope the student cache to active trainees only.
@@ -165,7 +170,8 @@ class ZohoCreatorAPI:
         while True:
             resp = self._request(
                 "get", url,
-                params={"criteria": criteria, "from": page_start, "limit": 200},
+                params={"criteria": criteria, "from": page_start, "limit": 200,
+                        **self._env_param(env)},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -197,7 +203,7 @@ class ZohoCreatorAPI:
 
     # ─── Students ──────────────────────────────────────────────────────────────
 
-    def get_students(self, centers: list = None, batch_ids: list = None) -> list[dict]:
+    def get_students(self, centers: list = None, batch_ids: list = None, env: str = "") -> list[dict]:
         """
         Fetch student records from Zoho Creator, encode face embeddings, and
         return a list of student dicts.
@@ -226,7 +232,7 @@ class ZohoCreatorAPI:
         logger.info(f"Fetching students from Zoho Creator ({scope_label})...")
 
         while True:
-            params: dict = {"from": page_start, "limit": page_size}
+            params: dict = {"from": page_start, "limit": page_size, **self._env_param(env)}
             if batch_criteria:
                 params["criteria"] = batch_criteria
             resp = self._request("get", url, params=params, timeout=30)
@@ -268,7 +274,7 @@ class ZohoCreatorAPI:
         logger.info(f"Total students loaded ({scope_label}): {len(students)}")
         return students
 
-    def get_students_list(self) -> list[dict]:
+    def get_students_list(self, env: str = "") -> list[dict]:
         """
         Lightweight fetch of student names + IDs only (no photo download / encoding).
         Used for the manual attendance dropdown.
@@ -279,7 +285,7 @@ class ZohoCreatorAPI:
         page_size = 200
 
         while True:
-            params = {"from": page_start, "limit": page_size}
+            params = {"from": page_start, "limit": page_size, **self._env_param(env)}
             resp = self._request("get", url, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
@@ -437,7 +443,7 @@ class ZohoCreatorAPI:
         encoding, det_score, err = encode_face_from_bytes(resp.content)
         return encoding, det_score, err
 
-    def save_embedding(self, student_system_id: str, embedding) -> None:
+    def save_embedding(self, student_system_id: str, embedding, env: str = "") -> None:
         """
         Write the 512-d embedding to the Face_Embedding field on the Student record.
         Future cache loads will read from here — no photo download needed.
@@ -445,7 +451,8 @@ class ZohoCreatorAPI:
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_system_id}"
         payload = {"data": {FIELD_STUDENT_EMBEDDING: embedding_to_json(embedding)}}
-        resp = self._request("patch", url, json=payload, timeout=15)
+        resp = self._request("patch", url, json=payload,
+                             params=self._env_param(env), timeout=15)
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"PATCH embedding failed HTTP {resp.status_code}: {resp.text[:200]}"
@@ -454,14 +461,14 @@ class ZohoCreatorAPI:
 
     # ─── Duplicate Attendance Guard ────────────────────────────────────────────
 
-    def check_duplicate_attendance(self, student_id: str, date_str: str) -> bool:
+    def check_duplicate_attendance(self, student_id: str, date_str: str, env: str = "") -> bool:
         """Returns True if attendance already exists for this student on date_str."""
         try:
             url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
             criteria = f'({FIELD_ATT_DATE}=="{date_str}")'
             resp = self._request(
                 "get", url,
-                params={"criteria": criteria, "limit": 200},
+                params={"criteria": criteria, "limit": 200, **self._env_param(env)},
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -495,6 +502,7 @@ class ZohoCreatorAPI:
         student_id:        str,
         student_name:      str,
         verification_type: str = "face_blink_verified",
+        env:               str = "",
     ) -> dict:
         """Post a new attendance record to Zoho Creator."""
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
@@ -510,7 +518,8 @@ class ZohoCreatorAPI:
         logger.info(f"Posting attendance — {student_name} | payload: {payload}")
 
         try:
-            resp = self._request("post", url, json=payload, timeout=15)
+            resp = self._request("post", url, json=payload,
+                                 params=self._env_param(env), timeout=15)
             logger.info(f"Zoho response HTTP {resp.status_code}: {resp.text[:500]}")
             resp.raise_for_status()
 

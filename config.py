@@ -39,6 +39,11 @@ FIELD_ATT_STUDENT = os.environ.get("FIELD_ATT_STUDENT", "Trainee")   # lookup
 FIELD_ATT_DATE    = os.environ.get("FIELD_ATT_DATE",    "Date_field")
 FIELD_ATT_STATUS  = os.environ.get("FIELD_ATT_STATUS",  "Attendance")   # dropdown
 
+# ─── Zoho Creator Environment ────────────────────────────────────────────────
+# Overridden per-request by envUrlFragment from the Widget SDK.
+# Set this env var if you want a server-side default other than production.
+ZOHO_ENVIRONMENT = os.environ.get("ZOHO_ENVIRONMENT", "")   # "" = production (default)
+
 # ─── Face Recognition Settings ────────────────────────────────────────────────
 FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
 CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))

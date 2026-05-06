@@ -253,9 +253,15 @@ class AttendanceQueue:
                     last_error    TEXT,
                     created_at    TEXT    NOT NULL,
                     updated_at    TEXT    NOT NULL,
-                    next_retry_at TEXT    NOT NULL
+                    next_retry_at TEXT    NOT NULL,
+                    environment   TEXT    NOT NULL DEFAULT ''
                 )
             """)
+            # Migrate existing tables that pre-date the environment column
+            try:
+                conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
+            except Exception:
+                pass  # Column already exists
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_status_retry "
                 "ON attendance_queue(status, next_retry_at)"
@@ -305,18 +311,19 @@ class AttendanceQueue:
             return True
         return False
 
-    def enqueue(self, student_id: str, student_name: str, date_str: str) -> int:
+    def enqueue(self, student_id: str, student_name: str, date_str: str,
+                environment: str = "") -> int:
         now = datetime.now().isoformat()
         sql = self._q("""
             INSERT INTO attendance_queue
                 (student_id, student_name, date_str,
-                 status, attempts, created_at, updated_at, next_retry_at)
-            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?)
+                 status, attempts, created_at, updated_at, next_retry_at, environment)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
         with self._db() as conn:
-            cur = conn.execute(sql, (student_id, student_name, date_str, now, now, now))
+            cur = conn.execute(sql, (student_id, student_name, date_str, now, now, now, environment))
             if self._is_postgres:
                 rec_id = cur.fetchone()["id"]
             else:
@@ -478,7 +485,7 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT id, student_id, student_name, date_str, attempts "
+                    "SELECT id, student_id, student_name, date_str, attempts, environment "
                     "FROM attendance_queue "
                     "WHERE status='PENDING' AND next_retry_at <= ? "
                     "ORDER BY created_at ASC LIMIT 10"
@@ -499,14 +506,16 @@ class AttendanceQueue:
             if cur.rowcount == 0:
                 continue
 
-            name       = row["student_name"]
-            student_id = row["student_id"]
-            attempts   = row["attempts"]
+            name        = row["student_name"]
+            student_id  = row["student_id"]
+            attempts    = row["attempts"]
+            environment = row["environment"] if "environment" in row.keys() else ""
             try:
                 result = self._zoho.post_attendance(
                     student_id=student_id,
                     student_name=name,
                     verification_type="face_blink_verified",
+                    env=environment,
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)

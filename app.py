@@ -29,7 +29,7 @@ from config import (
     PORT, DEBUG, SECRET_KEY, FACE_MATCH_TOLERANCE,
     CACHE_TTL_SECONDS, SELF_URL, ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_REPORT,
     RENDER_API_KEY, RENDER_SERVICE_ID, ADMIN_SECRET,
-    ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER,
+    ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT,
 )
 from face_utils import (
     FaceCache, decode_base64_image,
@@ -64,31 +64,37 @@ _preloading_keys: set[str] = set()
 _preloading_lock  = threading.Lock()
 
 
-def _build_scope_key(centers: list = None) -> str:
-    if centers:
-        return "C:" + ",".join(sorted(str(c) for c in centers))
-    return "ALL"
+def _resolve_env(raw: str | None) -> str:
+    """Normalise the environment string from the frontend; fall back to server default."""
+    if raw:
+        return raw.strip().lower()
+    return ZOHO_ENVIRONMENT  # e.g. "" (production) or "development"
 
 
-def _get_cache(centers: list = None) -> FaceCache:
-    key = _build_scope_key(centers)
+def _build_scope_key(centers: list = None, env: str = "") -> str:
+    base = "C:" + ",".join(sorted(str(c) for c in centers)) if centers else "ALL"
+    return f"{env}:{base}" if env else base
+
+
+def _get_cache(centers: list = None, env: str = "") -> FaceCache:
+    key = _build_scope_key(centers, env)
     with _scope_caches_lock:
         if key not in _scope_caches:
             _scope_caches[key] = FaceCache(ttl=CACHE_TTL_SECONDS)
         return _scope_caches[key]
 
 
-def _load_students_bg(centers: list = None) -> None:
+def _load_students_bg(centers: list = None, env: str = "") -> None:
     """Background worker: load + cache students without blocking an HTTP request."""
-    key = _build_scope_key(centers)
+    key = _build_scope_key(centers, env)
     try:
         batch_ids = None
         if centers:
-            batch_ids = get_batch_ids_cached(centers) or None
+            batch_ids = get_batch_ids_cached(centers, env=env) or None
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
-        logger.info(f"[BG] Loading students ({scope})...")
-        students = zoho.get_students(centers=centers, batch_ids=batch_ids)
-        _get_cache(centers).set(students)
+        logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
+        students = zoho.get_students(centers=centers, batch_ids=batch_ids, env=env)
+        _get_cache(centers, env).set(students)
         logger.info(f"[BG] Cache warm — {len(students)} students ({scope})")
     except Exception as e:
         logger.error(f"[BG] Student load failed: {e}")
@@ -97,8 +103,8 @@ def _load_students_bg(centers: list = None) -> None:
             _preloading_keys.discard(key)
 
 
-def get_students_cached(centers: list = None) -> list:
-    cache = _get_cache(centers=centers)
+def get_students_cached(centers: list = None, env: str = "") -> list:
+    cache = _get_cache(centers=centers, env=env)
     students = cache.get()
     if students is not None:
         logger.info(f"Cache hit — {cache.size} students (age: {cache.age_seconds:.0f}s)")
@@ -111,16 +117,17 @@ _user_centers_lock  = threading.Lock()
 _USER_CENTERS_TTL   = 300   # seconds
 
 
-def get_user_centers_cached(email: str) -> list[str]:
+def get_user_centers_cached(email: str, env: str = "") -> list[str]:
+    cache_key = f"{env}:{email}" if env else email
     with _user_centers_lock:
-        if email in _user_centers_cache:
-            centers, ts = _user_centers_cache[email]
+        if cache_key in _user_centers_cache:
+            centers, ts = _user_centers_cache[cache_key]
             if time.time() - ts < _USER_CENTERS_TTL:
-                logger.info(f"Centers cache hit for {email}: {centers}")
+                logger.info(f"Centers cache hit for {cache_key}: {centers}")
                 return centers
-    centers = zoho.get_user_centers(email)
+    centers = zoho.get_user_centers(email, env=env)
     with _user_centers_lock:
-        _user_centers_cache[email] = (centers, time.time())
+        _user_centers_cache[cache_key] = (centers, time.time())
     return centers
 
 
@@ -130,15 +137,15 @@ _batch_ids_lock  = threading.Lock()
 _BATCH_IDS_TTL   = 1800   # 30 minutes — batches don't change status often
 
 
-def get_batch_ids_cached(centers: list) -> list[str]:
-    key = _build_scope_key(centers)
+def get_batch_ids_cached(centers: list, env: str = "") -> list[str]:
+    key = _build_scope_key(centers, env)
     with _batch_ids_lock:
         if key in _batch_ids_cache:
             batch_ids, ts = _batch_ids_cache[key]
             if time.time() - ts < _BATCH_IDS_TTL:
                 logger.info(f"Batch IDs cache hit for {key}: {len(batch_ids)} batch(es)")
                 return batch_ids
-    batch_ids = zoho.get_ongoing_batch_ids(centers)
+    batch_ids = zoho.get_ongoing_batch_ids(centers, env=env)
     with _batch_ids_lock:
         _batch_ids_cache[key] = (batch_ids, time.time())
     return batch_ids
@@ -206,29 +213,31 @@ def cache_status():
 def cache_refresh():
     body       = request.get_json(silent=True) or {}
     user_email = request.args.get("user_email") or body.get("user_email") or None
+    env        = _resolve_env(request.args.get("zoho_environment") or body.get("zoho_environment"))
 
     centers = None
     if user_email:
+        cache_key = f"{env}:{user_email}" if env else user_email
         with _user_centers_lock:
-            _user_centers_cache.pop(user_email, None)
-        fetched = get_user_centers_cached(user_email)
+            _user_centers_cache.pop(cache_key, None)
+        fetched = get_user_centers_cached(user_email, env=env)
         if fetched:
             centers = fetched
             # Bust batch IDs cache for this scope so fresh batches are fetched
-            scope_key = _build_scope_key(centers)
+            scope_key = _build_scope_key(centers, env)
             with _batch_ids_lock:
                 _batch_ids_cache.pop(scope_key, None)
 
     try:
-        cache = _get_cache(centers=centers)
+        cache = _get_cache(centers=centers, env=env)
         cache.invalidate()
         # Trigger background reload so the HTTP response isn't blocked
-        key = _build_scope_key(centers)
+        key = _build_scope_key(centers, env)
         with _preloading_lock:
             if key not in _preloading_keys:
                 _preloading_keys.add(key)
                 threading.Thread(
-                    target=_load_students_bg, args=(centers,), daemon=True
+                    target=_load_students_bg, args=(centers,), kwargs={"env": env}, daemon=True
                 ).start()
         scope = f"centres {centers}" if centers else "ALL"
         return jsonify({
@@ -286,11 +295,12 @@ def verify():
             }), 400
 
         user_email = data.get("user_email") or None
+        env        = _resolve_env(data.get("zoho_environment"))
 
         # Resolve the logged-in user's centres; fall back to full load if unknown
         centers = None
         if user_email:
-            fetched = get_user_centers_cached(user_email)
+            fetched = get_user_centers_cached(user_email, env=env)
             if fetched:
                 centers = fetched
             else:
@@ -324,15 +334,15 @@ def verify():
             }), 400
 
         # ── 4. Load student encodings (centre-scoped cache) ──────────────────
-        students = get_students_cached(centers=centers)
+        students = get_students_cached(centers=centers, env=env)
         if students is None:
             # Cache is cold — start background load and ask frontend to retry
-            key = _build_scope_key(centers)
+            key = _build_scope_key(centers, env)
             with _preloading_lock:
                 if key not in _preloading_keys:
                     _preloading_keys.add(key)
                     threading.Thread(
-                        target=_load_students_bg, args=(centers,), daemon=True
+                        target=_load_students_bg, args=(centers,), kwargs={"env": env}, daemon=True
                     ).start()
             return jsonify({
                 "success":     False,
@@ -382,6 +392,7 @@ def verify():
             student_id=best_match["id"],
             student_name=best_match["name"],
             date_str=today_str,
+            environment=env,
         )
         logger.info(
             f"Attendance queued for {best_match['name']} "
@@ -735,7 +746,8 @@ def user_centers_api():
     email = request.args.get("user_email", "").strip()
     if not email:
         return jsonify({"centers": []})
-    raw = get_user_centers_cached(email)
+    env = _resolve_env(request.args.get("zoho_environment"))
+    raw = get_user_centers_cached(email, env=env)
     # raw contains both numeric IDs and display names — keep only human-readable names
     display = [c for c in raw if not c.strip().isdigit()]
     return jsonify({"centers": display})
