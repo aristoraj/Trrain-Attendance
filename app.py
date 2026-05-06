@@ -241,6 +241,9 @@ def cache_refresh():
     try:
         cache = _get_cache(centers=centers, env=env)
         cache.invalidate()
+        # Clear local DB enrollment embeddings so next load re-reads from Zoho
+        cleared = att_queue.clear_enrollment_embeddings()
+        logger.info(f"Refresh: cleared {cleared} local embeddings — will re-fetch from Zoho.")
         # Trigger background reload so the HTTP response isn't blocked
         key = _build_scope_key(centers, env)
         with _preloading_lock:

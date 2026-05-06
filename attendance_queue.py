@@ -478,6 +478,21 @@ class AttendanceQueue:
                 (student_id, source, embedding_json, det_score, photo_url, now),
             )
 
+    def clear_enrollment_embeddings(self) -> int:
+        """
+        Delete all enrollment and no_photo entries from the local cache.
+        Called on manual refresh so the next load re-reads Face_Embedding
+        from Zoho (or re-downloads photos) instead of using stale local data.
+        Verified_N live-capture embeddings are preserved.
+        """
+        with self._db() as conn:
+            cur = conn.execute(
+                "DELETE FROM face_embeddings WHERE source IN ('enrollment', 'no_photo')"
+            )
+            count = cur.rowcount
+        logger.info(f"Cleared {count} enrollment/no_photo embeddings from local cache.")
+        return count
+
     def add_verified_embedding(self, student_id: str, embedding_json: str) -> None:
         """
         Persist a live-capture embedding for future angle-variant matching.
