@@ -228,6 +228,7 @@ class AttendanceQueue:
                 source      TEXT    NOT NULL DEFAULT 'enrollment',
                 embedding   TEXT    NOT NULL,
                 det_score   REAL,
+                photo_url   TEXT,
                 updated_at  TEXT    NOT NULL,
                 UNIQUE(student_id, source)
             )
@@ -236,6 +237,24 @@ class AttendanceQueue:
             "CREATE INDEX IF NOT EXISTS idx_emb_student "
             "ON face_embeddings(student_id)"
         )
+
+    def _migrate_photo_url_column(self, conn):
+        """Add photo_url column to face_embeddings if it doesn't exist yet."""
+        if self._is_postgres:
+            conn.execute("SAVEPOINT add_photo_url_col")
+            try:
+                conn.execute("ALTER TABLE face_embeddings ADD COLUMN photo_url TEXT")
+                conn.execute("RELEASE SAVEPOINT add_photo_url_col")
+                logger.info("face_embeddings: added photo_url column.")
+            except Exception:
+                conn.execute("ROLLBACK TO SAVEPOINT add_photo_url_col")
+                conn.execute("RELEASE SAVEPOINT add_photo_url_col")
+        else:
+            try:
+                conn.execute("ALTER TABLE face_embeddings ADD COLUMN photo_url TEXT")
+                logger.info("face_embeddings: added photo_url column.")
+            except Exception:
+                pass  # Already exists
 
     def _init_db(self):
         self._set_wal_mode()
@@ -283,6 +302,7 @@ class AttendanceQueue:
             )
             self._migrate_embeddings_schema(conn)
             self._create_embeddings_table(conn)
+            self._migrate_photo_url_column(conn)
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now().strftime("%d-%b-%Y")
@@ -415,16 +435,24 @@ class AttendanceQueue:
     # ── Embedding cache ───────────────────────────────────────────────────────
 
     def get_local_embeddings(self, student_id: str) -> list:
-        """Return all cached embeddings for a student [{source, embedding, det_score}]."""
+        """Return all cached embeddings for a student [{source, embedding, det_score, photo_url}]."""
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT source, embedding, det_score FROM face_embeddings "
+                    "SELECT source, embedding, det_score, photo_url FROM face_embeddings "
                     "WHERE student_id=? ORDER BY source"
                 ),
                 (student_id,),
             ).fetchall()
-        return [{"source": r["source"], "embedding": r["embedding"], "det_score": r["det_score"]} for r in rows]
+        return [
+            {
+                "source":    r["source"],
+                "embedding": r["embedding"],
+                "det_score": r["det_score"],
+                "photo_url": r["photo_url"],
+            }
+            for r in rows
+        ]
 
     def save_local_embedding(
         self,
@@ -432,20 +460,22 @@ class AttendanceQueue:
         embedding_json: str,
         source: str = "enrollment",
         det_score: Optional[float] = None,
+        photo_url: Optional[str] = None,
     ) -> None:
         """Upsert a JSON embedding for (student_id, source)."""
         now = datetime.now().isoformat()
         with self._db() as conn:
             conn.execute(
                 self._q("""
-                    INSERT INTO face_embeddings (student_id, source, embedding, det_score, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO face_embeddings (student_id, source, embedding, det_score, photo_url, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(student_id, source) DO UPDATE
                         SET embedding=excluded.embedding,
                             det_score=excluded.det_score,
+                            photo_url=excluded.photo_url,
                             updated_at=excluded.updated_at
                 """),
-                (student_id, source, embedding_json, det_score, now),
+                (student_id, source, embedding_json, det_score, photo_url, now),
             )
 
     def add_verified_embedding(self, student_id: str, embedding_json: str) -> None:

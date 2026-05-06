@@ -352,33 +352,65 @@ class ZohoCreatorAPI:
 
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
+        # ── Extract current photo URL early — used for change detection ───────
+        photo_raw = record.get(FIELD_STUDENT_PHOTO)
+        if isinstance(photo_raw, dict):
+            current_photo_url = (
+                photo_raw.get("url") or photo_raw.get("value") or photo_raw.get("download_url") or ""
+            )
+        else:
+            current_photo_url = str(photo_raw).strip() if photo_raw else ""
+
+        if current_photo_url.startswith("/"):
+            current_photo_url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{current_photo_url}"
+
         # ── 1a. Local SQLite/PostgreSQL embedding cache (fastest — no network) ──
         if self._embedding_cache:
             cached = self._embedding_cache.get_local_embeddings(student_id)
             if cached:
-                # No-photo marker: permanently skip students with no enrollment photo
+                # No-photo marker: re-check only if a photo has since been uploaded
                 if any(c["source"] == "no_photo" for c in cached):
-                    logger.debug(f"Skipping '{name}' ({student_number}) — marked no_photo locally")
-                    return None
-                encodings = []
-                for item in cached:
-                    try:
-                        encodings.append(json_to_embedding(item["embedding"]))
-                    except Exception:
-                        pass
-                if encodings:
-                    logger.info(
-                        f"Local cache hit for '{name}' ({student_number}) "
-                        f"— {len(encodings)} embedding(s), skipping photo download"
-                    )
-                    return {
-                        "id":             student_id,
-                        "student_number": student_number,
-                        "name":           name,
-                        "encodings":      encodings,
-                    }
+                    if not current_photo_url:
+                        logger.debug(f"Skipping '{name}' ({student_number}) — still no photo")
+                        return None
+                    # Photo now exists — clear the no_photo marker and fall through to encode
+                    logger.info(f"'{name}' ({student_number}) now has a photo — re-encoding")
+                    cached = [c for c in cached if c["source"] != "no_photo"]
+
+                # Photo-change detection: if the stored URL differs, invalidate enrollment embedding
+                enrollment = next((c for c in cached if c["source"] == "enrollment"), None)
+                if enrollment and current_photo_url and enrollment.get("photo_url"):
+                    if enrollment["photo_url"] != current_photo_url:
+                        logger.info(
+                            f"'{name}' ({student_number}) photo changed — re-encoding "
+                            f"(was: {enrollment['photo_url'][-40:]}, "
+                            f"now: {current_photo_url[-40:]})"
+                        )
+                        # Remove the stale enrollment entry; keep verified_N embeddings
+                        cached = [c for c in cached if c["source"] != "enrollment"]
+                        enrollment = None
+
+                if cached and enrollment:
+                    encodings = []
+                    for item in cached:
+                        try:
+                            encodings.append(json_to_embedding(item["embedding"]))
+                        except Exception:
+                            pass
+                    if encodings:
+                        logger.info(
+                            f"Local cache hit for '{name}' ({student_number}) "
+                            f"— {len(encodings)} embedding(s), skipping photo download"
+                        )
+                        return {
+                            "id":             student_id,
+                            "student_number": student_number,
+                            "name":           name,
+                            "encodings":      encodings,
+                        }
 
         # ── 1b. Try pre-computed embedding from Zoho field ────────────────────
+        # Only use if we haven't already detected a photo change above
         embedding_raw = record.get(FIELD_STUDENT_EMBEDDING, "")
         if embedding_raw and isinstance(embedding_raw, str) and embedding_raw.strip().startswith("["):
             try:
@@ -387,7 +419,8 @@ class ZohoCreatorAPI:
                 if self._embedding_cache:
                     try:
                         self._embedding_cache.save_local_embedding(
-                            student_id, embedding_raw.strip(), source="enrollment"
+                            student_id, embedding_raw.strip(),
+                            source="enrollment", photo_url=current_photo_url or None
                         )
                     except Exception:
                         pass
@@ -401,8 +434,7 @@ class ZohoCreatorAPI:
                 logger.warning(f"Bad stored embedding for '{name}': {e} — falling back to photo")
 
         # ── 2. Fallback: download photo and encode ────────────────────────────
-        photo = record.get(FIELD_STUDENT_PHOTO)
-        if not photo:
+        if not current_photo_url:
             logger.warning(f"Skipping '{name}' ({student_number}) — no photo and no stored embedding.")
             if self._embedding_cache:
                 try:
@@ -413,27 +445,8 @@ class ZohoCreatorAPI:
                     pass
             return None
 
-        if isinstance(photo, dict):
-            photo_url = photo.get("url") or photo.get("value") or photo.get("download_url")
-        else:
-            photo_url = str(photo)
-
-        if not photo_url:
-            logger.warning(f"Skipping '{name}' — could not extract photo URL: {repr(photo)[:100]}")
-            if self._embedding_cache:
-                try:
-                    self._embedding_cache.save_local_embedding(
-                        student_id, "NO_PHOTO", source="no_photo"
-                    )
-                except Exception:
-                    pass
-            return None
-
-        if photo_url.startswith("/"):
-            photo_url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{photo_url}"
-
         try:
-            encoding, det_score, err = self._download_and_encode(photo_url)
+            encoding, det_score, err = self._download_and_encode(current_photo_url)
         except Exception as e:
             logger.warning(f"Skipping '{name}': {e}")
             return None
@@ -456,7 +469,8 @@ class ZohoCreatorAPI:
         if self._embedding_cache:
             try:
                 self._embedding_cache.save_local_embedding(
-                    student_id, embedding_json, source="enrollment", det_score=det_score
+                    student_id, embedding_json, source="enrollment",
+                    det_score=det_score, photo_url=current_photo_url or None
                 )
             except Exception as e:
                 logger.warning(f"Could not save local embedding for '{name}': {e} (non-fatal)")
