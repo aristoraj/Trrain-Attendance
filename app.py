@@ -93,9 +93,7 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
     """Background worker: load + cache students without blocking an HTTP request."""
     key = _build_scope_key(centers, env)
     try:
-        batch_ids = None
-        if centers:
-            batch_ids = get_batch_ids_cached(centers, env=env) or None
+        batch_ids = get_batch_ids_cached(centers, env=env) if centers else None
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
         students = zoho.get_students(centers=centers, batch_ids=batch_ids, env=env)

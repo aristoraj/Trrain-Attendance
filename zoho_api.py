@@ -264,8 +264,16 @@ class ZohoCreatorAPI:
                     if b_id not in batch_id_set and b_name not in batch_id_set:
                         continue
 
-                # Layer 3 — Python-side centre fallback (when no batch IDs available)
+                elif batch_ids is not None:
+                    # batch_ids was provided but is empty — no ongoing batches for this centre.
+                    # Do NOT fall through to centre filter; that would load completed-batch students.
+                    continue
+
+                # Layer 3 — Python-side centre fallback (only when batch_ids was never provided)
                 elif center_set:
+                    # Also guard against completed-batch students via the joined field
+                    if record.get("Batch_ID.Batch_Status") not in ("Ongoing", None, ""):
+                        continue
                     center_field = record.get(FIELD_STUDENT_CENTER)
                     if isinstance(center_field, dict):
                         c_id   = str(center_field.get("ID") or "")
