@@ -334,6 +334,24 @@
   </button>
 </header>
 
+<!-- ── Email override bar (shown when no centres found for logged-in email) ── -->
+<div id="email-override-bar" style="display:none;background:#161b22;border-bottom:1px solid #30363d;padding:10px 24px;gap:12px;align-items:center;flex-wrap:wrap;">
+  <i class="bi bi-exclamation-triangle" style="color:#fbbf24;font-size:15px;flex-shrink:0;"></i>
+  <span style="color:#8b949e;font-size:13px;">
+    No centres found for <strong id="email-override-current" style="color:#e6edf3;"></strong>.
+    Enter the registered email for this centre:
+  </span>
+  <div style="display:flex;gap:8px;flex:1;min-width:260px;max-width:420px;">
+    <input id="email-override-input" type="email" placeholder="centre@example.com"
+      style="flex:1;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:8px;padding:7px 12px;font-size:13px;outline:none;min-width:0;"
+      onkeydown="if(event.key==='Enter')submitEmailOverride()" />
+    <button id="email-override-btn" onclick="submitEmailOverride()"
+      style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+      Load Students
+    </button>
+  </div>
+</div>
+
 <!-- ── Main ───────────────────────────────────────────────────────────────── -->
 <main class="main">
 
@@ -574,11 +592,16 @@ async function loadDataViaSdk(email) {
     });
     const centreRecords = (centreResp && centreResp.data) || [];
 
-    // Display centre badges
+    // Display centre badges (or prompt for manual email if none found)
     const centreNames = centreRecords
       .map(r => r[cfg.fields.centre_name] || '')
       .filter(Boolean);
-    if (centreNames.length) displayCentreBadges(centreNames);
+    if (centreNames.length) {
+      displayCentreBadges(centreNames);
+      hideEmailOverride();
+    } else {
+      showEmailOverride(email);
+    }
 
     // Build scope key from sorted centre IDs (must match backend _build_scope_key)
     const centreIds = centreRecords
@@ -704,6 +727,49 @@ async function postAttendanceSdk(student, dateStr) {
   console.log('[SDK] Attendance posted for', student.name, 'on', dateStr);
 }
 
+// ── Email override (shown when no centres found for logged-in email) ──────────
+function showEmailOverride(forEmail) {
+  const bar = document.getElementById('email-override-bar');
+  const lbl = document.getElementById('email-override-current');
+  if (lbl) lbl.textContent = forEmail || 'your account';
+  if (bar) bar.style.display = 'flex';
+}
+
+function hideEmailOverride() {
+  const bar = document.getElementById('email-override-bar');
+  if (bar) bar.style.display = 'none';
+}
+
+async function submitEmailOverride() {
+  const input = document.getElementById('email-override-input');
+  const btn   = document.getElementById('email-override-btn');
+  const email = (input && input.value.trim()) || '';
+
+  if (!email || !email.includes('@')) {
+    toast('Please enter a valid email address.', 'danger');
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  USER_EMAIL = email;
+
+  try {
+    if (_SDK_MODE) {
+      _dataLoaded  = false;
+      _dataLoading = false;
+      await loadDataViaSdk(email);
+    } else {
+      // Server-side: update USER_EMAIL so next verify uses it for centre lookup
+      fetchAndShowCenters(email);
+    }
+    hideEmailOverride();
+  } catch (err) {
+    toast('Failed to load students: ' + (err && err.message || String(err)), 'danger');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Load Students'; }
+  }
+}
+
 // ── Centre badge display ──────────────────────────────────────────────────────
 function displayCentreBadges(names) {
   const wrap = document.getElementById('center-badges');
@@ -721,7 +787,12 @@ function fetchAndShowCenters(email) {
     .then(r => r.json())
     .then(function (data) {
       const centers = (data.centers || []).filter(Boolean);
-      if (centers.length) displayCentreBadges(centers);
+      if (centers.length) {
+        displayCentreBadges(centers);
+        hideEmailOverride();
+      } else {
+        showEmailOverride(email);
+      }
     })
     .catch(function () {});
 }
