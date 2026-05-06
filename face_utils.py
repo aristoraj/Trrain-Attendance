@@ -78,11 +78,11 @@ class FaceCache:
 
     @property
     def age_seconds(self):
-        return time.time() - self._timestamp if self._data else None
+        return time.time() - self._timestamp if self._data is not None else None
 
     @property
     def size(self):
-        return len(self._data) if self._data else 0
+        return len(self._data) if self._data is not None else 0
 
 
 # ── Image helpers ─────────────────────────────────────────────────────────────

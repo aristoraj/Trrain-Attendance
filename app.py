@@ -99,8 +99,11 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
         students = zoho.get_students(centers=centers, batch_ids=batch_ids, env=env)
-        _get_cache(centers, env).set(students)
-        logger.info(f"[BG] Cache warm — {len(students)} students ({scope})")
+        if students:
+            _get_cache(centers, env).set(students)
+            logger.info(f"[BG] Cache warm — {len(students)} students ({scope})")
+        else:
+            logger.warning(f"[BG] Zoho returned 0 students ({scope}) — not caching empty result")
     except Exception as e:
         logger.error(f"[BG] Student load failed: {e}")
     finally:
@@ -112,7 +115,9 @@ def get_students_cached(centers: list = None, env: str = "") -> list:
     cache = _get_cache(centers=centers, env=env)
     students = cache.get()
     if students is not None:
-        logger.info(f"Cache hit — {cache.size} students (age: {cache.age_seconds:.0f}s)")
+        age = cache.age_seconds
+        logger.info(f"Cache hit — {cache.size} students (age: {age:.0f}s)" if age is not None
+                    else f"Cache hit — {cache.size} students (just loaded)")
     return students  # None means cache is cold (caller should trigger background load)
 
 
@@ -505,12 +510,14 @@ def load_students():
             "encodings":      [embedding],
         })
 
-    with _scope_caches_lock:
-        if scope_key not in _scope_caches:
-            _scope_caches[scope_key] = FaceCache(ttl=CACHE_TTL_SECONDS)
-        _scope_caches[scope_key].set(students)
-
-    logger.info(f"SDK seeded {len(students)} students into cache key '{scope_key}'")
+    if students:
+        with _scope_caches_lock:
+            if scope_key not in _scope_caches:
+                _scope_caches[scope_key] = FaceCache(ttl=CACHE_TTL_SECONDS)
+            _scope_caches[scope_key].set(students)
+        logger.info(f"SDK seeded {len(students)} students into cache key '{scope_key}'")
+    else:
+        logger.warning(f"SDK load-students: 0 valid embeddings in {len(raw_records)} records for scope '{scope_key}'")
     return jsonify({"success": True, "loaded": len(students), "scope_key": scope_key})
 
 
