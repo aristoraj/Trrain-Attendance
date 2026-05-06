@@ -14,7 +14,7 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN,
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_DATA_CENTER,
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
-    ZOHO_BATCHES_REPORT, FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
+    ZOHO_BATCHES_REPORT, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
     ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
@@ -163,7 +163,7 @@ class ZohoCreatorAPI:
         (by record ID or display name).
         """
         url = f"{self._base_url}/report/{ZOHO_BATCHES_REPORT}"
-        criteria = f'({FIELD_BATCH_STATUS}=="Ongoing")'
+        criteria = '(Batch_Status=="Ongoing")'
         center_set = set(centers)
         batch_ids: list[str] = []
         page_start = 1
