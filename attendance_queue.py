@@ -290,7 +290,7 @@ class AttendanceQueue:
             rows = conn.execute(
                 self._q(
                     "SELECT student_id FROM attendance_queue "
-                    "WHERE date_str=? AND status IN ('PENDING','PROCESSING','POSTED')"
+                    "WHERE date_str=? AND status IN ('PENDING','PROCESSING','POSTED','SDK_POSTED')"
                 ),
                 (today,),
             ).fetchall()
@@ -311,7 +311,7 @@ class AttendanceQueue:
                 self._q(
                     "SELECT COUNT(*) AS cnt FROM attendance_queue "
                     "WHERE student_id=? AND date_str=? "
-                    "AND status IN ('PENDING','PROCESSING','POSTED')"
+                    "AND status IN ('PENDING','PROCESSING','POSTED','SDK_POSTED')"
                 ),
                 (student_id, date_str),
             ).fetchone()["cnt"]
@@ -321,6 +321,21 @@ class AttendanceQueue:
                 self._mark_in_memory(student_id, date_str)
             return True
         return False
+
+    def mark_attended(self, student_id: str, student_name: str, date_str: str) -> None:
+        """Mark attendance posted via Zoho SDK — writes DB record for dedup durability."""
+        now = datetime.now().isoformat()
+        sql = self._q("""
+            INSERT INTO attendance_queue
+                (student_id, student_name, date_str,
+                 status, attempts, created_at, updated_at, next_retry_at, environment)
+            VALUES (?, ?, ?, 'SDK_POSTED', 0, ?, ?, ?, 'sdk')
+        """)
+        with self._db() as conn:
+            conn.execute(sql, (student_id, student_name, date_str, now, now, now))
+        with self._lock:
+            self._mark_in_memory(student_id, date_str)
+        logger.info(f"SDK attendance marked for {student_name} ({date_str})")
 
     def enqueue(self, student_id: str, student_name: str, date_str: str,
                 environment: str = "") -> int:

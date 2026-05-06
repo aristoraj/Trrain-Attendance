@@ -30,10 +30,15 @@ from config import (
     CACHE_TTL_SECONDS, SELF_URL, ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_REPORT,
     RENDER_API_KEY, RENDER_SERVICE_ID, ADMIN_SECRET,
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT,
+    ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
+    FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
+    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
+    FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
+    FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
 )
 from face_utils import (
     FaceCache, decode_base64_image,
-    encode_face_with_bbox, find_best_match, embedding_to_json,
+    encode_face_with_bbox, find_best_match, embedding_to_json, json_to_embedding,
 )
 from liveness_utils import check_liveness
 from zoho_api import ZohoCreatorAPI
@@ -296,17 +301,10 @@ def verify():
                 "error": "Liveness check failed. Please blink naturally in front of the camera.",
             }), 400
 
-        user_email = data.get("user_email") or None
-        env        = _resolve_env(data.get("zoho_environment"))
-
-        # Resolve the logged-in user's centres; fall back to full load if unknown
-        centers = None
-        if user_email:
-            fetched = get_user_centers_cached(user_email, env=env)
-            if fetched:
-                centers = fetched
-            else:
-                logger.info(f"No centres found for {user_email} — loading all students")
+        user_email      = data.get("user_email") or None
+        env             = _resolve_env(data.get("zoho_environment"))
+        scope_key_in    = (data.get("scope_key") or "").strip() or None
+        use_sdk_posting = bool(data.get("use_sdk_posting", False))
 
         # ── 1. Decode image ───────────────────────────────────────────────────
         try:
@@ -335,23 +333,44 @@ def verify():
                 "error":   "Live face not detected. Please ensure you are in front of the camera.",
             }), 400
 
-        # ── 4. Load student encodings (centre-scoped cache) ──────────────────
-        students = get_students_cached(centers=centers, env=env)
-        if students is None:
-            # Cache is cold — start background load and ask frontend to retry
-            key = _build_scope_key(centers, env)
-            with _preloading_lock:
-                if key not in _preloading_keys:
-                    _preloading_keys.add(key)
-                    threading.Thread(
-                        target=_load_students_bg, args=(centers,), kwargs={"env": env}, daemon=True
-                    ).start()
-            return jsonify({
-                "success":     False,
-                "loading":     True,
-                "retry_after": 15,
-                "error":       "Loading student data, please wait and try again in 15 seconds.",
-            }), 503
+        # ── 4. Load student encodings ─────────────────────────────────────────
+        if scope_key_in:
+            # SDK pre-seeded the cache — look up directly by scope_key
+            with _scope_caches_lock:
+                cache = _scope_caches.get(scope_key_in)
+            if cache is None:
+                return jsonify({
+                    "success":     False,
+                    "loading":     True,
+                    "retry_after": 5,
+                    "error":       "Student data not loaded yet. Please wait and try again.",
+                }), 503
+            students = cache.get()
+        else:
+            # Server-side loading — resolve centres then fetch from Zoho API
+            centers = None
+            if user_email:
+                fetched = get_user_centers_cached(user_email, env=env)
+                if fetched:
+                    centers = fetched
+                else:
+                    logger.info(f"No centres found for {user_email} — loading all students")
+            students = get_students_cached(centers=centers, env=env)
+            if students is None:
+                key = _build_scope_key(centers, env)
+                with _preloading_lock:
+                    if key not in _preloading_keys:
+                        _preloading_keys.add(key)
+                        threading.Thread(
+                            target=_load_students_bg, args=(centers,), kwargs={"env": env}, daemon=True
+                        ).start()
+                return jsonify({
+                    "success":     False,
+                    "loading":     True,
+                    "retry_after": 15,
+                    "error":       "Loading student data, please wait and try again in 15 seconds.",
+                }), 503
+
         if not students:
             return jsonify({
                 "success": False,
@@ -372,7 +391,7 @@ def verify():
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
-        # ── 6. Dedup check (in-memory O(1) + SQLite <1ms — no Zoho call) ──────
+        # ── 6. Dedup check (in-memory O(1) + DB <1ms) ────────────────────────
         today_str = datetime.now().strftime("%d-%b-%Y")
         if att_queue.is_already_marked(best_match["id"], today_str):
             logger.info(f"Duplicate blocked for {best_match['name']}")
@@ -389,17 +408,30 @@ def verify():
                 "message": f"{best_match['name']} is already marked present today.",
             })
 
-        # ── 7. Enqueue to SQLite + return success (Zoho sync happens async) ───
-        queue_id = att_queue.enqueue(
-            student_id=best_match["id"],
-            student_name=best_match["name"],
-            date_str=today_str,
-            environment=env,
-        )
-        logger.info(
-            f"Attendance queued for {best_match['name']} "
-            f"(queue #{queue_id}, liveness={liveness_score:.2f})"
-        )
+        # ── 7. Record attendance ──────────────────────────────────────────────
+        if use_sdk_posting:
+            # SDK will post to Zoho; just mark in-memory + DB for dedup
+            att_queue.mark_attended(
+                student_id=best_match["id"],
+                student_name=best_match["name"],
+                date_str=today_str,
+            )
+            logger.info(
+                f"SDK attendance pre-marked for {best_match['name']} "
+                f"(liveness={liveness_score:.2f})"
+            )
+        else:
+            # Queue to SQLite; background worker posts to Zoho
+            queue_id = att_queue.enqueue(
+                student_id=best_match["id"],
+                student_name=best_match["name"],
+                date_str=today_str,
+                environment=env,
+            )
+            logger.info(
+                f"Attendance queued for {best_match['name']} "
+                f"(queue #{queue_id}, liveness={liveness_score:.2f})"
+            )
 
         # Save this verified live capture as an angle-variant embedding (self-learning)
         _emb_json = embedding_to_json(submitted_encoding)
@@ -413,19 +445,88 @@ def verify():
             "success":           True,
             "matched":           True,
             "duplicate":         False,
+            "use_sdk_posting":   use_sdk_posting,
             "student": {
                 "id":          best_match["id"],
                 "name":        best_match["name"],
                 "roll_number": best_match.get("student_number", ""),
             },
             "confidence":        confidence,
-            "attendance_posted": True,
+            "attendance_posted": not use_sdk_posting,
             "message":           f"Welcome, {best_match['name']}! Attendance marked successfully.",
         })
 
     except Exception as e:
         logger.exception("Unexpected error in /api/verify")
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
+
+
+# ─── SDK data-loading endpoints ───────────────────────────────────────────────
+
+@app.route("/api/config")
+def api_config():
+    """Return field/report names so the frontend SDK loader can use dynamic names."""
+    return jsonify({
+        "app_name": ZOHO_APP_NAME,
+        "reports": {
+            "students":        ZOHO_STUDENT_REPORT,
+            "attendance_form": ZOHO_ATTENDANCE_FORM,
+            "batches":         ZOHO_BATCHES_REPORT,
+            "centres":         ZOHO_CENTRES_REPORT,
+        },
+        "fields": {
+            "student_embedding": FIELD_STUDENT_EMBEDDING,
+            "student_name":      FIELD_STUDENT_NAME,
+            "student_number":    FIELD_STUDENT_NUMBER,
+            "att_student":       FIELD_ATT_STUDENT,
+            "att_date":          FIELD_ATT_DATE,
+            "att_status":        FIELD_ATT_STATUS,
+            "centre_email":      FIELD_CENTRE_LOGIN_EMAIL,
+            "centre_name":       FIELD_CENTRE_NAME,
+            "batch_status":      FIELD_BATCH_STATUS,
+            "batch_center":      FIELD_BATCH_CENTER,
+            "student_batch":     FIELD_STUDENT_BATCH,
+        },
+    })
+
+
+@app.route("/api/load-students", methods=["POST"])
+def load_students():
+    """
+    Accept raw Zoho Creator records fetched by the Widget SDK and seed the face cache.
+
+    Request JSON:
+    {
+        "records":   [ ...raw Zoho trainee records... ],
+        "scope_key": "C:id1,id2"   ← built by the frontend from centre IDs
+    }
+    """
+    data        = request.get_json(force=True) or {}
+    raw_records = data.get("records", [])
+    scope_key   = (data.get("scope_key") or "").strip() or "ALL"
+
+    students = []
+    for rec in raw_records:
+        embedding_raw = (rec.get(FIELD_STUDENT_EMBEDDING) or "").strip()
+        if not embedding_raw or not embedding_raw.startswith("["):
+            continue
+        embedding = json_to_embedding(embedding_raw)
+        if embedding is None:
+            continue
+        students.append({
+            "id":             str(rec.get("ID") or rec.get("id") or ""),
+            "name":           str(rec.get(FIELD_STUDENT_NAME) or rec.get("Name") or ""),
+            "student_number": str(rec.get(FIELD_STUDENT_NUMBER) or ""),
+            "encodings":      [embedding],
+        })
+
+    with _scope_caches_lock:
+        if scope_key not in _scope_caches:
+            _scope_caches[scope_key] = FaceCache(ttl=CACHE_TTL_SECONDS)
+        _scope_caches[scope_key].set(students)
+
+    logger.info(f"SDK seeded {len(students)} students into cache key '{scope_key}'")
+    return jsonify({"success": True, "loaded": len(students), "scope_key": scope_key})
 
 
 # ─── Admin: queue sync status ─────────────────────────────────────────────────

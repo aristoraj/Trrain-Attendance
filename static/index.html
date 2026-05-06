@@ -436,17 +436,23 @@ const urlParams  = new URLSearchParams(window.location.search);
 let USER_EMAIL = (urlParams.get('user_email') || urlParams.get('email') || '').trim();
 let ZOHO_ENV   = (urlParams.get('zoho_env') || '').trim();  // e.g. "development"
 
+// ── SDK data-loading state ────────────────────────────────────────────────────
+let APP_LINK_NAME = '';    // from SDK getInitParams().appLinkName
+let _SCOPE_KEY    = 'ALL'; // built after SDK data load (e.g. "C:id1,id2")
+let _SDK_MODE     = false; // true when inside Zoho Creator widget with app name
+let _dataLoaded   = false; // true once student cache is seeded (SDK or server-side)
+let _dataLoading  = false; // prevent concurrent loads
+let _cfg          = null;  // cached /api/config response
+
 // Tracks whether Zoho init has completed (success or exhausted retries)
 let _zohoInitDone = false;
 let _zohoInitAttempts = 0;
 
 if (USER_EMAIL) {
-  // Got email from URL — no need to wait for SDK
+  // Got email from URL — SDK init still runs (may provide appLinkName for SDK mode)
   console.log('[FaceVerify] Got email from URL param:', USER_EMAIL);
-  _zohoInitDone = true;
-  fetchAndShowCenters(USER_EMAIL);
+  tryInitZohoUser();
 } else {
-  // Fall back to Zoho Widget SDK
   tryInitZohoUser();
 }
 
@@ -463,6 +469,8 @@ function tryInitZohoUser() {
     } else {
       console.warn('[FaceVerify] ZOHO.CREATOR SDK not available after 10 s');
       _zohoInitDone = true;
+      // No SDK — any URL-param email still shows centres via server
+      if (USER_EMAIL) fetchAndShowCenters(USER_EMAIL);
     }
     return;
   }
@@ -480,26 +488,44 @@ function tryInitZohoUser() {
       const raw = JSON.stringify(params);
       console.log('[FaceVerify] getInitParams:', raw);
       _showSdkDebug('params: ' + raw);
-      USER_EMAIL = (params && (params.loginUser || params.loginName || params.email)) || '';
+
+      if (!USER_EMAIL) {
+        USER_EMAIL = (params && (params.loginUser || params.loginName || params.email)) || '';
+      }
+      APP_LINK_NAME = (params && params.appLinkName) || '';
+
       // Extract environment from envUrlFragment: "/environment/development" → "development"
       if (!ZOHO_ENV && params && params.envUrlFragment) {
         const m = params.envUrlFragment.match(/\/environment\/(\w+)/);
         if (m) ZOHO_ENV = m[1];
       }
-      console.log('[FaceVerify] env:', ZOHO_ENV || 'production');
-      if (USER_EMAIL) {
-        console.log('[FaceVerify] Logged in as:', USER_EMAIL);
+      console.log('[FaceVerify] env:', ZOHO_ENV || 'production', 'app:', APP_LINK_NAME);
+
+      _zohoInitDone = true;
+
+      if (USER_EMAIL && APP_LINK_NAME) {
+        // Full SDK mode: load students via Zoho Creator DATA API
+        _SDK_MODE = true;
+        loadDataViaSdk(USER_EMAIL).catch(function (err) {
+          console.error('[SDK] loadDataViaSdk failed — falling back to server-side:', err);
+          _showSdkDebug('SDK load error: ' + (err && err.message || String(err)));
+          _SDK_MODE  = false;
+          _dataLoaded = true;   // server-side 503-retry path takes over
+          fetchAndShowCenters(USER_EMAIL);
+        });
+      } else if (USER_EMAIL) {
+        // SDK available but no appLinkName — use server-side data path
         fetchAndShowCenters(USER_EMAIL);
       } else {
         console.warn('[FaceVerify] No email in params:', raw);
       }
-      _zohoInitDone = true;
     })
     .catch(function (e) {
       const msg = e && (e.message || String(e));
       console.warn('[FaceVerify] Zoho SDK init failed:', e);
       _showSdkDebug('SDK error: ' + msg);
       _zohoInitDone = true;
+      if (USER_EMAIL) fetchAndShowCenters(USER_EMAIL);
     });
 }
 
@@ -520,6 +546,173 @@ function waitForZohoInit(maxMs) {
   });
 }
 
+// ── SDK data loading ──────────────────────────────────────────────────────────
+
+async function loadDataViaSdk(email) {
+  if (_dataLoading) return;
+  _dataLoading = true;
+  _dataLoaded  = false;
+
+  try {
+    setStatus('active', 'Loading student data from Zoho…');
+
+    // 1. Fetch field/report config from backend
+    if (!_cfg) {
+      _cfg = await fetch('/api/config').then(r => r.json());
+    }
+    const cfg = _cfg;
+
+    // 2. Fetch this user's centres via SDK
+    const centreResp = await ZOHO.CREATOR.DATA.getRecords({
+      appName:    APP_LINK_NAME,
+      reportName: cfg.reports.centres,
+      criteria:   '(' + cfg.fields.centre_email + '=="' + email + '")',
+      page:       1,
+      pageSize:   200,
+    });
+    const centreRecords = (centreResp && centreResp.data) || [];
+
+    // Display centre badges
+    const centreNames = centreRecords
+      .map(r => r[cfg.fields.centre_name] || '')
+      .filter(Boolean);
+    if (centreNames.length) displayCentreBadges(centreNames);
+
+    // Build scope key from sorted centre IDs (must match backend _build_scope_key)
+    const centreIds = centreRecords
+      .map(r => String(r.ID || r.id || ''))
+      .filter(Boolean)
+      .sort();
+    _SCOPE_KEY = centreIds.length ? 'C:' + centreIds.join(',') : 'ALL';
+
+    // 3. Fetch ongoing batches for these centres
+    let batchCriteria = cfg.fields.batch_status + '=="Ongoing"';
+    if (centreIds.length) {
+      const centreFilter = centreIds
+        .map(id => cfg.fields.batch_center + '=="' + id + '"')
+        .join(' || ');
+      batchCriteria += ' && (' + centreFilter + ')';
+    }
+
+    const batchResp = await ZOHO.CREATOR.DATA.getRecords({
+      appName:    APP_LINK_NAME,
+      reportName: cfg.reports.batches,
+      criteria:   '(' + batchCriteria + ')',
+      page:       1,
+      pageSize:   200,
+    });
+    const batchIds = ((batchResp && batchResp.data) || [])
+      .map(r => String(r.ID || r.id || ''))
+      .filter(Boolean);
+
+    console.log('[SDK] Found', batchIds.length, 'ongoing batch(es) for', _SCOPE_KEY);
+
+    // 4. Fetch trainees — chunked by batch IDs, paginated
+    const CHUNK    = 10;  // batch IDs per SDK request
+    const allTrainees = [];
+
+    if (batchIds.length) {
+      for (let i = 0; i < batchIds.length; i += CHUNK) {
+        const chunk  = batchIds.slice(i, i + CHUNK);
+        const filter = chunk
+          .map(id => cfg.fields.student_batch + '=="' + id + '"')
+          .join(' || ');
+        let page = 1;
+        while (true) {
+          const resp = await ZOHO.CREATOR.DATA.getRecords({
+            appName:    APP_LINK_NAME,
+            reportName: cfg.reports.students,
+            criteria:   '(' + filter + ')',
+            page,
+            pageSize:   200,
+          });
+          const records = (resp && resp.data) || [];
+          allTrainees.push(...records);
+          if (records.length < 200) break;
+          page++;
+        }
+      }
+    } else if (centreIds.length) {
+      // No batches found — load all trainees for these centres
+      const centreFilter = centreIds
+        .map(id => cfg.fields.student_batch + '=="' + id + '"')
+        .join(' || ');
+      // Fallback: load without batch filter (centre-scoped but no batch)
+      let page = 1;
+      while (true) {
+        const resp = await ZOHO.CREATOR.DATA.getRecords({
+          appName:    APP_LINK_NAME,
+          reportName: cfg.reports.students,
+          page,
+          pageSize:   200,
+        });
+        const records = (resp && resp.data) || [];
+        allTrainees.push(...records);
+        if (records.length < 200) break;
+        page++;
+      }
+    }
+
+    console.log('[SDK] Fetched', allTrainees.length, 'trainee record(s)');
+    setStatus('active', 'Seeding face recognition cache…');
+
+    // 5. POST to backend to seed the face embedding cache
+    const loadResp = await fetch('/api/load-students', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY }),
+    }).then(r => r.json());
+
+    console.log('[SDK] Cache seeded:', loadResp.loaded, 'students in scope', _SCOPE_KEY);
+    _dataLoaded = true;
+    setStatus('active', 'Position your face in the oval');
+
+  } catch (err) {
+    _dataLoading = false;
+    throw err;
+  }
+  _dataLoading = false;
+}
+
+// Wait for SDK data to be loaded into backend cache (up to maxMs)
+function waitForDataLoaded(maxMs) {
+  return new Promise(function (resolve) {
+    if (_dataLoaded) { resolve(); return; }
+    const deadline = Date.now() + maxMs;
+    (function poll() {
+      if (_dataLoaded || Date.now() >= deadline) { resolve(); return; }
+      setTimeout(poll, 200);
+    })();
+  });
+}
+
+// ── Post attendance via Zoho Creator Widget SDK ───────────────────────────────
+async function postAttendanceSdk(student, dateStr) {
+  const cfg    = _cfg;
+  const record = {};
+  record[cfg.fields.att_student] = student.id;
+  record[cfg.fields.att_date]    = dateStr;
+  record[cfg.fields.att_status]  = 'Present';
+
+  await ZOHO.CREATOR.DATA.addRecord({
+    appName:  APP_LINK_NAME,
+    formName: cfg.reports.attendance_form,
+    data:     record,
+  });
+  console.log('[SDK] Attendance posted for', student.name, 'on', dateStr);
+}
+
+// ── Centre badge display ──────────────────────────────────────────────────────
+function displayCentreBadges(names) {
+  const wrap = document.getElementById('center-badges');
+  if (!wrap) return;
+  wrap.innerHTML = names.map(c =>
+    '<span class="center-badge"><i class="bi bi-geo-alt-fill" style="font-size:9px;margin-right:3px"></i>' +
+    esc(c) + '</span>'
+  ).join('');
+  wrap.style.display = 'flex';
+}
+
 function fetchAndShowCenters(email) {
   let centersUrl = '/api/user/centers?user_email=' + encodeURIComponent(email);
   if (ZOHO_ENV) centersUrl += '&zoho_environment=' + encodeURIComponent(ZOHO_ENV);
@@ -527,14 +720,7 @@ function fetchAndShowCenters(email) {
     .then(r => r.json())
     .then(function (data) {
       const centers = (data.centers || []).filter(Boolean);
-      if (!centers.length) return;
-      const wrap = document.getElementById('center-badges');
-      if (!wrap) return;
-      wrap.innerHTML = centers.map(c =>
-        '<span class="center-badge"><i class="bi bi-geo-alt-fill" style="font-size:9px;margin-right:3px"></i>' +
-        c + '</span>'
-      ).join('');
-      wrap.style.display = 'flex';
+      if (centers.length) displayCentreBadges(centers);
     })
     .catch(function () {});
 }
@@ -736,10 +922,21 @@ function drawPath(landmarks, indices, w, h, color, lineWidth, close) {
 async function captureAndVerify(cachedImage = null) {
   state.verifying = true;
 
-  // Ensure Zoho init has resolved so USER_EMAIL is set before the cache loads
+  // Ensure Zoho init has resolved so USER_EMAIL / APP_LINK_NAME are set
   if (!_zohoInitDone) {
     setStatus('active', 'Authenticating user…');
     await waitForZohoInit(5000);
+  }
+
+  // In SDK mode, wait for student data to be seeded into backend cache
+  if (_SDK_MODE && !_dataLoaded) {
+    setStatus('active', 'Loading student data… please wait');
+    await waitForDataLoaded(30000);
+    if (!_dataLoaded) {
+      showError('Student data not ready. Please refresh and try again.');
+      state.verifying = false;
+      return;
+    }
   }
 
   let imageData = cachedImage;
@@ -776,8 +973,13 @@ async function captureAndVerify(cachedImage = null) {
       image:          imageData,
       blink_verified: true,
     };
-    if (USER_EMAIL) body.user_email = USER_EMAIL;
-    if (ZOHO_ENV)   body.zoho_environment = ZOHO_ENV;
+    if (_SDK_MODE) {
+      body.scope_key        = _SCOPE_KEY;
+      body.use_sdk_posting  = true;
+    } else {
+      if (USER_EMAIL) body.user_email        = USER_EMAIL;
+      if (ZOHO_ENV)   body.zoho_environment  = ZOHO_ENV;
+    }
 
     const resp = await fetch(`${API_BASE}/api/verify`, {
       method:  'POST',
@@ -799,7 +1001,7 @@ async function captureAndVerify(cachedImage = null) {
     }
     spinnerEl.classList.remove('show');
 
-    // 503 with loading:true — cache warming up; reuse same captured image on retry
+    // 503 with loading:true — only in server-side mode (SDK mode pre-seeds cache)
     if (resp.status === 503 && data.loading) {
       const secs = data.retry_after || 15;
       let countdown = secs;
@@ -830,6 +1032,19 @@ async function captureAndVerify(cachedImage = null) {
 
     if (data.matched) {
       activateStep(4);
+
+      // SDK mode: post attendance to Zoho Creator directly via Widget SDK
+      if (data.use_sdk_posting) {
+        const todayStr = _getTodayStr();
+        try {
+          await postAttendanceSdk(data.student, todayStr);
+          data.attendance_posted = true;
+        } catch (sdkErr) {
+          console.error('[SDK] addRecord failed:', sdkErr);
+          data.attendance_posted = false;
+        }
+      }
+
       showSuccess(data);
       setTimeout(() => {
         for (let i = 1; i <= 4; i++) {
@@ -848,6 +1063,13 @@ async function captureAndVerify(cachedImage = null) {
     showError(`Network error: ${err.message}`);
     resetForRetry();
   }
+}
+
+// Return today's date in "DD-Mon-YYYY" format (same as Python strftime "%d-%b-%Y")
+function _getTodayStr() {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const d = new Date();
+  return String(d.getDate()).padStart(2, '0') + '-' + months[d.getMonth()] + '-' + d.getFullYear();
 }
 
 // ── Result Display ────────────────────────────────────────────────────────────
@@ -985,17 +1207,27 @@ async function refreshCache() {
   btn.disabled = true;
   btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Refreshing...';
   try {
-    const params = new URLSearchParams();
-    if (USER_EMAIL) params.set('user_email', USER_EMAIL);
-    if (ZOHO_ENV)   params.set('zoho_environment', ZOHO_ENV);
-    const qs  = params.toString();
-    const url = `${API_BASE}/api/cache/refresh${qs ? '?' + qs : ''}`;
-    const resp = await fetch(url, { method: 'POST' });
-    const data = await resp.json();
-    if (data.success) {
-      toast(`✓ Student database refreshed — ${data.students_loaded} students loaded`, 'success');
+    if (_SDK_MODE && USER_EMAIL) {
+      // Re-fetch from Zoho Creator SDK and re-seed backend cache
+      _dataLoaded  = false;
+      _dataLoading = false;
+      _cfg = null;   // re-fetch config too
+      await loadDataViaSdk(USER_EMAIL);
+      toast('✓ Student database refreshed via SDK', 'success');
     } else {
-      toast(`Cache refresh failed: ${data.error || 'Unknown error'}`, 'danger');
+      // Server-side refresh via Zoho REST API
+      const params = new URLSearchParams();
+      if (USER_EMAIL) params.set('user_email', USER_EMAIL);
+      if (ZOHO_ENV)   params.set('zoho_environment', ZOHO_ENV);
+      const qs  = params.toString();
+      const url = `${API_BASE}/api/cache/refresh${qs ? '?' + qs : ''}`;
+      const resp = await fetch(url, { method: 'POST' });
+      const data = await resp.json();
+      if (data.success) {
+        toast(`✓ Student database refreshed — ${data.students_loaded} students loaded`, 'success');
+      } else {
+        toast(`Cache refresh failed: ${data.error || 'Unknown error'}`, 'danger');
+      }
     }
   } catch (e) {
     toast(`Refresh failed: ${e.message}`, 'danger');
