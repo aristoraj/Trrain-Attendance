@@ -530,6 +530,8 @@ function tryInitZohoUser() {
 }
 
 function _showSdkDebug(msg) {
+  // Only show debug banner when ?debug=1 is in the URL — never in production
+  if (!urlParams.get('debug')) return;
   const el = document.getElementById('sdk-debug');
   if (el) { el.textContent = msg; el.style.display = 'block'; }
 }
@@ -974,12 +976,13 @@ async function captureAndVerify(cachedImage = null) {
       blink_verified: true,
     };
     if (_SDK_MODE) {
-      body.scope_key        = _SCOPE_KEY;
-      body.use_sdk_posting  = true;
+      // SDK loaded the cache — tell backend to use scope_key directly (no Zoho API call needed)
+      body.scope_key = _SCOPE_KEY;
     } else {
-      if (USER_EMAIL) body.user_email        = USER_EMAIL;
-      if (ZOHO_ENV)   body.zoho_environment  = ZOHO_ENV;
+      if (USER_EMAIL) body.user_email       = USER_EMAIL;
     }
+    // Always include env so backend queue uses the right Zoho environment
+    if (ZOHO_ENV) body.zoho_environment = ZOHO_ENV;
 
     const resp = await fetch(`${API_BASE}/api/verify`, {
       method:  'POST',
@@ -1032,19 +1035,6 @@ async function captureAndVerify(cachedImage = null) {
 
     if (data.matched) {
       activateStep(4);
-
-      // SDK mode: post attendance to Zoho Creator directly via Widget SDK
-      if (data.use_sdk_posting) {
-        const todayStr = _getTodayStr();
-        try {
-          await postAttendanceSdk(data.student, todayStr);
-          data.attendance_posted = true;
-        } catch (sdkErr) {
-          console.error('[SDK] addRecord failed:', sdkErr);
-          data.attendance_posted = false;
-        }
-      }
-
       showSuccess(data);
       setTimeout(() => {
         for (let i = 1; i <= 4; i++) {

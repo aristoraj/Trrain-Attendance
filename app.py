@@ -301,10 +301,9 @@ def verify():
                 "error": "Liveness check failed. Please blink naturally in front of the camera.",
             }), 400
 
-        user_email      = data.get("user_email") or None
-        env             = _resolve_env(data.get("zoho_environment"))
-        scope_key_in    = (data.get("scope_key") or "").strip() or None
-        use_sdk_posting = bool(data.get("use_sdk_posting", False))
+        user_email   = data.get("user_email") or None
+        env          = _resolve_env(data.get("zoho_environment"))
+        scope_key_in = (data.get("scope_key") or "").strip() or None
 
         # ── 1. Decode image ───────────────────────────────────────────────────
         try:
@@ -408,30 +407,17 @@ def verify():
                 "message": f"{best_match['name']} is already marked present today.",
             })
 
-        # ── 7. Record attendance ──────────────────────────────────────────────
-        if use_sdk_posting:
-            # SDK will post to Zoho; just mark in-memory + DB for dedup
-            att_queue.mark_attended(
-                student_id=best_match["id"],
-                student_name=best_match["name"],
-                date_str=today_str,
-            )
-            logger.info(
-                f"SDK attendance pre-marked for {best_match['name']} "
-                f"(liveness={liveness_score:.2f})"
-            )
-        else:
-            # Queue to SQLite; background worker posts to Zoho
-            queue_id = att_queue.enqueue(
-                student_id=best_match["id"],
-                student_name=best_match["name"],
-                date_str=today_str,
-                environment=env,
-            )
-            logger.info(
-                f"Attendance queued for {best_match['name']} "
-                f"(queue #{queue_id}, liveness={liveness_score:.2f})"
-            )
+        # ── 7. Enqueue to SQLite; background worker posts to Zoho ────────────
+        queue_id = att_queue.enqueue(
+            student_id=best_match["id"],
+            student_name=best_match["name"],
+            date_str=today_str,
+            environment=env,
+        )
+        logger.info(
+            f"Attendance queued for {best_match['name']} "
+            f"(queue #{queue_id}, liveness={liveness_score:.2f})"
+        )
 
         # Save this verified live capture as an angle-variant embedding (self-learning)
         _emb_json = embedding_to_json(submitted_encoding)
@@ -445,14 +431,13 @@ def verify():
             "success":           True,
             "matched":           True,
             "duplicate":         False,
-            "use_sdk_posting":   use_sdk_posting,
             "student": {
                 "id":          best_match["id"],
                 "name":        best_match["name"],
                 "roll_number": best_match.get("student_number", ""),
             },
             "confidence":        confidence,
-            "attendance_posted": not use_sdk_posting,
+            "attendance_posted": True,
             "message":           f"Welcome, {best_match['name']}! Attendance marked successfully.",
         })
 
