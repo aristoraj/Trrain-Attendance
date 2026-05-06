@@ -159,7 +159,8 @@ class ZohoCreatorAPI:
     def get_ongoing_batch_ids(self, centers: list, env: str = "") -> list[str]:
         """
         Return Zoho record IDs of all Ongoing batches that belong to the given centers.
-        Used to scope the student cache to active trainees only.
+        Fetches all Ongoing batches and filters Python-side against the centers list
+        (by record ID or display name).
         """
         url = f"{self._base_url}/report/{ZOHO_BATCHES_REPORT}"
         criteria = f'({FIELD_BATCH_STATUS}=="Ongoing")'
@@ -185,7 +186,8 @@ class ZohoCreatorAPI:
                     c_id   = str(center_field.get("ID") or "")
                     c_name = str(center_field.get("display_value") or "")
                 elif isinstance(center_field, str):
-                    c_id, c_name = "", center_field.strip()
+                    c_id   = ""
+                    c_name = center_field.strip()
                 else:
                     c_id = c_name = ""
 
@@ -210,33 +212,28 @@ class ZohoCreatorAPI:
 
         Args:
             centers:   List of center IDs/names — Python-side fallback filter.
-            batch_ids: Ongoing batch record IDs — passed as server-side criteria
-                       so Zoho only returns students in those batches (much faster).
+            batch_ids: Ongoing batch record IDs — filtered Python-side by checking
+                       the Batch_ID lookup field dict (same approach as centre→batch).
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
         students = []
         page_start = 1
         page_size = 200
 
-        # Build server-side criteria from batch_ids to reduce response size.
-        # Batch_ID is a lookup field — Zoho Creator API requires the .ID suffix
-        # when filtering a lookup field by its system record ID.
-        if batch_ids:
-            batch_criteria = "||".join(
-                f'({FIELD_STUDENT_BATCH}.ID=="{bid}")' for bid in batch_ids
-            )
-            scope_label = f"{len(batch_ids)} ongoing batch(es)"
-        else:
-            batch_criteria = None
-            scope_label = f"centers {centers}" if centers else "all students"
+        batch_id_set = set(batch_ids) if batch_ids else set()
+        center_set   = set(centers)   if centers   else set()
 
-        center_set = set(centers) if centers else set()
+        if batch_ids:
+            scope_label = f"{len(batch_ids)} ongoing batch(es)"
+        elif centers:
+            scope_label = f"centers {centers}"
+        else:
+            scope_label = "all students"
+
         logger.info(f"Fetching students from Zoho Creator ({scope_label})...")
 
         while True:
             params: dict = {"from": page_start, "limit": page_size, **self._env_param(env)}
-            if batch_criteria:
-                params["criteria"] = batch_criteria
             resp = self._request("get", url, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
@@ -245,8 +242,23 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                # Center filter — Python-side safety net when no batch filter
-                if center_set and not batch_ids:
+                # ── Batch filter (Python-side lookup match, same as centre→batch) ──
+                if batch_id_set:
+                    batch_field = record.get(FIELD_STUDENT_BATCH)
+                    if isinstance(batch_field, dict):
+                        b_id   = str(batch_field.get("ID") or "")
+                        b_name = str(batch_field.get("display_value") or "")
+                    elif isinstance(batch_field, str):
+                        b_id   = ""
+                        b_name = batch_field.strip()
+                    else:
+                        b_id = b_name = ""
+
+                    if b_id not in batch_id_set and b_name not in batch_id_set:
+                        continue
+
+                # ── Centre filter (Python-side safety net when no batch filter) ──
+                elif center_set:
                     center_field = record.get(FIELD_STUDENT_CENTER)
                     if isinstance(center_field, dict):
                         record_center_id   = str(center_field.get("ID") or "")
