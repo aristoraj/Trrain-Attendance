@@ -613,8 +613,9 @@ async function loadDataViaSdk(email) {
     // 3. Fetch ongoing batches for these centres
     let batchCriteria = cfg.fields.batch_status + '=="Ongoing"';
     if (centreIds.length) {
+      // Centres is a lookup field — use .ID suffix to filter by system record ID
       const centreFilter = centreIds
-        .map(id => cfg.fields.batch_center + '=="' + id + '"')
+        .map(id => cfg.fields.batch_center + '.ID=="' + id + '"')
         .join(' || ');
       batchCriteria += ' && (' + centreFilter + ')';
     }
@@ -639,8 +640,9 @@ async function loadDataViaSdk(email) {
     if (batchIds.length) {
       for (let i = 0; i < batchIds.length; i += CHUNK) {
         const chunk  = batchIds.slice(i, i + CHUNK);
+        // Batch_ID is a lookup field — use .ID suffix to filter by system record ID
         const filter = chunk
-          .map(id => cfg.fields.student_batch + '=="' + id + '"')
+          .map(id => cfg.fields.student_batch + '.ID=="' + id + '"')
           .join(' || ');
         let page = 1;
         while (true) {

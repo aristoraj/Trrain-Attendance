@@ -218,10 +218,12 @@ class ZohoCreatorAPI:
         page_start = 1
         page_size = 200
 
-        # Build server-side criteria from batch_ids to reduce response size
+        # Build server-side criteria from batch_ids to reduce response size.
+        # Batch_ID is a lookup field — Zoho Creator API requires the .ID suffix
+        # when filtering a lookup field by its system record ID.
         if batch_ids:
             batch_criteria = "||".join(
-                f'({FIELD_STUDENT_BATCH}=="{bid}")' for bid in batch_ids
+                f'({FIELD_STUDENT_BATCH}.ID=="{bid}")' for bid in batch_ids
             )
             scope_label = f"{len(batch_ids)} ongoing batch(es)"
         else:
