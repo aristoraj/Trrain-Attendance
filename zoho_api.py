@@ -231,11 +231,6 @@ class ZohoCreatorAPI:
 
         while True:
             params: dict = {"from": page_start, "limit": page_size}
-            # Layer 1 — server-side: only students whose batch is currently Ongoing.
-            # Batch_ID.Batch_Status is a Zoho joined field available in the Trainees report.
-            if batch_ids or centers:
-                params["criteria"] = '(Batch_ID.Batch_Status=="Ongoing")'
-
             resp = self._request("get", url, env=env, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
@@ -244,12 +239,6 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                # Layer 1b — only skip when status field is present AND not Ongoing
-                # (if field is absent from report columns, None → don't skip)
-                batch_status = record.get("Batch_ID.Batch_Status")
-                if batch_status and batch_status != "Ongoing":
-                    continue
-
                 # Layer 2 — Python-side batch ID match (lookup dict .ID or .display_value)
                 if batch_id_set:
                     batch_field = record.get(FIELD_STUDENT_BATCH)
@@ -270,9 +259,6 @@ class ZohoCreatorAPI:
 
                 # Layer 3 — Python-side centre fallback (only when batch_ids was never provided)
                 elif center_set:
-                    # Also guard against completed-batch students via the joined field
-                    if record.get("Batch_ID.Batch_Status") not in ("Ongoing", None, ""):
-                        continue
                     center_field = record.get(FIELD_STUDENT_CENTER)
                     if isinstance(center_field, dict):
                         c_id   = str(center_field.get("ID") or "")
@@ -484,7 +470,7 @@ class ZohoCreatorAPI:
 
         # ── 4. Save to Zoho Creator as backup ────────────────────────────────
         try:
-            self.save_embedding(student_id, encoding)
+            self.save_embedding(student_id, encoding, env=env)
         except Exception as e:
             logger.warning(f"Could not save Zoho embedding for '{name}': {e} (non-fatal)")
 
