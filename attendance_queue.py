@@ -257,11 +257,22 @@ class AttendanceQueue:
                     environment   TEXT    NOT NULL DEFAULT ''
                 )
             """)
-            # Migrate existing tables that pre-date the environment column
-            try:
-                conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
-            except Exception:
-                pass  # Column already exists
+            # Migrate existing tables that pre-date the environment column.
+            # On PostgreSQL a failed ALTER aborts the whole transaction, so
+            # wrap it in a savepoint so the outer _init_db() transaction survives.
+            if self._is_postgres:
+                try:
+                    conn.execute("SAVEPOINT add_env_col")
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
+                    conn.execute("RELEASE SAVEPOINT add_env_col")
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT add_env_col")
+                    conn.execute("RELEASE SAVEPOINT add_env_col")
+            else:
+                try:
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
+                except Exception:
+                    pass  # Column already exists (SQLite doesn't abort the txn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_status_retry "
                 "ON attendance_queue(status, next_retry_at)"
