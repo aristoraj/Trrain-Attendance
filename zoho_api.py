@@ -210,10 +210,10 @@ class ZohoCreatorAPI:
         Fetch student records from Zoho Creator, encode face embeddings, and
         return a list of student dicts.
 
-        Args:
-            centers:   List of center IDs/names — Python-side fallback filter.
-            batch_ids: Ongoing batch record IDs — filtered Python-side by checking
-                       the Batch_ID lookup field dict (same approach as centre→batch).
+        Three-layer filter (most → least specific):
+          1. Server-side: Batch_ID.Batch_Status=="Ongoing" (Zoho joined field)
+          2. Python-side: Batch_ID dict .ID or .display_value in batch_id_set
+          3. Python-side: Centre_Name dict .ID or .display_value in center_set (fallback)
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
         students = []
@@ -234,6 +234,11 @@ class ZohoCreatorAPI:
 
         while True:
             params: dict = {"from": page_start, "limit": page_size, **self._env_param(env)}
+            # Layer 1 — server-side: only students whose batch is currently Ongoing.
+            # Batch_ID.Batch_Status is a Zoho joined field available in the Trainees report.
+            if batch_ids or centers:
+                params["criteria"] = '(Batch_ID.Batch_Status=="Ongoing")'
+
             resp = self._request("get", url, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
@@ -242,34 +247,34 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                # ── Batch filter (Python-side lookup match, same as centre→batch) ──
+                # Layer 1b — Python-side status double-check (guards against criteria quirks)
+                if (batch_ids or centers) and record.get("Batch_ID.Batch_Status") != "Ongoing":
+                    continue
+
+                # Layer 2 — Python-side batch ID match (lookup dict .ID or .display_value)
                 if batch_id_set:
                     batch_field = record.get(FIELD_STUDENT_BATCH)
                     if isinstance(batch_field, dict):
                         b_id   = str(batch_field.get("ID") or "")
                         b_name = str(batch_field.get("display_value") or "")
                     elif isinstance(batch_field, str):
-                        b_id   = ""
-                        b_name = batch_field.strip()
+                        b_id, b_name = "", batch_field.strip()
                     else:
                         b_id = b_name = ""
-
                     if b_id not in batch_id_set and b_name not in batch_id_set:
                         continue
 
-                # ── Centre filter (Python-side safety net when no batch filter) ──
+                # Layer 3 — Python-side centre fallback (when no batch IDs available)
                 elif center_set:
                     center_field = record.get(FIELD_STUDENT_CENTER)
                     if isinstance(center_field, dict):
-                        record_center_id   = str(center_field.get("ID") or "")
-                        record_center_name = str(center_field.get("display_value") or "")
+                        c_id   = str(center_field.get("ID") or "")
+                        c_name = str(center_field.get("display_value") or "")
                     elif isinstance(center_field, str):
-                        record_center_id   = ""
-                        record_center_name = center_field.strip()
+                        c_id, c_name = "", center_field.strip()
                     else:
-                        record_center_id = record_center_name = ""
-
-                    if record_center_id not in center_set and record_center_name not in center_set:
+                        c_id = c_name = ""
+                    if c_id not in center_set and c_name not in center_set:
                         continue
 
                 student = self._process_record(record)
@@ -351,6 +356,10 @@ class ZohoCreatorAPI:
         if self._embedding_cache:
             cached = self._embedding_cache.get_local_embeddings(student_id)
             if cached:
+                # No-photo marker: permanently skip students with no enrollment photo
+                if any(c["source"] == "no_photo" for c in cached):
+                    logger.debug(f"Skipping '{name}' ({student_number}) — marked no_photo locally")
+                    return None
                 encodings = []
                 for item in cached:
                     try:
@@ -394,7 +403,14 @@ class ZohoCreatorAPI:
         # ── 2. Fallback: download photo and encode ────────────────────────────
         photo = record.get(FIELD_STUDENT_PHOTO)
         if not photo:
-            logger.warning(f"Skipping '{name}' — no photo and no stored embedding.")
+            logger.warning(f"Skipping '{name}' ({student_number}) — no photo and no stored embedding.")
+            if self._embedding_cache:
+                try:
+                    self._embedding_cache.save_local_embedding(
+                        student_id, "NO_PHOTO", source="no_photo"
+                    )
+                except Exception:
+                    pass
             return None
 
         if isinstance(photo, dict):
@@ -404,6 +420,13 @@ class ZohoCreatorAPI:
 
         if not photo_url:
             logger.warning(f"Skipping '{name}' — could not extract photo URL: {repr(photo)[:100]}")
+            if self._embedding_cache:
+                try:
+                    self._embedding_cache.save_local_embedding(
+                        student_id, "NO_PHOTO", source="no_photo"
+                    )
+                except Exception:
+                    pass
             return None
 
         if photo_url.startswith("/"):
