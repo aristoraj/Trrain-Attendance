@@ -218,6 +218,25 @@ class AttendanceQueue:
                     pass
             logger.warning(f"face_embeddings migration skipped: {e}")
 
+    def _create_student_cache_table(self, conn):
+        serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
+        autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS student_cache (
+                id             {serial} PRIMARY KEY {autoincrement},
+                student_id     TEXT NOT NULL,
+                scope_key      TEXT NOT NULL,
+                name           TEXT NOT NULL DEFAULT '',
+                student_number TEXT NOT NULL DEFAULT '',
+                updated_at     TEXT NOT NULL,
+                UNIQUE(student_id, scope_key)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sc_scope "
+            "ON student_cache(scope_key)"
+        )
+
     def _create_embeddings_table(self, conn):
         serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
         autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
@@ -303,6 +322,7 @@ class AttendanceQueue:
             self._migrate_embeddings_schema(conn)
             self._create_embeddings_table(conn)
             self._migrate_photo_url_column(conn)
+            self._create_student_cache_table(conn)
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now().strftime("%d-%b-%Y")
@@ -491,6 +511,70 @@ class AttendanceQueue:
             )
             count = cur.rowcount
         logger.info(f"Cleared {count} enrollment/no_photo embeddings from local cache.")
+        return count
+
+    # ── Persistent student cache (Option A: survive restarts) ────────────────────
+
+    def save_students_to_db(self, scope_key: str, students: list) -> None:
+        """
+        Persist student metadata for a scope key so cold starts can skip Zoho API calls.
+        Embeddings are already stored in face_embeddings; this stores id/name/number only.
+        """
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            conn.execute(self._q("DELETE FROM student_cache WHERE scope_key=?"), (scope_key,))
+            for s in students:
+                conn.execute(self._q("""
+                    INSERT INTO student_cache (student_id, scope_key, name, student_number, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""), now))
+        logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
+
+    def load_students_from_db(self, scope_key: str) -> list | None:
+        """
+        Reconstruct student list from local DB (student_cache + face_embeddings).
+        Returns list of dicts with raw_embeddings (JSON strings) for the caller to decode,
+        or None if no data exists for this scope.
+        """
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT student_id, name, student_number FROM student_cache WHERE scope_key=?"),
+                (scope_key,),
+            ).fetchall()
+        if not rows:
+            return None
+        result = []
+        for row in rows:
+            sid = row["student_id"]
+            emb_rows = self.get_local_embeddings(sid)
+            valid_embs = [
+                e for e in emb_rows
+                if e["source"] != "no_photo" and e["embedding"]
+            ]
+            if not valid_embs:
+                continue
+            result.append({
+                "id":             sid,
+                "name":           row["name"],
+                "student_number": row["student_number"],
+                "raw_embeddings": valid_embs,
+            })
+        return result if result else None
+
+    def get_all_scope_keys(self) -> list:
+        """Return all scope keys that have students stored in local DB."""
+        with self._db() as conn:
+            rows = conn.execute("SELECT DISTINCT scope_key FROM student_cache").fetchall()
+        return [r["scope_key"] for r in rows]
+
+    def clear_student_scope(self, scope_key: str) -> int:
+        """Remove all student metadata for a scope (called on manual refresh)."""
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q("DELETE FROM student_cache WHERE scope_key=?"), (scope_key,)
+            )
+            count = cur.rowcount
+        logger.info(f"Cleared {count} students from local DB for scope '{scope_key}'.")
         return count
 
     def add_verified_embedding(self, student_id: str, embedding_json: str) -> None:

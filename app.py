@@ -61,6 +61,7 @@ att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
 # ─── Per-scope face cache ──────────────────────────────────────────────────────
+
 _scope_caches: dict[str, FaceCache] = {}
 _scope_caches_lock = threading.Lock()
 
@@ -89,6 +90,48 @@ def _get_cache(centers: list = None, env: str = "") -> FaceCache:
         return _scope_caches[key]
 
 
+def _restore_face_caches_from_db() -> None:
+    """
+    On startup, rebuild FaceCaches from local DB so the app serves verify
+    requests immediately without a 60-second Zoho API round-trip.
+    Runs once at module load; failures are non-fatal (cold start falls back to Zoho).
+    """
+    try:
+        scope_keys = att_queue.get_all_scope_keys()
+        if not scope_keys:
+            logger.info("Local DB: no student data — will load from Zoho on first request.")
+            return
+        total = 0
+        for scope_key in scope_keys:
+            raw = att_queue.load_students_from_db(scope_key)
+            if not raw:
+                continue
+            students = []
+            for s in raw:
+                encodings = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+                encodings = [e for e in encodings if e is not None]
+                if encodings:
+                    students.append({
+                        "id":             s["id"],
+                        "name":           s["name"],
+                        "student_number": s["student_number"],
+                        "encodings":      encodings,
+                    })
+            if students:
+                with _scope_caches_lock:
+                    if scope_key not in _scope_caches:
+                        _scope_caches[scope_key] = FaceCache(ttl=CACHE_TTL_SECONDS)
+                    _scope_caches[scope_key].set(students)
+                total += len(students)
+                logger.info(f"Restored {len(students)} students for scope '{scope_key}' from local DB.")
+        if total:
+            logger.info(f"Cold start: {total} students loaded from local DB across {len(scope_keys)} scope(s). No Zoho API call needed.")
+        else:
+            logger.info("Local DB has scope keys but no valid embeddings — will load from Zoho on first request.")
+    except Exception as e:
+        logger.error(f"Cold start DB restore failed (will load from Zoho on first request): {e}")
+
+
 def _load_students_bg(centers: list = None, env: str = "") -> None:
     """Background worker: load + cache students without blocking an HTTP request."""
     key = _build_scope_key(centers, env)
@@ -99,7 +142,8 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
         students = zoho.get_students(centers=centers, batch_ids=batch_ids, env=env)
         if students:
             _get_cache(centers, env).set(students)
-            logger.info(f"[BG] Cache warm — {len(students)} students ({scope})")
+            att_queue.save_students_to_db(key, students)
+            logger.info(f"[BG] Cache warm — {len(students)} students ({scope}), saved to local DB.")
         else:
             logger.warning(f"[BG] Zoho returned 0 students ({scope}) — not caching empty result")
     except Exception as e:
@@ -181,6 +225,9 @@ def _keepalive_worker():
 _keepalive_thread = threading.Thread(target=_keepalive_worker, daemon=True)
 _keepalive_thread.start()
 
+# Rebuild FaceCaches from local DB so the first verify request doesn't wait 60s
+_restore_face_caches_from_db()
+
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
@@ -241,9 +288,11 @@ def cache_refresh():
     try:
         cache = _get_cache(centers=centers, env=env)
         cache.invalidate()
-        # Clear local DB enrollment embeddings so next load re-reads from Zoho
-        cleared = att_queue.clear_enrollment_embeddings()
-        logger.info(f"Refresh: cleared {cleared} local embeddings — will re-fetch from Zoho.")
+        # Clear local DB so next load re-fetches everything fresh from Zoho
+        cleared_emb = att_queue.clear_enrollment_embeddings()
+        scope_key = _build_scope_key(centers, env)
+        cleared_sc = att_queue.clear_student_scope(scope_key)
+        logger.info(f"Refresh: cleared {cleared_emb} embeddings + {cleared_sc} cached students — will re-fetch from Zoho.")
         # Trigger background reload so the HTTP response isn't blocked
         key = _build_scope_key(centers, env)
         with _preloading_lock:
