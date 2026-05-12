@@ -389,6 +389,24 @@
     }
     #btn-refresh-cache:hover:not(:disabled) { background: var(--red-h); }
     #btn-refresh-cache:disabled { opacity: 0.6; cursor: not-allowed; }
+    #btn-exit {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 48px;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    #btn-exit:hover { background: var(--red-h); }
+    .bottom-buttons { display: flex; gap: 8px; flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -495,9 +513,14 @@
       <span id="count-success">0</span>
     </div>
   </div>
-  <button id="btn-refresh-cache" onclick="refreshCache()">
-    <i class="bi bi-arrow-clockwise"></i> Refresh
-  </button>
+  <div class="bottom-buttons">
+    <button id="btn-exit" onclick="exitToReport()">
+      <i class="bi bi-box-arrow-right"></i> Exit
+    </button>
+    <button id="btn-refresh-cache" onclick="refreshCache()">
+      <i class="bi bi-arrow-clockwise"></i> Refresh
+    </button>
+  </div>
 </div>
 
 <script>
@@ -833,6 +856,10 @@ function _pauseForInactivity() {
 
 function reactivateCamera() {
   document.getElementById('inactive-overlay').classList.remove('show');
+  if (faceMeshInstance) {
+    try { faceMeshInstance.close(); } catch (_) {}
+    faceMeshInstance = null;
+  }
   _fullReset();
   startCamera();
 }
@@ -1225,6 +1252,16 @@ function esc(str) {
   const d = document.createElement('div');
   d.appendChild(document.createTextNode(str || ''));
   return d.innerHTML;
+}
+
+// ── Exit to report ────────────────────────────────────────────────────────────
+
+function exitToReport() {
+  const base = 'https://creatorapp.zoho.in/admin_trrainfoundation';
+  const path = ZOHO_ENV === 'development'
+    ? base + '/environment/development/trrain/#Report:All_Face_Attendances'
+    : base + '/trrain/#Report:All_Face_Attendances';
+  window.location.href = path;
 }
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────

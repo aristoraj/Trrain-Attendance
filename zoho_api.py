@@ -149,8 +149,8 @@ class ZohoCreatorAPI:
             return centers
 
         except Exception as e:
-            logger.warning(f"Could not fetch centres for {email}: {e} — falling back to full load")
-            return []
+            logger.warning(f"Could not fetch centres for {email}: {e}")
+            raise
 
     # ─── Batches ───────────────────────────────────────────────────────────────
 

@@ -277,7 +277,7 @@ def preload_students():
         centers = get_user_centers_cached(user_email, env=env)
     except Exception as e:
         logger.warning(f"Preload: centre lookup failed for {user_email}: {e}")
-        centers = None
+        return jsonify({"triggered": False, "message": "Centre lookup failed"})
     cache = _get_cache(centers=centers, env=env)
     if cache.get() is not None:
         return jsonify({"triggered": False, "message": "Cache already warm"})
@@ -429,11 +429,16 @@ def verify():
             # Server-side loading — resolve centres then fetch from Zoho API
             centers = None
             if user_email:
-                fetched = get_user_centers_cached(user_email, env=env)
+                try:
+                    fetched = get_user_centers_cached(user_email, env=env)
+                except Exception as e:
+                    logger.warning(f"Verify: centre lookup failed for {user_email}: {e}")
+                    return jsonify({
+                        "success": False,
+                        "error": "Could not determine your centre. Please contact admin.",
+                    }), 503
                 if fetched:
                     centers = fetched
-                else:
-                    logger.info(f"No centres found for {user_email} — loading all students")
             students = get_students_cached(centers=centers, env=env)
             if students is None:
                 key = _build_scope_key(centers, env)
