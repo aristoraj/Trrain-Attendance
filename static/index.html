@@ -19,12 +19,12 @@
     :root {
       --red:     #8B1A1A;
       --red-h:   #A52020;
-      --gold:    #C4952A;
-      --gold-h:  #E8B84A;
+      --gold:    #C8920A;
+      --gold-h:  #E8A810;
       --bg:      #FFFFFF;
       --surface: #FBF8F6;
       --border:  #E5D9CF;
-      --success: #1A7A3C;
+      --success: #2E7D32;
       --danger:  #B71C1C;
       --text:    #1A1A1A;
       --muted:   #7A6B62;
@@ -55,31 +55,6 @@
       padding: 6px 12px;
       word-break: break-all;
       font-family: monospace;
-    }
-
-    /* ── Header ─────────────────────────────────────────────────────────────── */
-    .app-header {
-      background: var(--red);
-      color: #fff;
-      padding: 10px 16px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-shrink: 0;
-      min-height: 48px;
-    }
-    .app-header .logo-icon {
-      width: 30px; height: 30px;
-      background: rgba(255,255,255,0.18);
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 16px;
-      flex-shrink: 0;
-    }
-    .app-header .app-name {
-      font-size: 16px;
-      font-weight: 700;
-      letter-spacing: 0.01em;
     }
 
     /* ── Email override bar ──────────────────────────────────────────────────── */
@@ -165,21 +140,27 @@
     /* Blink overlay */
     .cam-blink-overlay {
       position: absolute;
-      bottom: 52px; left: 50%;
+      bottom: 12%; left: 50%;
       transform: translateX(-50%);
-      background: rgba(0,0,0,0.72);
+      background: rgba(0,0,0,0.68);
       backdrop-filter: blur(4px);
-      border-radius: 10px;
-      padding: 7px 14px;
+      border-radius: 20px;
+      padding: 8px 16px;
       display: none;
       align-items: center;
       gap: 10px;
       white-space: nowrap;
     }
     .cam-blink-overlay.show { display: flex; }
-    .blink-num { font-size: 22px; font-weight: 700; color: var(--gold); line-height: 1; }
-    .blink-num.done { color: #22C55E; }
-    .blink-label { font-size: 12px; color: #ccc; }
+    .blink-dot {
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.25);
+      border: 2px solid rgba(255,255,255,0.5);
+      display: inline-block;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .blink-dot.filled { background: #22C55E; border-color: #22C55E; }
     .ear-wrap { display: flex; flex-direction: column; gap: 3px; }
     .ear-text  { font-size: 10px; color: #aaa; }
     .ear-bar   { height: 4px; width: 60px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden; }
@@ -414,12 +395,6 @@
 
 <div id="sdk-debug"></div>
 
-<!-- Header -->
-<header class="app-header">
-  <div class="logo-icon"><i class="bi bi-person-badge"></i></div>
-  <span class="app-name">Face Attendance</span>
-</header>
-
 <!-- Email override bar -->
 <div id="email-override-bar">
   <i class="bi bi-exclamation-triangle"></i>
@@ -447,11 +422,10 @@
     <canvas id="canvas-overlay"></canvas>
     <div class="face-frame" id="face-frame"></div>
 
-    <!-- Blink counter overlay -->
+    <!-- Blink dot overlay -->
     <div class="cam-blink-overlay" id="blink-overlay">
-      <i class="bi bi-eye" style="color:var(--gold);font-size:16px"></i>
-      <span class="blink-num" id="blink-count">0</span>
-      <span class="blink-label">/ 2 blinks</span>
+      <span class="blink-dot" id="blink-dot-1"></span>
+      <span class="blink-dot" id="blink-dot-2"></span>
       <div class="ear-wrap">
         <div class="ear-text">Eye: <span id="ear-val">—</span></div>
         <div class="ear-bar"><div class="ear-fill" id="ear-fill"></div></div>
@@ -801,10 +775,11 @@ function triggerPreload(email) {
 
 // ── Face recognition config ───────────────────────────────────────────────────
 
-const BLINKS_REQUIRED  = 2;
-const EAR_CLOSE_THRESH = 0.18;
-const EAR_OPEN_THRESH  = 0.23;
-const EAR_SMOOTH_ALPHA = 0.3;
+const BLINKS_REQUIRED       = 2;
+const EAR_CLOSE_THRESH      = 0.10;
+const EAR_OPEN_THRESH       = 0.20;
+const EAR_SMOOTH_ALPHA      = 0.3;
+const CLOSED_FRAMES_NEEDED  = 2;    // consecutive frames eye must stay closed
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 
@@ -813,7 +788,9 @@ const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 let state = {
   cameraReady:   false,
   faceDetected:  false,
+  step1Done:     false,
   blinkCount:    0,
+  closedFrames:  0,
   eyeWasClosed:  false,
   smoothedEAR:   0.3,
   blinkVerified: false,
@@ -831,7 +808,6 @@ const statusDot    = document.getElementById('status-dot');
 const statusText   = document.getElementById('status-text');
 const faceFrame    = document.getElementById('face-frame');
 const blinkOverlay = document.getElementById('blink-overlay');
-const blinkCountEl = document.getElementById('blink-count');
 const earVal       = document.getElementById('ear-val');
 const earFill      = document.getElementById('ear-fill');
 const spinnerEl    = document.getElementById('spinner');
@@ -939,8 +915,9 @@ function onFaceMeshResults(results) {
     return;
   }
 
-  if (!state.faceDetected) {
+  if (!state.faceDetected && !state.step1Done) {
     state.faceDetected = true;
+    state.step1Done    = true;
     setStatus('active', 'Face detected — blink to verify liveness');
     setFrameClass('detected');
     activateStep(2);
@@ -957,20 +934,24 @@ function onFaceMeshResults(results) {
   const earPct = Math.min(Math.max(state.smoothedEAR / 0.35, 0), 1) * 100;
   earVal.textContent   = state.smoothedEAR.toFixed(3);
   earFill.style.width  = earPct + '%';
-  earFill.style.background = state.smoothedEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
+  earFill.style.background = avgEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
 
   if (!state.blinkVerified) {
-    if (state.smoothedEAR < EAR_CLOSE_THRESH) {
-      state.eyeWasClosed = true;
+    if (avgEAR < EAR_CLOSE_THRESH) {
+      state.closedFrames++;
+      if (state.closedFrames >= CLOSED_FRAMES_NEEDED) {
+        state.eyeWasClosed = true;
+      }
       setFrameClass('liveness');
       setStatus('blink', 'Blink detected…');
-    } else if (state.smoothedEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
+    } else if (avgEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
       state.eyeWasClosed = false;
+      state.closedFrames = 0;
       state.blinkCount++;
-      blinkCountEl.textContent = state.blinkCount;
+      const dot = document.getElementById('blink-dot-' + state.blinkCount);
+      if (dot) dot.classList.add('filled');
       if (state.blinkCount >= BLINKS_REQUIRED) {
         state.blinkVerified = true;
-        blinkCountEl.classList.add('done');
         setStatus('ok', 'Liveness confirmed — capturing…');
         setFrameClass('verified');
         activateStep(3);
@@ -979,6 +960,8 @@ function onFaceMeshResults(results) {
         const rem = BLINKS_REQUIRED - state.blinkCount;
         setStatus('blink', `Good! ${rem} more blink${rem > 1 ? 's' : ''}…`);
       }
+    } else if (avgEAR > EAR_OPEN_THRESH) {
+      state.closedFrames = 0;
     }
   }
 }
@@ -1180,12 +1163,14 @@ function showSpinner(on) {
 function resetForRetry() {
   setTimeout(() => {
     state.verifying     = false;
+    state.faceDetected  = false;
+    state.step1Done     = false;
     state.blinkVerified = false;
     state.blinkCount    = 0;
+    state.closedFrames  = 0;
     state.eyeWasClosed  = false;
     state.smoothedEAR   = 0.3;
-    blinkCountEl.textContent = '0';
-    blinkCountEl.classList.remove('done');
+    document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
     blinkOverlay.classList.remove('show');
     hideBanner();
     setStatus('active', 'Position your face in the oval');
@@ -1197,12 +1182,11 @@ function resetForRetry() {
 
 function _fullReset() {
   state = {
-    cameraReady: false, faceDetected: false,
-    blinkCount: 0, eyeWasClosed: false, smoothedEAR: 0.3,
+    cameraReady: false, faceDetected: false, step1Done: false,
+    blinkCount: 0, closedFrames: 0, eyeWasClosed: false, smoothedEAR: 0.3,
     blinkVerified: false, verifying: false, done: false,
   };
-  blinkCountEl.textContent = '0';
-  blinkCountEl.classList.remove('done');
+  document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
   blinkOverlay.classList.remove('show');
   hideBanner();
   setFrameClass('');
