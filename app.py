@@ -266,6 +266,31 @@ def cache_status():
     return jsonify(status if status else {"ALL": {"students_cached": 0}})
 
 
+@app.route("/api/preload", methods=["POST"])
+def preload_students():
+    """Trigger a background student load if the cache is cold. Called once on widget mount."""
+    env        = _resolve_env(request.args.get("zoho_environment"))
+    user_email = (request.args.get("user_email") or "").strip()
+    if not user_email:
+        return jsonify({"triggered": False, "message": "No email provided"})
+    try:
+        centers = get_user_centers_cached(user_email, env=env)
+    except Exception as e:
+        logger.warning(f"Preload: centre lookup failed for {user_email}: {e}")
+        centers = None
+    cache = _get_cache(centers=centers, env=env)
+    if cache.get() is not None:
+        return jsonify({"triggered": False, "message": "Cache already warm"})
+    key = _build_scope_key(centers, env)
+    with _preloading_lock:
+        if key in _preloading_keys:
+            return jsonify({"triggered": False, "message": "Already loading"})
+        _preloading_keys.add(key)
+    threading.Thread(target=_load_students_bg, args=(centers, env), daemon=True).start()
+    logger.info(f"Preload triggered for {user_email} (scope {key})")
+    return jsonify({"triggered": True})
+
+
 @app.route("/api/cache/refresh", methods=["POST"])
 def cache_refresh():
     body       = request.get_json(silent=True) or {}

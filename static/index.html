@@ -2,15 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Zoho Attendance — Face Verification</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Face Attendance</title>
 
-  <!-- Bootstrap 5 -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
-  <!-- Bootstrap Icons -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
-  <!-- Zoho Creator Widget SDK v2 — correct domain is static.zohocdn.com -->
+  <!-- Zoho Creator Widget SDK v2 -->
   <script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
 
   <!-- MediaPipe Face Mesh -->
@@ -20,74 +17,122 @@
 
   <style>
     :root {
-      --bg-dark:    #0d1117;
-      --bg-card:    #161b22;
-      --bg-input:   #21262d;
-      --border:     #30363d;
-      --accent:     #2563eb;
-      --accent-h:   #1d4ed8;
-      --success:    #16a34a;
-      --danger:     #dc2626;
-      --warning:    #d97706;
-      --text:       #e6edf3;
-      --text-muted: #8b949e;
-      --radius:     12px;
+      --red:     #8B1A1A;
+      --red-h:   #A52020;
+      --gold:    #C4952A;
+      --gold-h:  #E8B84A;
+      --bg:      #FFFFFF;
+      --surface: #FBF8F6;
+      --border:  #E5D9CF;
+      --success: #1A7A3C;
+      --danger:  #B71C1C;
+      --text:    #1A1A1A;
+      --muted:   #7A6B62;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    html, body {
+      height: 100%;
+    }
+
     body {
-      background: var(--bg-dark);
-      color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
       display: flex;
       flex-direction: column;
+      min-height: 100dvh;
+      overflow-x: hidden;
     }
 
-    /* ── Header ──────────────────────────────────────────────────────────── */
+    /* ── SDK debug ──────────────────────────────────────────────────────────── */
+    #sdk-debug {
+      display: none;
+      background: #1a1a2e;
+      color: #f0c040;
+      font-size: 11px;
+      padding: 6px 12px;
+      word-break: break-all;
+      font-family: monospace;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────────── */
     .app-header {
-      background: var(--bg-card);
-      border-bottom: 1px solid var(--border);
-      padding: 14px 24px;
+      background: var(--red);
+      color: #fff;
+      padding: 10px 16px;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      flex-shrink: 0;
+      min-height: 48px;
     }
-    .app-header .logo {
-      width: 36px; height: 36px;
-      background: var(--accent);
+    .app-header .logo-icon {
+      width: 30px; height: 30px;
+      background: rgba(255,255,255,0.18);
       border-radius: 8px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 18px;
+      font-size: 16px;
+      flex-shrink: 0;
     }
-    .app-header h1 { font-size: 17px; font-weight: 600; line-height: 1.2; }
-    .app-header p  { font-size: 12px; color: var(--text-muted); }
-    /* ── Main Layout ─────────────────────────────────────────────────────── */
-    .main {
-      flex: 1;
-      display: flex;
-      align-items: flex-start;
-      justify-content: center;
-      padding: 32px 16px;
-      gap: 24px;
+    .app-header .app-name {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
     }
 
-    /* ── Camera Card ─────────────────────────────────────────────────────── */
-    .camera-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-      width: 500px;
+    /* ── Email override bar ──────────────────────────────────────────────────── */
+    #email-override-bar {
+      display: none;
+      background: #FFFBEB;
+      border-bottom: 2px solid #FCD34D;
+      padding: 10px 16px;
+      gap: 8px;
+      align-items: flex-start;
+      flex-wrap: wrap;
       flex-shrink: 0;
+    }
+    #email-override-bar i { color: #D97706; font-size: 16px; flex-shrink: 0; margin-top: 2px; }
+    .eo-text { font-size: 13px; color: #92400E; flex: 1; min-width: 200px; }
+    .eo-inputs { display: flex; gap: 8px; width: 100%; }
+    .eo-inputs input {
+      flex: 1;
+      background: #fff;
+      border: 1px solid #FCD34D;
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 13px;
+      outline: none;
+      min-width: 0;
+    }
+    .eo-inputs button {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      min-height: 48px;
+    }
+
+    /* ── Camera section ──────────────────────────────────────────────────────── */
+    .camera-section {
+      flex-shrink: 0;
+      background: #000;
+      position: relative;
     }
     .camera-wrap {
       position: relative;
       width: 100%;
-      aspect-ratio: 4/3;
-      background: #000;
+      aspect-ratio: 4 / 3;
+      max-height: calc(100dvh - 260px);
+      min-height: 180px;
       overflow: hidden;
+      background: #111;
     }
     #video {
       width: 100%; height: 100%;
@@ -96,8 +141,7 @@
       transform: scaleX(-1);
     }
     #canvas-overlay {
-      position: absolute;
-      top: 0; left: 0;
+      position: absolute; inset: 0;
       width: 100%; height: 100%;
       transform: scaleX(-1);
       pointer-events: none;
@@ -105,407 +149,442 @@
     .face-frame {
       position: absolute;
       top: 50%; left: 50%;
-      transform: translate(-50%, -50%);
-      width: 220px; height: 270px;
-      border: 2px solid rgba(255,255,255,0.2);
+      transform: translate(-50%, -55%);
+      width: 52%;
+      aspect-ratio: 4 / 5;
+      border: 2.5px solid rgba(255,255,255,0.25);
       border-radius: 50%;
       pointer-events: none;
-      transition: border-color 0.3s;
+      transition: border-color 0.3s, box-shadow 0.3s;
     }
-    .face-frame.detected  { border-color: rgba(37, 99, 235, 0.7); }
-    .face-frame.liveness  { border-color: rgba(217, 119, 6, 0.9); }
-    .face-frame.verified  { border-color: rgba(22, 163, 74, 0.9); }
-    .face-frame.no-match  { border-color: rgba(220, 38, 38, 0.9); }
-    .face-frame::before, .face-frame::after {
-      content: '';
+    .face-frame.detected { border-color: var(--gold);  box-shadow: 0 0 0 3px rgba(196,149,42,0.3); }
+    .face-frame.liveness { border-color: var(--gold);  box-shadow: 0 0 0 5px rgba(196,149,42,0.45); }
+    .face-frame.verified  { border-color: #22C55E; box-shadow: 0 0 0 4px rgba(34,197,94,0.35); }
+    .face-frame.no-match  { border-color: #EF4444; box-shadow: 0 0 0 4px rgba(239,68,68,0.35); }
+
+    /* Blink overlay */
+    .cam-blink-overlay {
       position: absolute;
-      width: 30px; height: 30px;
-      border-color: inherit;
-      border-style: solid;
+      bottom: 52px; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.72);
+      backdrop-filter: blur(4px);
+      border-radius: 10px;
+      padding: 7px 14px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      white-space: nowrap;
     }
-    .face-frame::before {
-      top: -2px; left: -2px;
-      border-width: 3px 0 0 3px;
-      border-radius: 8px 0 0 0;
-    }
-    .face-frame::after {
-      bottom: -2px; right: -2px;
-      border-width: 0 3px 3px 0;
-      border-radius: 0 0 8px 0;
-    }
-    .camera-status {
+    .cam-blink-overlay.show { display: flex; }
+    .blink-num { font-size: 22px; font-weight: 700; color: var(--gold); line-height: 1; }
+    .blink-num.done { color: #22C55E; }
+    .blink-label { font-size: 12px; color: #ccc; }
+    .ear-wrap { display: flex; flex-direction: column; gap: 3px; }
+    .ear-text  { font-size: 10px; color: #aaa; }
+    .ear-bar   { height: 4px; width: 60px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden; }
+    .ear-fill  { height: 100%; width: 50%; background: var(--gold); border-radius: 2px; transition: width 0.1s, background 0.15s; }
+
+    /* Status bar */
+    .cam-status {
       position: absolute;
       bottom: 0; left: 0; right: 0;
-      padding: 10px 16px;
-      background: linear-gradient(transparent, rgba(0,0,0,0.85));
+      padding: 8px 14px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.82));
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 13px;
+      color: #fff;
     }
     .status-dot {
       width: 8px; height: 8px;
       border-radius: 50%;
-      background: var(--text-muted);
+      background: #888;
       flex-shrink: 0;
       animation: pulse 1.5s infinite;
     }
-    .status-dot.active  { background: var(--accent);  }
-    .status-dot.blink   { background: var(--warning); animation: pulse-fast 0.5s infinite; }
-    .status-dot.success { background: var(--success); animation: none; }
-    .status-dot.error   { background: var(--danger);  animation: none; }
-
+    .status-dot.active { background: var(--gold); }
+    .status-dot.blink  { background: var(--gold); animation: pulse-fast 0.5s infinite; }
+    .status-dot.ok     { background: #22C55E; animation: none; }
+    .status-dot.error  { background: #EF4444; animation: none; }
     @keyframes pulse      { 0%,100%{opacity:1} 50%{opacity:.4} }
     @keyframes pulse-fast { 0%,100%{opacity:1} 50%{opacity:.2} }
 
-    /* ── Info Panel ───────────────────────────────────────────────────────── */
-    .info-panel {
-      flex: 1;
-      max-width: 380px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-    .step-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 20px;
-    }
-    .step-card h3 {
-      font-size: 14px;
-      font-weight: 600;
-      margin-bottom: 16px;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: .05em;
-    }
-    .step {
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      padding: 10px 0;
-      border-bottom: 1px solid var(--border);
-      transition: all 0.3s;
-    }
-    .step:last-child { border-bottom: none; }
-    .step-num {
-      width: 28px; height: 28px;
-      border-radius: 50%;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 12px; font-weight: 700;
-      flex-shrink: 0;
-      transition: all 0.3s;
-    }
-    .step.active   .step-num { background: var(--accent);  border-color: var(--accent);  color: #fff; }
-    .step.done     .step-num { background: var(--success); border-color: var(--success); color: #fff; }
-    .step.active   .step-label { color: var(--text); }
-    .step.done     .step-label { color: var(--text-muted); text-decoration: line-through; }
-    .step-label { font-size: 13px; color: var(--text-muted); line-height: 1.4; }
-    .step-label strong { color: var(--text); }
-
-    .ear-meter-wrap { margin-top: 4px; }
-    .ear-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
-    .ear-bar   { height: 4px; border-radius: 2px; background: var(--bg-input); overflow: hidden; }
-    .ear-fill  { height: 100%; width: 100%; background: var(--accent); border-radius: 2px; transition: width 0.1s, background 0.2s; }
-
-    .blink-counter {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 12px;
-      font-size: 13px;
-      margin-top: 8px;
-    }
-    .blink-count { font-size: 20px; font-weight: 700; color: var(--warning); line-height: 1; }
-    .blink-count.complete { color: var(--success); }
-
-    /* Result card */
-    .result-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 20px;
+    /* Inactivity overlay */
+    #inactive-overlay {
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.78);
       display: none;
-    }
-    .result-card.show    { display: block; }
-    .result-card.success { border-color: var(--success); }
-    .result-card.danger  { border-color: var(--danger); }
-    .result-card.warning { border-color: var(--warning); }
-
-    .result-badge {
-      display: inline-flex;
+      flex-direction: column;
       align-items: center;
-      gap: 6px;
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-size: 13px;
+      justify-content: center;
+      gap: 14px;
+      z-index: 10;
+    }
+    #inactive-overlay.show { display: flex; }
+    #inactive-overlay .pause-icon { font-size: 42px; color: rgba(255,255,255,0.55); }
+    #inactive-overlay p { font-size: 14px; color: rgba(255,255,255,0.8); text-align: center; }
+    #btn-reopen-cam {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 14px 30px;
+      font-size: 15px;
       font-weight: 600;
-      margin-bottom: 14px;
-    }
-    .result-badge.success { background: rgba(22,163,74,.15);  color: #4ade80; }
-    .result-badge.danger  { background: rgba(220,38,38,.15);  color: #f87171; }
-    .result-badge.warning { background: rgba(217,119,6,.15);  color: #fbbf24; }
-
-    .student-info { display: flex; flex-direction: column; gap: 8px; }
-    .info-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 13px;
-      padding: 6px 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .info-row:last-child { border-bottom: none; }
-    .info-key   { color: var(--text-muted); }
-    .info-value { font-weight: 500; color: var(--text); }
-    .info-value.att-ok  { color: #4ade80; }
-    .info-value.att-err { color: #f87171; }
-
-    .confidence-bar  { height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; margin-top: 4px; }
-    .confidence-fill { height: 100%; background: linear-gradient(90deg, var(--accent), #7c3aed); border-radius: 3px; transition: width 0.6s ease; }
-
-    .btn-retry {
-      width: 100%;
-      padding: 10px;
-      margin-top: 14px;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      color: var(--text);
-      border-radius: 8px;
-      font-size: 13px;
       cursor: pointer;
-      transition: all 0.2s;
+      min-height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
-    .btn-retry:hover { background: var(--border); }
-
-    /* Spinner */
-    .spinner { display: none; align-items: center; justify-content: center; gap: 10px; padding: 20px; font-size: 13px; color: var(--text-muted); }
-    .spinner.show { display: flex; }
-    .spin { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* Toast */
-    .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
-    .toast-msg { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; font-size: 13px; max-width: 320px; animation: slideIn 0.3s ease; }
-    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
     /* Permission screen */
-    #perm-screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: var(--bg-card); z-index: 10; padding: 24px; text-align: center; }
-    #perm-screen i { font-size: 40px; color: var(--text-muted); }
-    #perm-screen p { font-size: 13px; color: var(--text-muted); max-width: 260px; }
-    #btn-allow { padding: 10px 24px; background: var(--accent); color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; transition: background .2s; }
-    #btn-allow:hover { background: var(--accent-h); }
-
-    @media (max-width: 900px) {
-      .main { flex-direction: column; align-items: center; }
-      .camera-card { width: 100%; max-width: 500px; }
-      .info-panel  { max-width: 500px; width: 100%; }
+    #perm-screen {
+      position: absolute; inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background: #1a1010;
+      z-index: 10;
+      padding: 24px;
+      text-align: center;
     }
+    #perm-screen .perm-icon { font-size: 42px; color: rgba(255,255,255,0.4); }
+    #perm-screen p { font-size: 14px; color: rgba(255,255,255,0.65); max-width: 260px; }
+    #btn-allow {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 13px 30px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      min-height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ── Steps bar ───────────────────────────────────────────────────────────── */
+    .steps-bar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+    .step-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      flex: 1;
+      max-width: 72px;
+    }
+    .step-icon {
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: var(--border);
+      border: 2px solid transparent;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px;
+      color: var(--muted);
+      transition: background 0.3s, border-color 0.3s, color 0.3s;
+    }
+    .step-word {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--muted);
+      text-align: center;
+      transition: color 0.3s;
+    }
+    .step-arrow { font-size: 14px; color: var(--border); flex-shrink: 0; padding-bottom: 16px; }
+
+    .step-item.active .step-icon { background: var(--gold);    border-color: var(--gold);    color: #fff; }
+    .step-item.active .step-word { color: var(--gold); font-weight: 700; }
+    .step-item.done   .step-icon { background: var(--success); border-color: var(--success); color: #fff; }
+    .step-item.done   .step-word { color: var(--success); }
+
+    /* ── Message area ────────────────────────────────────────────────────────── */
+    .message-area {
+      flex: 1;
+      padding: 12px 16px;
+      min-height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .verify-spinner {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+    .verify-spinner.show { display: flex; }
+    .spin {
+      width: 30px; height: 30px;
+      border: 3px solid var(--border);
+      border-top-color: var(--red);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .verify-spinner span { font-size: 13px; color: var(--muted); }
+
+    .msg-banner {
+      display: none;
+      width: 100%;
+      border-radius: 12px;
+      padding: 14px 16px;
+      align-items: center;
+      gap: 12px;
+    }
+    .msg-banner.show { display: flex; }
+    .msg-banner.success { background: #ECFDF5; border: 1px solid #A7F3D0; }
+    .msg-banner.danger  { background: #FEF2F2; border: 1px solid #FECACA; }
+    .msg-banner.warning { background: #FFFBEB; border: 1px solid #FDE68A; }
+    .msg-banner.info    { background: #EFF6FF; border: 1px solid #BFDBFE; }
+    .msg-icon { font-size: 26px; flex-shrink: 0; line-height: 1; }
+    .msg-banner.success .msg-icon { color: var(--success); }
+    .msg-banner.danger  .msg-icon { color: var(--danger);  }
+    .msg-banner.warning .msg-icon { color: #D97706; }
+    .msg-banner.info    .msg-icon { color: #2563EB; }
+    .msg-body { flex: 1; min-width: 0; }
+    .msg-title { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+    .msg-sub   { font-size: 12px; color: var(--muted); }
+    .msg-banner.success .msg-title { color: #065F46; }
+    .msg-banner.danger  .msg-title { color: #991B1B; }
+    .msg-banner.warning .msg-title { color: #92400E; }
+    .msg-banner.info    .msg-title { color: #1E3A8A; }
+
+    /* ── Bottom bar ──────────────────────────────────────────────────────────── */
+    .bottom-bar {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 10px 16px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 56px;
+    }
+    .progress-counter {
+      display: flex;
+      gap: 16px;
+    }
+    .count-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .count-ok  { color: var(--success); }
+    .count-item i { font-size: 16px; }
+    #btn-refresh-cache {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 48px;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    #btn-refresh-cache:hover:not(:disabled) { background: var(--red-h); }
+    #btn-refresh-cache:disabled { opacity: 0.6; cursor: not-allowed; }
   </style>
 </head>
 <body>
 
-<!-- ── SDK debug banner (temporary, remove after email issue resolved) ───── -->
-<div id="sdk-debug" style="display:none;background:#1a1a2e;color:#f0c040;font-size:11px;padding:6px 12px;word-break:break-all;font-family:monospace;"></div>
+<div id="sdk-debug"></div>
 
-<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<!-- Header -->
 <header class="app-header">
-  <div class="logo"><i class="bi bi-person-badge" style="color:#fff"></i></div>
-  <div>
-    <h1>Student Face Verification</h1>
-    <p id="header-subtitle">Zoho Creator · Attendance Module</p>
-  </div>
-  <button id="btn-refresh-cache" onclick="refreshCache()" title="Reload student face database"
-    style="margin-left:auto;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;">
-    <i class="bi bi-arrow-clockwise"></i> Refresh Students
-  </button>
+  <div class="logo-icon"><i class="bi bi-person-badge"></i></div>
+  <span class="app-name">Face Attendance</span>
 </header>
 
-<!-- ── Email override bar (shown when no centres found for logged-in email) ── -->
-<div id="email-override-bar" style="display:none;background:#161b22;border-bottom:1px solid #30363d;padding:10px 24px;gap:12px;align-items:center;flex-wrap:wrap;">
-  <i class="bi bi-exclamation-triangle" style="color:#fbbf24;font-size:15px;flex-shrink:0;"></i>
-  <span style="color:#8b949e;font-size:13px;">
-    No centres found for <strong id="email-override-current" style="color:#e6edf3;"></strong>.
-    Enter the registered email for this centre:
-  </span>
-  <div style="display:flex;gap:8px;flex:1;min-width:260px;max-width:420px;">
+<!-- Email override bar -->
+<div id="email-override-bar">
+  <i class="bi bi-exclamation-triangle"></i>
+  <div class="eo-text">
+    No centres found for <strong id="email-override-current"></strong>. Enter the registered centre email:
+  </div>
+  <div class="eo-inputs">
     <input id="email-override-input" type="email" placeholder="centre@example.com"
-      style="flex:1;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:8px;padding:7px 12px;font-size:13px;outline:none;min-width:0;"
       onkeydown="if(event.key==='Enter')submitEmailOverride()" />
-    <button id="email-override-btn" onclick="submitEmailOverride()"
-      style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;">
-      Load Students
-    </button>
+    <button onclick="submitEmailOverride()">Load</button>
   </div>
 </div>
 
-<!-- ── Main ───────────────────────────────────────────────────────────────── -->
-<main class="main">
+<!-- Camera -->
+<div class="camera-section">
+  <div class="camera-wrap">
+    <div id="perm-screen">
+      <i class="bi bi-camera-video-off perm-icon"></i>
+      <p>Camera access is required for face verification</p>
+      <button id="btn-allow" onclick="startCamera()">
+        <i class="bi bi-camera-video"></i> Allow Camera
+      </button>
+    </div>
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas-overlay"></canvas>
+    <div class="face-frame" id="face-frame"></div>
 
-  <!-- Camera Card -->
-  <div class="camera-card">
-    <div class="camera-wrap">
-      <div id="perm-screen">
-        <i class="bi bi-camera-video-off"></i>
-        <p>Camera access is required for face verification. Click below to grant access.</p>
-        <button id="btn-allow" onclick="startCamera()">
-          <i class="bi bi-camera-video me-2"></i>Allow Camera
-        </button>
-      </div>
-      <video id="video" autoplay muted playsinline></video>
-      <canvas id="canvas-overlay"></canvas>
-      <div class="face-frame" id="face-frame"></div>
-      <div class="camera-status">
-        <span class="status-dot" id="status-dot"></span>
-        <span id="status-text">Initialising camera...</span>
+    <!-- Blink counter overlay -->
+    <div class="cam-blink-overlay" id="blink-overlay">
+      <i class="bi bi-eye" style="color:var(--gold);font-size:16px"></i>
+      <span class="blink-num" id="blink-count">0</span>
+      <span class="blink-label">/ 2 blinks</span>
+      <div class="ear-wrap">
+        <div class="ear-text">Eye: <span id="ear-val">—</span></div>
+        <div class="ear-bar"><div class="ear-fill" id="ear-fill"></div></div>
       </div>
     </div>
-  </div>
 
-  <!-- Info Panel -->
-  <div class="info-panel">
-
-    <!-- Steps -->
-    <div class="step-card">
-      <h3><i class="bi bi-list-check me-1"></i> Verification Steps</h3>
-
-      <div class="step" id="step-1">
-        <div class="step-num">1</div>
-        <div>
-          <div class="step-label"><strong>Position your face</strong> within the oval guide</div>
-        </div>
-      </div>
-
-      <div class="step" id="step-2">
-        <div class="step-num">2</div>
-        <div>
-          <div class="step-label"><strong>Blink naturally</strong> — liveness check (blink 2× to confirm)</div>
-          <div class="ear-meter-wrap" id="ear-meter-wrap" style="display:none">
-            <div class="ear-label">Eye openness <span id="ear-val">—</span></div>
-            <div class="ear-bar"><div class="ear-fill" id="ear-fill"></div></div>
-          </div>
-          <div id="blink-counter-wrap" style="display:none">
-            <div class="blink-counter">
-              <i class="bi bi-eye"></i>
-              <span class="blink-count" id="blink-count">0</span>
-              <span>/ 2 blinks detected</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="step" id="step-3">
-        <div class="step-num">3</div>
-        <div class="step-label"><strong>Hold still</strong> — capturing &amp; verifying identity</div>
-      </div>
-
-      <div class="step" id="step-4">
-        <div class="step-num">4</div>
-        <div class="step-label"><strong>Attendance posted</strong> to Zoho Creator</div>
-      </div>
-
-    </div>
-
-    <!-- Spinner -->
-    <div class="spinner" id="spinner">
-      <div class="spin"></div>
-      <span>Verifying identity...</span>
-    </div>
-
-    <!-- Result Card -->
-    <div class="result-card" id="result-card">
-      <div class="result-badge" id="result-badge"></div>
-      <div class="student-info" id="student-info"></div>
-      <button class="btn-retry" id="btn-retry" onclick="resetVerification()">
-        <i class="bi bi-arrow-counterclockwise me-1"></i> Verify another student
+    <!-- Inactivity overlay -->
+    <div id="inactive-overlay">
+      <i class="bi bi-camera-video-off pause-icon"></i>
+      <p>Camera paused due to inactivity</p>
+      <button id="btn-reopen-cam" onclick="reactivateCamera()">
+        <i class="bi bi-camera-video"></i> Tap to Resume
       </button>
     </div>
 
-
+    <!-- Status bar -->
+    <div class="cam-status">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Initialising...</span>
+    </div>
   </div>
-</main>
+</div>
 
-<!-- Toast container -->
-<div class="toast-container" id="toast-container"></div>
+<!-- Steps bar -->
+<div class="steps-bar">
+  <div class="step-item" id="step-1">
+    <div class="step-icon"><i class="bi bi-person-bounding-box"></i></div>
+    <div class="step-word">Detect</div>
+  </div>
+  <div class="step-arrow">›</div>
+  <div class="step-item" id="step-2">
+    <div class="step-icon"><i class="bi bi-eye"></i></div>
+    <div class="step-word">Liveness</div>
+  </div>
+  <div class="step-arrow">›</div>
+  <div class="step-item" id="step-3">
+    <div class="step-icon"><i class="bi bi-shield-check"></i></div>
+    <div class="step-word">Verify</div>
+  </div>
+  <div class="step-arrow">›</div>
+  <div class="step-item" id="step-4">
+    <div class="step-icon"><i class="bi bi-check-circle"></i></div>
+    <div class="step-word">Post</div>
+  </div>
+</div>
 
-<!-- ── Script ──────────────────────────────────────────────────────────────── -->
+<!-- Message area -->
+<div class="message-area">
+  <div class="verify-spinner" id="spinner">
+    <div class="spin"></div>
+    <span>Verifying identity...</span>
+  </div>
+  <div class="msg-banner" id="msg-banner">
+    <div class="msg-icon" id="msg-icon"></div>
+    <div class="msg-body">
+      <div class="msg-title" id="msg-title"></div>
+      <div class="msg-sub"   id="msg-sub"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom bar -->
+<div class="bottom-bar">
+  <div class="progress-counter">
+    <div class="count-item count-ok">
+      <i class="bi bi-check-circle-fill"></i>
+      <span id="count-success">0</span>
+    </div>
+  </div>
+  <button id="btn-refresh-cache" onclick="refreshCache()">
+    <i class="bi bi-arrow-clockwise"></i> Refresh
+  </button>
+</div>
+
 <script>
 'use strict';
 
-// ── URL Params ────────────────────────────────────────────────────────────────
-const urlParams  = new URLSearchParams(window.location.search);
+// ── URL params ────────────────────────────────────────────────────────────────
+const urlParams = new URLSearchParams(window.location.search);
 
-// ── Logged-in user + Zoho environment (from Zoho Creator portal) ──────────────
-// Priority 1: URL params (dev testing or Zoho Creator page config)
-// Priority 2: Zoho Widget SDK getInitParams()
 let USER_EMAIL = (urlParams.get('user_email') || urlParams.get('email') || '').trim();
-let ZOHO_ENV   = (urlParams.get('zoho_env') || '').trim();  // e.g. "development"
+let ZOHO_ENV   = (urlParams.get('zoho_env') || '').trim();
 
-// ── SDK data-loading state ────────────────────────────────────────────────────
-let APP_LINK_NAME = '';    // from SDK getInitParams().appLinkName
-let _SCOPE_KEY    = 'ALL'; // built after SDK data load (e.g. "C:id1,id2")
-let _SDK_MODE     = false; // true when inside Zoho Creator widget with app name
-let _dataLoaded   = false; // true once student cache is seeded (SDK or server-side)
-let _dataLoading  = false; // prevent concurrent loads
-let _cfg          = null;  // cached /api/config response
-
-// Tracks whether Zoho init has completed (success or exhausted retries)
-let _zohoInitDone = false;
+// ── SDK state ─────────────────────────────────────────────────────────────────
+let APP_LINK_NAME    = '';
+let _SCOPE_KEY       = 'ALL';
+let _SDK_MODE        = false;
+let _dataLoaded      = false;
+let _dataLoading     = false;
+let _cfg             = null;
+let _zohoInitDone    = false;
 let _zohoInitAttempts = 0;
 
-if (USER_EMAIL) {
-  // Got email from URL — SDK init still runs (may provide appLinkName for SDK mode)
-  console.log('[FaceVerify] Got email from URL param:', USER_EMAIL);
-  tryInitZohoUser();
-} else {
-  tryInitZohoUser();
-}
+// ── Session counters ──────────────────────────────────────────────────────────
+let successCount  = 0;
+
+// ── Inactivity ────────────────────────────────────────────────────────────────
+let _inactivityTimer = null;
+const INACTIVITY_MS  = 30000;
+
+// ── Start SDK init immediately ────────────────────────────────────────────────
+tryInitZohoUser();
 
 function tryInitZohoUser() {
-  // SDK must expose at least ZOHO.CREATOR.UTIL.getInitParams
   const hasUtil = typeof ZOHO !== 'undefined'
-    && ZOHO.CREATOR
-    && ZOHO.CREATOR.UTIL
+    && ZOHO.CREATOR && ZOHO.CREATOR.UTIL
     && typeof ZOHO.CREATOR.UTIL.getInitParams === 'function';
 
   if (!hasUtil) {
     if (++_zohoInitAttempts < 20) {
       setTimeout(tryInitZohoUser, 500);
     } else {
-      console.warn('[FaceVerify] ZOHO.CREATOR SDK not available after 10 s');
+      console.warn('[FaceVerify] ZOHO SDK not available after 10s');
       _zohoInitDone = true;
-      // No SDK — any URL-param email still shows centres via server
-      if (USER_EMAIL) fetchAndShowCenters(USER_EMAIL);
+      if (USER_EMAIL) { fetchAndShowCenters(USER_EMAIL); triggerPreload(USER_EMAIL); }
     }
     return;
   }
 
-  // init() may or may not exist depending on SDK version — skip if absent
-  const initPromise = (typeof ZOHO.CREATOR.init === 'function')
+  const initPromise = typeof ZOHO.CREATOR.init === 'function'
     ? ZOHO.CREATOR.init()
     : Promise.resolve();
 
   initPromise
-    .then(function () {
-      return ZOHO.CREATOR.UTIL.getInitParams();
-    })
-    .then(function (params) {
+    .then(() => ZOHO.CREATOR.UTIL.getInitParams())
+    .then(params => {
       const raw = JSON.stringify(params);
       console.log('[FaceVerify] getInitParams:', raw);
       _showSdkDebug('params: ' + raw);
 
-      if (!USER_EMAIL) {
-        USER_EMAIL = (params && (params.loginUser || params.loginName || params.email)) || '';
-      }
+      if (!USER_EMAIL) USER_EMAIL = (params && (params.loginUser || params.loginName || params.email)) || '';
       APP_LINK_NAME = (params && params.appLinkName) || '';
 
-      // Extract environment from envUrlFragment: "/environment/development" → "development"
       if (!ZOHO_ENV && params && params.envUrlFragment) {
         const m = params.envUrlFragment.match(/\/environment\/(\w+)/);
         if (m) ZOHO_ENV = m[1];
@@ -515,41 +594,35 @@ function tryInitZohoUser() {
       _zohoInitDone = true;
 
       if (USER_EMAIL && APP_LINK_NAME) {
-        // Full SDK mode: load students via Zoho Creator DATA API
         _SDK_MODE = true;
-        loadDataViaSdk(USER_EMAIL).catch(function (err) {
-          console.error('[SDK] loadDataViaSdk failed — falling back to server-side:', err);
+        loadDataViaSdk(USER_EMAIL).catch(err => {
+          console.error('[SDK] loadDataViaSdk failed — falling back:', err);
           _showSdkDebug('SDK load error: ' + (err && err.message || String(err)));
-          _SDK_MODE  = false;
-          _dataLoaded = true;   // server-side 503-retry path takes over
+          _SDK_MODE   = false;
+          _dataLoaded = true;
           fetchAndShowCenters(USER_EMAIL);
         });
       } else if (USER_EMAIL) {
-        // SDK available but no appLinkName — use server-side data path
         fetchAndShowCenters(USER_EMAIL);
-      } else {
-        console.warn('[FaceVerify] No email in params:', raw);
+        triggerPreload(USER_EMAIL);
       }
     })
-    .catch(function (e) {
-      const msg = e && (e.message || String(e));
-      console.warn('[FaceVerify] Zoho SDK init failed:', e);
-      _showSdkDebug('SDK error: ' + msg);
+    .catch(e => {
+      console.warn('[FaceVerify] SDK init failed:', e);
+      _showSdkDebug('SDK error: ' + (e && (e.message || String(e))));
       _zohoInitDone = true;
-      if (USER_EMAIL) fetchAndShowCenters(USER_EMAIL);
+      if (USER_EMAIL) { fetchAndShowCenters(USER_EMAIL); triggerPreload(USER_EMAIL); }
     });
 }
 
 function _showSdkDebug(msg) {
-  // Only show debug banner when ?debug=1 is in the URL — never in production
   if (!urlParams.get('debug')) return;
   const el = document.getElementById('sdk-debug');
   if (el) { el.textContent = msg; el.style.display = 'block'; }
 }
 
-// Wait for Zoho init to finish (up to maxMs), then resolve
 function waitForZohoInit(maxMs) {
-  return new Promise(function (resolve) {
+  return new Promise(resolve => {
     if (_zohoInitDone) { resolve(); return; }
     const deadline = Date.now() + maxMs;
     (function poll() {
@@ -565,84 +638,51 @@ async function loadDataViaSdk(email) {
   if (_dataLoading) return;
   _dataLoading = true;
   _dataLoaded  = false;
-
   try {
     setStatus('active', 'Loading student data from Zoho…');
 
-    // 1. Fetch field/report config from backend
-    if (!_cfg) {
-      _cfg = await fetch('/api/config').then(r => r.json());
-    }
+    if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
     const cfg = _cfg;
 
-    // 2. Fetch this user's centres via SDK
     const centreResp = await ZOHO.CREATOR.DATA.getRecords({
-      appName:    APP_LINK_NAME,
-      reportName: cfg.reports.centres,
-      criteria:   '(' + cfg.fields.centre_email + '=="' + email + '")',
-      page:       1,
-      pageSize:   200,
+      appName: APP_LINK_NAME, reportName: cfg.reports.centres,
+      criteria: '(' + cfg.fields.centre_email + '=="' + email + '")',
+      page: 1, pageSize: 200,
     });
     const centreRecords = (centreResp && centreResp.data) || [];
+    const centreNames   = centreRecords.map(r => r[cfg.fields.centre_name] || '').filter(Boolean);
+    if (centreNames.length) hideEmailOverride(); else showEmailOverride(email);
 
-    const centreNames = centreRecords
-      .map(r => r[cfg.fields.centre_name] || '')
-      .filter(Boolean);
-    if (centreNames.length) {
-      hideEmailOverride();
-    } else {
-      showEmailOverride(email);
-    }
-
-    // Build scope key from sorted centre IDs (must match backend _build_scope_key)
-    const centreIds = centreRecords
-      .map(r => String(r.ID || r.id || ''))
-      .filter(Boolean)
-      .sort();
+    const centreIds = centreRecords.map(r => String(r.ID || r.id || '')).filter(Boolean).sort();
     _SCOPE_KEY = centreIds.length ? 'C:' + centreIds.join(',') : 'ALL';
 
-    // 3. Fetch ongoing batches for these centres
     let batchCriteria = cfg.fields.batch_status + '=="Ongoing"';
     if (centreIds.length) {
-      // Centres is a lookup field — use .ID suffix to filter by system record ID
-      const centreFilter = centreIds
-        .map(id => cfg.fields.batch_center + '.ID=="' + id + '"')
-        .join(' || ');
-      batchCriteria += ' && (' + centreFilter + ')';
+      const cf = centreIds.map(id => cfg.fields.batch_center + '.ID=="' + id + '"').join(' || ');
+      batchCriteria += ' && (' + cf + ')';
     }
 
     const batchResp = await ZOHO.CREATOR.DATA.getRecords({
-      appName:    APP_LINK_NAME,
-      reportName: cfg.reports.batches,
-      criteria:   '(' + batchCriteria + ')',
-      page:       1,
-      pageSize:   200,
+      appName: APP_LINK_NAME, reportName: cfg.reports.batches,
+      criteria: '(' + batchCriteria + ')', page: 1, pageSize: 200,
     });
     const batchIds = ((batchResp && batchResp.data) || [])
-      .map(r => String(r.ID || r.id || ''))
-      .filter(Boolean);
+      .map(r => String(r.ID || r.id || '')).filter(Boolean);
 
-    console.log('[SDK] Found', batchIds.length, 'ongoing batch(es) for', _SCOPE_KEY);
+    console.log('[SDK] Found', batchIds.length, 'ongoing batch(es)');
 
-    // 4. Fetch trainees — chunked by batch IDs, paginated
-    const CHUNK    = 10;  // batch IDs per SDK request
     const allTrainees = [];
+    const CHUNK = 10;
 
     if (batchIds.length) {
       for (let i = 0; i < batchIds.length; i += CHUNK) {
         const chunk  = batchIds.slice(i, i + CHUNK);
-        // Batch_ID is a lookup field — use .ID suffix to filter by system record ID
-        const filter = chunk
-          .map(id => cfg.fields.student_batch + '.ID=="' + id + '"')
-          .join(' || ');
+        const filter = chunk.map(id => cfg.fields.student_batch + '.ID=="' + id + '"').join(' || ');
         let page = 1;
         while (true) {
           const resp = await ZOHO.CREATOR.DATA.getRecords({
-            appName:    APP_LINK_NAME,
-            reportName: cfg.reports.students,
-            criteria:   '(' + filter + ')',
-            page,
-            pageSize:   200,
+            appName: APP_LINK_NAME, reportName: cfg.reports.students,
+            criteria: '(' + filter + ')', page, pageSize: 200,
           });
           const records = (resp && resp.data) || [];
           allTrainees.push(...records);
@@ -651,18 +691,10 @@ async function loadDataViaSdk(email) {
         }
       }
     } else if (centreIds.length) {
-      // No batches found — load all trainees for these centres
-      const centreFilter = centreIds
-        .map(id => cfg.fields.student_batch + '=="' + id + '"')
-        .join(' || ');
-      // Fallback: load without batch filter (centre-scoped but no batch)
       let page = 1;
       while (true) {
         const resp = await ZOHO.CREATOR.DATA.getRecords({
-          appName:    APP_LINK_NAME,
-          reportName: cfg.reports.students,
-          page,
-          pageSize:   200,
+          appName: APP_LINK_NAME, reportName: cfg.reports.students, page, pageSize: 200,
         });
         const records = (resp && resp.data) || [];
         allTrainees.push(...records);
@@ -674,17 +706,15 @@ async function loadDataViaSdk(email) {
     console.log('[SDK] Fetched', allTrainees.length, 'trainee record(s)');
     setStatus('active', 'Seeding face recognition cache…');
 
-    // 5. POST to backend to seed the face embedding cache
-    const loadResp = await fetch('/api/load-students', {
-      method:  'POST',
+    await fetch('/api/load-students', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
+      body: JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
     }).then(r => r.json());
 
-    console.log('[SDK] Cache seeded:', loadResp.loaded, 'students in scope', _SCOPE_KEY);
+    console.log('[SDK] Cache seeded for scope', _SCOPE_KEY);
     _dataLoaded = true;
     setStatus('active', 'Position your face in the oval');
-
   } catch (err) {
     _dataLoading = false;
     throw err;
@@ -692,9 +722,8 @@ async function loadDataViaSdk(email) {
   _dataLoading = false;
 }
 
-// Wait for SDK data to be loaded into backend cache (up to maxMs)
 function waitForDataLoaded(maxMs) {
-  return new Promise(function (resolve) {
+  return new Promise(resolve => {
     if (_dataLoaded) { resolve(); return; }
     const deadline = Date.now() + maxMs;
     (function poll() {
@@ -704,94 +733,83 @@ function waitForDataLoaded(maxMs) {
   });
 }
 
-// ── Post attendance via Zoho Creator Widget SDK ───────────────────────────────
+// ── Zoho SDK attendance post ──────────────────────────────────────────────────
+
 async function postAttendanceSdk(student, dateStr) {
   const cfg    = _cfg;
   const record = {};
   record[cfg.fields.att_student] = student.id;
   record[cfg.fields.att_date]    = dateStr;
   record[cfg.fields.att_status]  = 'Present';
-
   await ZOHO.CREATOR.DATA.addRecord({
-    appName:  APP_LINK_NAME,
-    formName: cfg.reports.attendance_form,
-    data:     record,
+    appName: APP_LINK_NAME, formName: cfg.reports.attendance_form, data: record,
   });
-  console.log('[SDK] Attendance posted for', student.name, 'on', dateStr);
 }
 
-// ── Email override (shown when no centres found for logged-in email) ──────────
+// ── Email override ────────────────────────────────────────────────────────────
+
 function showEmailOverride(forEmail) {
   const bar = document.getElementById('email-override-bar');
   const lbl = document.getElementById('email-override-current');
   if (lbl) lbl.textContent = forEmail || 'your account';
   if (bar) bar.style.display = 'flex';
 }
-
 function hideEmailOverride() {
   const bar = document.getElementById('email-override-bar');
   if (bar) bar.style.display = 'none';
 }
-
 async function submitEmailOverride() {
   const input = document.getElementById('email-override-input');
-  const btn   = document.getElementById('email-override-btn');
+  const btn   = input && input.nextElementSibling;
   const email = (input && input.value.trim()) || '';
-
-  if (!email || !email.includes('@')) {
-    toast('Please enter a valid email address.', 'danger');
-    return;
-  }
-
+  if (!email || !email.includes('@')) { showBanner('Please enter a valid email address.', 'warning'); return; }
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
   USER_EMAIL = email;
-
   try {
     if (_SDK_MODE) {
-      _dataLoaded  = false;
-      _dataLoading = false;
+      _dataLoaded = false; _dataLoading = false;
       await loadDataViaSdk(email);
     } else {
-      // Server-side: update USER_EMAIL so next verify uses it for centre lookup
       fetchAndShowCenters(email);
+      triggerPreload(email);
     }
     hideEmailOverride();
   } catch (err) {
-    toast('Failed to load students: ' + (err && err.message || String(err)), 'danger');
+    showBanner('Failed to load students: ' + (err && err.message || String(err)), 'danger');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Load Students'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Load'; }
   }
 }
 
-
-
 function fetchAndShowCenters(email) {
-  let centersUrl = '/api/user/centers?user_email=' + encodeURIComponent(email);
-  if (ZOHO_ENV) centersUrl += '&zoho_environment=' + encodeURIComponent(ZOHO_ENV);
-  fetch(centersUrl)
+  let url = '/api/user/centers?user_email=' + encodeURIComponent(email);
+  if (ZOHO_ENV) url += '&zoho_environment=' + encodeURIComponent(ZOHO_ENV);
+  fetch(url)
     .then(r => r.json())
-    .then(function (data) {
+    .then(data => {
       const centers = (data.centers || []).filter(Boolean);
-      if (centers.length) {
-        hideEmailOverride();
-      } else {
-        showEmailOverride(email);
-      }
+      if (centers.length) hideEmailOverride(); else showEmailOverride(email);
     })
-    .catch(function () {});
+    .catch(() => {});
 }
 
-// ── Config ────────────────────────────────────────────────────────────────────
-const API_BASE         = '';
+function triggerPreload(email) {
+  const params = new URLSearchParams({ user_email: email });
+  if (ZOHO_ENV) params.set('zoho_environment', ZOHO_ENV);
+  fetch('/api/preload?' + params, { method: 'POST' }).catch(() => {});
+}
+
+// ── Face recognition config ───────────────────────────────────────────────────
+
 const BLINKS_REQUIRED  = 2;
 const EAR_CLOSE_THRESH = 0.18;
 const EAR_OPEN_THRESH  = 0.23;
 const EAR_SMOOTH_ALPHA = 0.3;
-
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 
 // ── State ─────────────────────────────────────────────────────────────────────
+
 let state = {
   cameraReady:   false,
   faceDetected:  false,
@@ -804,27 +822,54 @@ let state = {
 };
 
 let videoEl, canvasEl, ctx, faceMeshInstance, cameraInstance;
+let _currentStream = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
+
 const permScreen   = document.getElementById('perm-screen');
 const statusDot    = document.getElementById('status-dot');
 const statusText   = document.getElementById('status-text');
 const faceFrame    = document.getElementById('face-frame');
+const blinkOverlay = document.getElementById('blink-overlay');
+const blinkCountEl = document.getElementById('blink-count');
 const earVal       = document.getElementById('ear-val');
 const earFill      = document.getElementById('ear-fill');
-const earWrap      = document.getElementById('ear-meter-wrap');
-const blinkWrap    = document.getElementById('blink-counter-wrap');
-const blinkCountEl = document.getElementById('blink-count');
 const spinnerEl    = document.getElementById('spinner');
-const resultCard   = document.getElementById('result-card');
-const resultBadge  = document.getElementById('result-badge');
-const studentInfo  = document.getElementById('student-info');
 
+// ── Inactivity detection ──────────────────────────────────────────────────────
+
+function resetInactivityTimer() {
+  clearTimeout(_inactivityTimer);
+  if (!state.cameraReady || state.done || state.verifying) return;
+  _inactivityTimer = setTimeout(() => {
+    if (state.verifying || state.done) return;
+    _pauseForInactivity();
+  }, INACTIVITY_MS);
+}
+
+function _pauseForInactivity() {
+  if (cameraInstance) { try { cameraInstance.stop(); } catch (_) {} }
+  if (_currentStream) { _currentStream.getTracks().forEach(t => t.stop()); _currentStream = null; }
+  state.cameraReady = false;
+  document.getElementById('inactive-overlay').classList.add('show');
+  setStatus('dot', 'Camera paused');
+}
+
+function reactivateCamera() {
+  document.getElementById('inactive-overlay').classList.remove('show');
+  _fullReset();
+  startCamera();
+}
+
+['mousemove', 'touchstart', 'click', 'keydown'].forEach(ev => {
+  document.addEventListener(ev, resetInactivityTimer, { passive: true });
+});
 
 // ── Camera ────────────────────────────────────────────────────────────────────
+
 async function startCamera() {
   permScreen.style.display = 'none';
-  setStatus('dot', 'Requesting camera access...');
+  setStatus('dot', 'Requesting camera access…');
 
   videoEl  = document.getElementById('video');
   canvasEl = document.getElementById('canvas-overlay');
@@ -835,36 +880,36 @@ async function startCamera() {
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
       audio: false,
     });
+    _currentStream   = stream;
     videoEl.srcObject = stream;
     await videoEl.play();
     state.cameraReady = true;
-    setStatus('active', 'Camera ready — initialising face detection...');
+    setStatus('active', 'Camera ready — initialising face detection…');
+    resetInactivityTimer();
     initFaceMesh();
   } catch (err) {
     permScreen.style.display = 'flex';
-    setStatus('error', `Camera error: ${err.message}`);
-    toast(`Camera access denied: ${err.message}`, 'danger');
+    setStatus('error', 'Camera error: ' + err.message);
   }
 }
 
 // ── MediaPipe ─────────────────────────────────────────────────────────────────
+
 function initFaceMesh() {
   faceMeshInstance = new FaceMesh({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${file}`,
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`,
   });
   faceMeshInstance.setOptions({
-    maxNumFaces:             1,
-    refineLandmarks:         true,
-    minDetectionConfidence:  0.7,
-    minTrackingConfidence:   0.6,
+    maxNumFaces:            1,
+    refineLandmarks:        true,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence:  0.6,
   });
   faceMeshInstance.onResults(onFaceMeshResults);
 
   cameraInstance = new Camera(videoEl, {
     onFrame: async () => {
-      if (!state.done && !state.verifying) {
-        await faceMeshInstance.send({ image: videoEl });
-      }
+      if (!state.done && !state.verifying) await faceMeshInstance.send({ image: videoEl });
     },
     width: 640, height: 480,
   });
@@ -875,7 +920,8 @@ function initFaceMesh() {
   });
 }
 
-// ── Face Mesh Results ─────────────────────────────────────────────────────────
+// ── Face mesh results ─────────────────────────────────────────────────────────
+
 function onFaceMeshResults(results) {
   canvasEl.width  = videoEl.videoWidth  || 640;
   canvasEl.height = videoEl.videoHeight || 480;
@@ -888,8 +934,7 @@ function onFaceMeshResults(results) {
       state.faceDetected = false;
       setStatus('dot', 'Position your face in the oval');
       setFrameClass('');
-      earWrap.style.display   = 'none';
-      blinkWrap.style.display = 'none';
+      blinkOverlay.classList.remove('show');
     }
     return;
   }
@@ -899,184 +944,145 @@ function onFaceMeshResults(results) {
     setStatus('active', 'Face detected — blink to verify liveness');
     setFrameClass('detected');
     activateStep(2);
-    earWrap.style.display   = 'block';
-    blinkWrap.style.display = 'block';
+    blinkOverlay.classList.add('show');
+    resetInactivityTimer();
   }
 
   drawSubtleMesh(landmarks, canvasEl.width, canvasEl.height);
 
   const w = canvasEl.width, h = canvasEl.height;
-  const lEAR   = computeEAR(landmarks, LEFT_EYE_IDX,  w, h);
-  const rEAR   = computeEAR(landmarks, RIGHT_EYE_IDX, w, h);
-  const avgEAR = (lEAR + rEAR) / 2;
-
+  const avgEAR = (computeEAR(landmarks, LEFT_EYE_IDX, w, h) + computeEAR(landmarks, RIGHT_EYE_IDX, w, h)) / 2;
   state.smoothedEAR = EAR_SMOOTH_ALPHA * avgEAR + (1 - EAR_SMOOTH_ALPHA) * state.smoothedEAR;
 
   const earPct = Math.min(Math.max(state.smoothedEAR / 0.35, 0), 1) * 100;
-  earVal.textContent = state.smoothedEAR.toFixed(3);
-  earFill.style.width = earPct + '%';
-  earFill.style.background = state.smoothedEAR < EAR_CLOSE_THRESH ? 'var(--warning)' : 'var(--accent)';
+  earVal.textContent   = state.smoothedEAR.toFixed(3);
+  earFill.style.width  = earPct + '%';
+  earFill.style.background = state.smoothedEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
 
   if (!state.blinkVerified) {
     if (state.smoothedEAR < EAR_CLOSE_THRESH) {
       state.eyeWasClosed = true;
       setFrameClass('liveness');
-      setStatus('blink', 'Blink detected — keep going...');
+      setStatus('blink', 'Blink detected…');
     } else if (state.smoothedEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
       state.eyeWasClosed = false;
       state.blinkCount++;
       blinkCountEl.textContent = state.blinkCount;
-
       if (state.blinkCount >= BLINKS_REQUIRED) {
         state.blinkVerified = true;
-        blinkCountEl.classList.add('complete');
-        setStatus('success', 'Liveness confirmed — capturing...');
+        blinkCountEl.classList.add('done');
+        setStatus('ok', 'Liveness confirmed — capturing…');
         setFrameClass('verified');
         activateStep(3);
         captureAndVerify();
       } else {
         const rem = BLINKS_REQUIRED - state.blinkCount;
-        setStatus('blink', `Good! Blink ${rem} more time${rem > 1 ? 's' : ''}...`);
+        setStatus('blink', `Good! ${rem} more blink${rem > 1 ? 's' : ''}…`);
       }
     }
   }
 }
 
-// ── EAR & Drawing ─────────────────────────────────────────────────────────────
+// ── EAR & mesh drawing ────────────────────────────────────────────────────────
+
 function computeEAR(landmarks, indices, w, h) {
-  const pt = (i) => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
+  const pt = i => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
   const [p1, p2, p3, p4, p5, p6] = indices.map(pt);
   return (dist(p2, p6) + dist(p3, p5)) / (2.0 * dist(p1, p4));
 }
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
 function drawSubtleMesh(landmarks, w, h) {
-  const eyeColor     = 'rgba(37, 99, 235, 0.4)';
-  const contourColor = 'rgba(255,255,255,0.08)';
   const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
-  const L_EYE     = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
-  const R_EYE     = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
-  drawPath(landmarks, FACE_OVAL, w, h, contourColor, 1, true);
-  drawPath(landmarks, L_EYE,     w, h, eyeColor,     1.5, true);
-  drawPath(landmarks, R_EYE,     w, h, eyeColor,     1.5, true);
+  const L_EYE    = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
+  const R_EYE    = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
+  drawPath(landmarks, FACE_OVAL, w, h, 'rgba(196,149,42,0.2)', 1,   true);
+  drawPath(landmarks, L_EYE,    w, h, 'rgba(196,149,42,0.55)', 1.5, true);
+  drawPath(landmarks, R_EYE,    w, h, 'rgba(196,149,42,0.55)', 1.5, true);
 }
 function drawPath(landmarks, indices, w, h, color, lineWidth, close) {
   if (!indices.length) return;
   ctx.beginPath();
   ctx.strokeStyle = color;
-  ctx.lineWidth = lineWidth;
-  const first = landmarks[indices[0]];
-  ctx.moveTo(first.x * w, first.y * h);
-  for (let i = 1; i < indices.length; i++) {
-    ctx.lineTo(landmarks[indices[i]].x * w, landmarks[indices[i]].y * h);
-  }
+  ctx.lineWidth   = lineWidth;
+  const f = landmarks[indices[0]];
+  ctx.moveTo(f.x * w, f.y * h);
+  for (let i = 1; i < indices.length; i++) ctx.lineTo(landmarks[indices[i]].x * w, landmarks[indices[i]].y * h);
   if (close) ctx.closePath();
   ctx.stroke();
 }
 
 // ── Capture & Verify ──────────────────────────────────────────────────────────
+
 async function captureAndVerify(cachedImage = null) {
   state.verifying = true;
 
-  // Ensure Zoho init has resolved so USER_EMAIL / APP_LINK_NAME are set
   if (!_zohoInitDone) {
-    setStatus('active', 'Authenticating user…');
+    setStatus('active', 'Authenticating…');
     await waitForZohoInit(5000);
   }
 
-  // In SDK mode, wait for student data to be seeded into backend cache
   if (_SDK_MODE && !_dataLoaded) {
-    setStatus('active', 'Loading student data… please wait');
+    setStatus('active', 'Loading student data…');
     await waitForDataLoaded(30000);
     if (!_dataLoaded) {
-      showError('Student data not ready. Please refresh and try again.');
+      showBanner('Student data not ready. Please try again.', 'danger');
       state.verifying = false;
       return;
     }
   }
 
   let imageData = cachedImage;
-
   if (!imageData) {
-    // Guard: camera must have a valid frame before sending
-    if (!videoEl.videoWidth || !videoEl.videoHeight) {
-      console.warn('[FaceVerify] Camera not ready — aborting verify');
-      state.verifying = false;
-      return;
-    }
-
-    const captureCanvas = document.createElement('canvas');
-    captureCanvas.width  = videoEl.videoWidth;
-    captureCanvas.height = videoEl.videoHeight;
-    const cCtx = captureCanvas.getContext('2d');
-    cCtx.translate(captureCanvas.width, 0);
-    cCtx.scale(-1, 1);
+    if (!videoEl.videoWidth || !videoEl.videoHeight) { state.verifying = false; return; }
+    const cc  = document.createElement('canvas');
+    cc.width  = videoEl.videoWidth;
+    cc.height = videoEl.videoHeight;
+    const cCtx = cc.getContext('2d');
+    cCtx.translate(cc.width, 0); cCtx.scale(-1, 1);
     cCtx.drawImage(videoEl, 0, 0);
-    imageData = captureCanvas.toDataURL('image/jpeg', 0.92);
-
-    if (!imageData || imageData === 'data:,') {
-      console.warn('[FaceVerify] Canvas capture empty — aborting verify');
-      state.verifying = false;
-      return;
-    }
+    imageData = cc.toDataURL('image/jpeg', 0.92);
+    if (!imageData || imageData === 'data:,') { state.verifying = false; return; }
   }
 
-  spinnerEl.classList.add('show');
-  resultCard.classList.remove('show', 'success', 'danger', 'warning');
+  showSpinner(true);
 
   try {
-    const body = {
-      image:          imageData,
-      blink_verified: true,
-    };
-    if (_SDK_MODE) {
-      // SDK loaded the cache — tell backend to use scope_key directly (no Zoho API call needed)
-      body.scope_key = _SCOPE_KEY;
-    } else {
-      if (USER_EMAIL) body.user_email = USER_EMAIL;
-    }
+    const body = { image: imageData, blink_verified: true };
+    if (_SDK_MODE)       body.scope_key = _SCOPE_KEY;
+    else if (USER_EMAIL) body.user_email = USER_EMAIL;
     if (ZOHO_ENV) body.zoho_environment = ZOHO_ENV;
 
-    const resp = await fetch(`${API_BASE}/api/verify`, {
-      method:  'POST',
+    const resp = await fetch('/api/verify', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
+      body: JSON.stringify(body),
     });
 
     let data;
     try {
       data = await resp.json();
     } catch (_) {
-      spinnerEl.classList.remove('show');
+      showSpinner(false);
       const msg = resp.status === 502
-        ? 'Server is starting up, please wait 15 seconds and try again.'
+        ? 'Server is starting up — please wait a moment and try again.'
         : `Server error (${resp.status}). Please try again.`;
-      showError(msg);
+      showBanner(msg, 'danger');
       resetForRetry();
       return;
     }
-    spinnerEl.classList.remove('show');
 
-    // 503 with loading:true — only in server-side mode (SDK mode pre-seeds cache)
+    showSpinner(false);
+
+    // 503: cache not ready — one-time message, no looping retry
     if (resp.status === 503 && data.loading) {
-      const secs = data.retry_after || 15;
-      let countdown = secs;
-      const countdownInterval = setInterval(() => {
-        countdown--;
-        setStatus('active', `Loading student data... retrying in ${countdown}s`);
-        if (countdown <= 0) clearInterval(countdownInterval);
-      }, 1000);
-      showInfo(`Loading student data... retrying in ${secs}s`);
-      setTimeout(() => {
-        clearInterval(countdownInterval);
-        state.verifying = false;
-        captureAndVerify(imageData);   // reuse the same verified photo
-      }, secs * 1000);
+      showBanner('Student data is still loading. Please wait a moment, then try again.', 'info');
+      resetForRetry();
       return;
     }
 
     if (!resp.ok) {
-      showError(data.error || 'Verification failed.');
+      showBanner(data.error || 'Verification failed.', 'danger');
       resetForRetry();
       return;
     }
@@ -1088,143 +1094,145 @@ async function captureAndVerify(cachedImage = null) {
 
     if (data.matched) {
       activateStep(4);
-      showSuccess(data);
       setTimeout(() => {
         for (let i = 1; i <= 4; i++) {
-          const el = document.getElementById(`step-${i}`);
-          el.classList.remove('active');
-          el.classList.add('done');
+          const el = document.getElementById('step-' + i);
+          el.className = 'step-item done';
         }
       }, 600);
+      showSuccess(data);
     } else {
       showNoMatch(data.message);
-      resetForRetry();
     }
 
   } catch (err) {
-    spinnerEl.classList.remove('show');
-    showError(`Network error: ${err.message}`);
+    showSpinner(false);
+    showBanner('Network error: ' + err.message, 'danger');
     resetForRetry();
   }
 }
 
-// Return today's date in "DD-Mon-YYYY" format (same as Python strftime "%d-%b-%Y")
 function _getTodayStr() {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const d = new Date();
   return String(d.getDate()).padStart(2, '0') + '-' + months[d.getMonth()] + '-' + d.getFullYear();
 }
 
-// ── Result Display ────────────────────────────────────────────────────────────
+// ── Result display ────────────────────────────────────────────────────────────
+
 function showSuccess(data) {
   state.done = true;
   const s = data.student;
-
-  resultBadge.className = 'result-badge success';
-  resultBadge.innerHTML = `<i class="bi bi-check-circle-fill"></i> Identity Verified`;
-
-  const confPct   = data.confidence || 0;
-  const attStatus = data.attendance_posted
-    ? `<span class="info-value att-ok"><i class="bi bi-check-circle me-1"></i>Marked Present</span>`
-    : `<span class="info-value att-err"><i class="bi bi-exclamation-triangle me-1"></i>Failed to post</span>`;
-
-  studentInfo.innerHTML = `
-    <div class="info-row"><span class="info-key">Name</span><span class="info-value">${esc(s.name)}</span></div>
-    ${s.roll_number ? `<div class="info-row"><span class="info-key">Student ID</span><span class="info-value">${esc(s.roll_number)}</span></div>` : ''}
-    <div class="info-row"><span class="info-key">Confidence</span><span class="info-value">${confPct}%</span></div>
-    <div class="confidence-bar"><div class="confidence-fill" style="width:${confPct}%"></div></div>
-    <div class="info-row"><span class="info-key">Attendance</span>${attStatus}</div>
-    <div class="info-row"><span class="info-key">Verified via</span><span class="info-value">Face + Eye Blink</span></div>
-  `;
-
-  resultCard.classList.add('show', 'success');
+  if (data.attendance_posted) {
+    successCount++;
+    document.getElementById('count-success').textContent = successCount;
+  }
   setFrameClass('verified');
-  setStatus('success', `Welcome, ${s.name}! Attendance marked.`);
-  toast(`✓ ${s.name} — attendance posted`, 'success');
+  setStatus('ok', s.name + ' — attendance marked');
+  const conf  = data.confidence || 0;
+  const sub   = (s.roll_number ? s.roll_number + ' · ' : '') + conf + '% match · ' +
+                (data.attendance_posted ? 'Posted to Zoho ✓' : 'Identity verified');
+  showBanner(esc(s.name), 'success', null, sub);
+  // Auto-advance to next student after 3 seconds
+  setTimeout(() => resetVerification(), 3000);
 }
 
 function showDuplicate(data) {
   const s = data.student;
-  resultBadge.className = 'result-badge warning';
-  resultBadge.innerHTML = `<i class="bi bi-exclamation-circle-fill"></i> Already Marked`;
-  studentInfo.innerHTML = `
-    <div class="info-row"><span class="info-key">Name</span><span class="info-value">${esc(s.name)}</span></div>
-    <div class="info-row"><span class="info-key">Status</span><span class="info-value" style="color:var(--warning)">Already marked present today</span></div>
-  `;
-  resultCard.classList.add('show', 'warning');
   setFrameClass('verified');
-  setStatus('success', `${s.name} already marked present today.`);
-  toast(`${s.name} already marked present`, 'warning');
+  setStatus('ok', s.name + ' already marked today');
+  showBanner(esc(s.name), 'warning', null, 'Already marked present today');
   setTimeout(() => resetVerification(), 4000);
 }
 
 function showNoMatch(message) {
-  resultBadge.className = 'result-badge danger';
-  resultBadge.innerHTML = `<i class="bi bi-x-circle-fill"></i> Not Recognised`;
-  studentInfo.innerHTML = `
-    <div class="info-row">
-      <span class="info-key">Result</span>
-      <span class="info-value" style="color:var(--danger)">${esc(message || 'Face not found in database.')}</span>
-    </div>
-    <div class="info-row"><span class="info-key">Action</span>
-      <span class="info-value">Please try again or contact admin.</span>
-    </div>
-  `;
-  resultCard.classList.add('show', 'danger');
   setFrameClass('no-match');
   setStatus('error', 'Face not recognised');
+  showBanner('Face not recognised', 'danger', null, message || 'No matching student found in database.');
+  resetForRetry();
 }
 
-function showError(msg) {
-  toast(msg, 'danger');
-  setStatus('error', msg);
-  setFrameClass('no-match');
+// ── Banner helpers ────────────────────────────────────────────────────────────
+
+function showBanner(title, type, iconOverride, sub) {
+  const el     = document.getElementById('msg-banner');
+  const icons  = { success: 'bi-check-circle-fill', danger: 'bi-x-circle-fill', warning: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill' };
+  const iconEl = document.getElementById('msg-icon');
+  iconEl.innerHTML = '<i class="bi ' + (icons[type] || icons.info) + '"></i>';
+  document.getElementById('msg-title').textContent = title || '';
+  document.getElementById('msg-sub').textContent   = sub   || '';
+  el.className = 'msg-banner show ' + (type || 'info');
+  // Hide spinner if showing
+  spinnerEl.className = 'verify-spinner';
 }
 
-function showInfo(msg) {
-  toast(msg, 'info');
-  setStatus('active', msg);
+function hideBanner() {
+  document.getElementById('msg-banner').className = 'msg-banner';
+}
+
+function showSpinner(on) {
+  spinnerEl.className = on ? 'verify-spinner show' : 'verify-spinner';
+  if (on) hideBanner();
 }
 
 // ── Reset ─────────────────────────────────────────────────────────────────────
+
 function resetForRetry() {
   setTimeout(() => {
-    state.verifying    = false;
+    state.verifying     = false;
     state.blinkVerified = false;
-    state.blinkCount   = 0;
-    state.eyeWasClosed = false;
-    state.smoothedEAR  = 0.3;
+    state.blinkCount    = 0;
+    state.eyeWasClosed  = false;
+    state.smoothedEAR   = 0.3;
     blinkCountEl.textContent = '0';
-    blinkCountEl.classList.remove('complete');
-    resultCard.classList.remove('show', 'success', 'danger', 'warning');
+    blinkCountEl.classList.remove('done');
+    blinkOverlay.classList.remove('show');
+    hideBanner();
     setStatus('active', 'Position your face in the oval');
     setFrameClass('');
     activateStep(1);
-  }, 3000);
+    resetInactivityTimer();
+  }, 2000);
+}
+
+function _fullReset() {
+  state = {
+    cameraReady: false, faceDetected: false,
+    blinkCount: 0, eyeWasClosed: false, smoothedEAR: 0.3,
+    blinkVerified: false, verifying: false, done: false,
+  };
+  blinkCountEl.textContent = '0';
+  blinkCountEl.classList.remove('done');
+  blinkOverlay.classList.remove('show');
+  hideBanner();
+  setFrameClass('');
+  activateStep(0);
 }
 
 function resetVerification() {
   state.done = false;
-  resultCard.classList.remove('show', 'success', 'danger', 'warning');
+  hideBanner();
   resetForRetry();
 }
 
-// ── UI Helpers ────────────────────────────────────────────────────────────────
+// ── UI helpers ────────────────────────────────────────────────────────────────
+
 function setStatus(type, text) {
   statusText.textContent = text;
-  statusDot.className = 'status-dot';
-  if (type === 'active')  statusDot.classList.add('active');
-  if (type === 'blink')   statusDot.classList.add('blink');
-  if (type === 'success') statusDot.classList.add('success');
-  if (type === 'error')   statusDot.classList.add('error');
+  statusDot.className    = 'status-dot';
+  if (type === 'active') statusDot.classList.add('active');
+  if (type === 'blink')  statusDot.classList.add('blink');
+  if (type === 'ok')     statusDot.classList.add('ok');
+  if (type === 'error')  statusDot.classList.add('error');
 }
 function setFrameClass(cls) {
-  faceFrame.className = 'face-frame' + (cls ? ` ${cls}` : '');
+  faceFrame.className = 'face-frame' + (cls ? ' ' + cls : '');
 }
 function activateStep(n) {
   for (let i = 1; i <= 4; i++) {
-    const el = document.getElementById(`step-${i}`);
-    el.classList.remove('active', 'done');
+    const el = document.getElementById('step-' + i);
+    if (!el) continue;
+    el.className = 'step-item';
     if (i < n)  el.classList.add('done');
     if (i === n) el.classList.add('active');
   }
@@ -1234,52 +1242,40 @@ function esc(str) {
   d.appendChild(document.createTextNode(str || ''));
   return d.innerHTML;
 }
-function toast(msg, type = 'info') {
-  const colors = { success: 'var(--success)', danger: 'var(--danger)', warning: 'var(--warning)', info: 'var(--accent)' };
-  const el = document.createElement('div');
-  el.className = 'toast-msg';
-  el.style.borderLeft = `3px solid ${colors[type] || colors.info}`;
-  el.textContent = msg;
-  document.getElementById('toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 5000);
-}
 
-// ── Cache Refresh ─────────────────────────────────────────────────────────────
+// ── Cache refresh ─────────────────────────────────────────────────────────────
+
 async function refreshCache() {
   const btn = document.getElementById('btn-refresh-cache');
   btn.disabled = true;
-  btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Refreshing...';
+  btn.innerHTML = '<div class="spin" style="width:16px;height:16px;border-width:2px;border-color:rgba(255,255,255,0.3);border-top-color:#fff;display:inline-block"></div>';
   try {
     if (_SDK_MODE && USER_EMAIL) {
-      // Re-fetch from Zoho Creator SDK and re-seed backend cache
-      _dataLoaded  = false;
-      _dataLoading = false;
-      _cfg = null;   // re-fetch config too
+      _dataLoaded = false; _dataLoading = false; _cfg = null;
       await loadDataViaSdk(USER_EMAIL);
-      toast('✓ Student database refreshed via SDK', 'success');
+      showBanner('Student database refreshed', 'success', null, 'Data reloaded from Zoho');
     } else {
       const params = new URLSearchParams();
       if (USER_EMAIL) params.set('user_email', USER_EMAIL);
       if (ZOHO_ENV)   params.set('zoho_environment', ZOHO_ENV);
-      const qs  = params.toString();
-      const url = `${API_BASE}/api/cache/refresh${qs ? '?' + qs : ''}`;
-      const resp = await fetch(url, { method: 'POST' });
-      const data = await resp.json();
+      const url  = '/api/cache/refresh' + (params.toString() ? '?' + params : '');
+      const data = await fetch(url, { method: 'POST' }).then(r => r.json());
       if (data.success) {
-        toast(`✓ Student database refreshed — ${data.students_loaded} students loaded`, 'success');
+        showBanner('Student database refreshed', 'success', null, data.students_loaded + ' students loaded');
       } else {
-        toast(`Cache refresh failed: ${data.error || 'Unknown error'}`, 'danger');
+        showBanner('Refresh failed: ' + (data.error || 'Unknown error'), 'danger');
       }
     }
   } catch (e) {
-    toast(`Refresh failed: ${e.message}`, 'danger');
+    showBanner('Refresh failed: ' + e.message, 'danger');
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh Students';
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
   }
 }
 
 // ── Auto-start ────────────────────────────────────────────────────────────────
+
 (async function init() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     permScreen.querySelector('p').textContent =
@@ -1289,7 +1285,7 @@ async function refreshCache() {
   try {
     const perm = await navigator.permissions.query({ name: 'camera' });
     if (perm.state === 'granted') startCamera();
-  } catch (_) { /* wait for button click */ }
+  } catch (_) { /* wait for Allow Camera button */ }
 })();
 </script>
 </body>
