@@ -395,7 +395,11 @@ def webhook_student_update():
 
     body       = request.get_json(force=True) or {}
     student_id = (body.get("student_id") or body.get("ID") or "").strip()
-    env        = _resolve_env(body.get("zoho_environment") or body.get("environment") or "")
+    env        = _resolve_env(
+        body.get("zoho_environment") or body.get("environment") or
+        request.args.get("zoho_environment") or request.args.get("environment") or
+        request.headers.get("environment") or ""
+    )
 
     if not student_id:
         return jsonify({"error": "student_id is required"}), 400
