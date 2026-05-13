@@ -390,8 +390,8 @@
     }
     #btn-refresh-cache:hover:not(:disabled) { background: var(--red-h); }
     #btn-refresh-cache:disabled { opacity: 0.6; cursor: not-allowed; }
-    #btn-exit {
-      background: var(--red);
+    #btn-finish {
+      background: var(--success);
       color: #fff;
       border: none;
       border-radius: 8px;
@@ -406,8 +406,86 @@
       transition: background 0.2s;
       flex-shrink: 0;
     }
-    #btn-exit:hover { background: var(--red-h); }
+    #btn-finish:hover { background: #1B5E20; }
     .bottom-buttons { display: flex; gap: 8px; flex-shrink: 0; }
+
+    /* ── Finish modal (bottom sheet) ─────────────────────────────────────────── */
+    #finish-modal {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55);
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+      z-index: 200;
+    }
+    #finish-modal.show { display: flex; }
+    .finish-sheet {
+      background: #fff;
+      border-radius: 20px 20px 0 0;
+      width: 100%;
+      max-height: 85dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: slideUp 0.25s ease-out;
+    }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .finish-header {
+      padding: 14px 18px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .finish-title { font-size: 16px; font-weight: 700; color: var(--text); }
+    .finish-date  { font-size: 12px; color: var(--muted); margin-top: 1px; }
+    #btn-close-finish {
+      background: var(--border);
+      border: none;
+      border-radius: 50%;
+      width: 30px; height: 30px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      font-size: 15px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .finish-total {
+      padding: 12px 18px;
+      background: #ECFDF5;
+      border-bottom: 1px solid #A7F3D0;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .finish-total-num   { font-size: 32px; font-weight: 800; color: var(--success); line-height: 1; }
+    .finish-total-label { font-size: 13px; color: #065F46; font-weight: 500; }
+    .finish-table-wrap  { overflow-y: auto; flex: 1; }
+    .finish-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .finish-table th {
+      text-align: left;
+      padding: 9px 18px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      position: sticky; top: 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .finish-table td { padding: 11px 18px; border-bottom: 1px solid var(--border); color: var(--text); }
+    .finish-table tr:last-child td { border-bottom: none; }
+    .finish-table .row-num { color: var(--muted); font-size: 12px; width: 32px; }
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: #ECFDF5; color: var(--success);
+      border: 1px solid #A7F3D0; border-radius: 20px;
+      padding: 3px 10px; font-size: 12px; font-weight: 600;
+    }
+    .finish-empty { padding: 36px 18px; text-align: center; color: var(--muted); font-size: 14px; }
   </style>
 </head>
 <body>
@@ -515,12 +593,44 @@
     </div>
   </div>
   <div class="bottom-buttons">
-    <button id="btn-exit" onclick="exitToReport()">
-      <i class="bi bi-box-arrow-right"></i> Exit
+    <button id="btn-finish" onclick="showFinishModal()">
+      <i class="bi bi-clipboard-check"></i> Finish
     </button>
     <button id="btn-refresh-cache" onclick="refreshCache()">
       <i class="bi bi-arrow-clockwise"></i> Refresh
     </button>
+  </div>
+</div>
+
+<!-- Finish modal -->
+<div id="finish-modal" onclick="if(event.target===this)closeFinishModal()">
+  <div class="finish-sheet">
+    <div class="finish-header">
+      <div>
+        <div class="finish-title">Attendance Summary</div>
+        <div class="finish-date" id="finish-date"></div>
+      </div>
+      <button id="btn-close-finish" onclick="closeFinishModal()">
+        <i class="bi bi-x"></i>
+      </button>
+    </div>
+    <div class="finish-total">
+      <div class="finish-total-num" id="finish-total-num">—</div>
+      <div class="finish-total-label">students marked present today</div>
+    </div>
+    <div class="finish-table-wrap">
+      <table class="finish-table">
+        <thead>
+          <tr>
+            <th class="row-num">#</th>
+            <th>Trainee Name</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="finish-table-body"></tbody>
+      </table>
+      <div class="finish-empty" id="finish-empty" style="display:none">No attendance marked today.</div>
+    </div>
   </div>
 </div>
 
@@ -1266,14 +1376,45 @@ function esc(str) {
   return d.innerHTML;
 }
 
-// ── Exit to report ────────────────────────────────────────────────────────────
+// ── Finish modal ──────────────────────────────────────────────────────────────
 
-function exitToReport() {
-  const base = 'https://creatorapp.zoho.in/admin_trrainfoundation';
-  const path = ZOHO_ENV === 'development'
-    ? base + '/environment/development/trrain/#Report:All_Face_Attendances'
-    : base + '/trrain/#Report:All_Face_Attendances';
-  window.location.href = path;
+async function showFinishModal() {
+  const modal  = document.getElementById('finish-modal');
+  const tbody  = document.getElementById('finish-table-body');
+  const totalEl = document.getElementById('finish-total-num');
+  const dateEl  = document.getElementById('finish-date');
+  const emptyEl = document.getElementById('finish-empty');
+
+  tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:24px;color:var(--muted)">Loading…</td></tr>';
+  totalEl.textContent = '—';
+  emptyEl.style.display = 'none';
+  modal.classList.add('show');
+
+  try {
+    const data = await fetch('/api/today-attendance').then(r => r.json());
+    dateEl.textContent  = data.date;
+    totalEl.textContent = data.total;
+    tbody.innerHTML = '';
+
+    if (!data.records || data.records.length === 0) {
+      emptyEl.style.display = 'block';
+    } else {
+      data.records.forEach((rec, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td class="row-num">' + (i + 1) + '</td>' +
+          '<td>' + esc(rec.name) + '</td>' +
+          '<td><span class="status-badge"><i class="bi bi-check-circle-fill"></i> Present</span></td>';
+        tbody.appendChild(tr);
+      });
+    }
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:#dc2626">Failed to load: ' + (err.message || err) + '</td></tr>';
+  }
+}
+
+function closeFinishModal() {
+  document.getElementById('finish-modal').classList.remove('show');
 }
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────

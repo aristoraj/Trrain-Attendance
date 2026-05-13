@@ -725,6 +725,14 @@ def admin_sync_status():
 </html>"""
 
 
+@app.route("/api/today-attendance")
+def today_attendance():
+    """Return today's attendance records from the local queue for the Finish summary screen."""
+    today = datetime.now().strftime("%d-%b-%Y")
+    records = att_queue.get_today_attendance(today)
+    return jsonify({"date": today, "total": len(records), "records": records})
+
+
 @app.route("/admin/clear-today", methods=["GET", "POST"])
 def admin_clear_today():
     """

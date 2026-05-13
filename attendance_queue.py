@@ -436,6 +436,26 @@ class AttendanceQueue:
             "stuck_pending":  [dict(r) for r in pending_old],
         }
 
+    def get_today_attendance(self, date_str: str) -> list:
+        """Return all attendance records for date_str that are not FAILED."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q(
+                    "SELECT student_name, status, created_at FROM attendance_queue "
+                    "WHERE date_str=? AND status NOT IN ('FAILED') "
+                    "ORDER BY created_at ASC"
+                ),
+                (date_str,),
+            ).fetchall()
+        return [
+            {
+                "name":   row["student_name"],
+                "status": row["status"],
+                "time":   row["created_at"][11:16],  # HH:MM
+            }
+            for row in rows
+        ]
+
     def clear_today_attendance(self, student_id: str = None) -> int:
         """
         Delete today's attendance records and clear the in-memory dedup set.
