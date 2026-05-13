@@ -372,24 +372,6 @@
     }
     .count-ok  { color: var(--success); }
     .count-item i { font-size: 16px; }
-    #btn-refresh-cache {
-      background: var(--red);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      min-height: 40px;
-      transition: background 0.2s;
-      flex-shrink: 0;
-    }
-    #btn-refresh-cache:hover:not(:disabled) { background: var(--red-h); }
-    #btn-refresh-cache:disabled { opacity: 0.6; cursor: not-allowed; }
     #btn-finish {
       background: var(--success);
       color: #fff;
@@ -407,7 +389,7 @@
       flex-shrink: 0;
     }
     #btn-finish:hover { background: #1B5E20; }
-    .bottom-buttons { display: flex; gap: 8px; flex-shrink: 0; }
+    #btn-finish { flex-shrink: 0; }
 
     /* ── Finish modal (bottom sheet) ─────────────────────────────────────────── */
     #finish-modal {
@@ -592,14 +574,9 @@
       <span id="count-success">0</span>
     </div>
   </div>
-  <div class="bottom-buttons">
-    <button id="btn-finish" onclick="showFinishModal()">
-      <i class="bi bi-clipboard-check"></i> Finish
-    </button>
-    <button id="btn-refresh-cache" onclick="refreshCache()">
-      <i class="bi bi-arrow-clockwise"></i> Refresh
-    </button>
-  </div>
+  <button id="btn-finish" onclick="showFinishModal()">
+    <i class="bi bi-clipboard-check"></i> Summary
+  </button>
 </div>
 
 <!-- Finish modal -->
@@ -1417,40 +1394,17 @@ function closeFinishModal() {
   document.getElementById('finish-modal').classList.remove('show');
 }
 
-// ── Cache refresh ─────────────────────────────────────────────────────────────
-
-async function refreshCache() {
-  const btn = document.getElementById('btn-refresh-cache');
-  btn.disabled = true;
-  btn.innerHTML = '<div class="spin" style="width:16px;height:16px;border-width:2px;border-color:rgba(255,255,255,0.3);border-top-color:#fff;display:inline-block"></div>';
-  try {
-    if (_SDK_MODE && USER_EMAIL) {
-      _dataLoaded = false; _dataLoading = false; _cfg = null;
-      await loadDataViaSdk(USER_EMAIL);
-      showBanner('Student database refreshed', 'success', null, 'Data reloaded from Zoho');
-    } else {
-      const params = new URLSearchParams();
-      if (USER_EMAIL) params.set('user_email', USER_EMAIL);
-      if (ZOHO_ENV)   params.set('zoho_environment', ZOHO_ENV);
-      const url  = '/api/cache/refresh' + (params.toString() ? '?' + params : '');
-      const data = await fetch(url, { method: 'POST' }).then(r => r.json());
-      if (data.success) {
-        showBanner('Student database refreshed', 'success', null, data.students_loaded + ' students loaded');
-      } else {
-        showBanner('Refresh failed: ' + (data.error || 'Unknown error'), 'danger');
-      }
-    }
-  } catch (e) {
-    showBanner('Refresh failed: ' + e.message, 'danger');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
-  }
-}
-
 // ── Auto-start ────────────────────────────────────────────────────────────────
 
 (async function init() {
+  // Restore today's count from local DB so the counter survives page reloads.
+  fetch('/api/today-attendance').then(r => r.json()).then(data => {
+    if (data && data.total > 0) {
+      successCount = data.total;
+      document.getElementById('count-success').textContent = successCount;
+    }
+  }).catch(() => {});
+
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     permScreen.querySelector('p').textContent =
       'Your browser does not support camera access. Please use Chrome or Edge.';
