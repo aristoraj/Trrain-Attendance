@@ -436,6 +436,34 @@ class AttendanceQueue:
             "stuck_pending":  [dict(r) for r in pending_old],
         }
 
+    def clear_today_attendance(self, student_id: str = None) -> int:
+        """
+        Delete today's attendance records and clear the in-memory dedup set.
+        Pass student_id to clear a single student; omit to clear everyone for today.
+        Used for testing only — does NOT affect Zoho Creator (delete there separately).
+        """
+        today = datetime.now().strftime("%d-%b-%Y")
+        with self._db() as conn:
+            if student_id:
+                cur = conn.execute(
+                    self._q("DELETE FROM attendance_queue WHERE date_str=? AND student_id=?"),
+                    (today, student_id),
+                )
+            else:
+                cur = conn.execute(
+                    self._q("DELETE FROM attendance_queue WHERE date_str=?"),
+                    (today,),
+                )
+            count = cur.rowcount
+        with self._lock:
+            if student_id:
+                self._global_marked.get(today, set()).discard(student_id)
+            else:
+                self._global_marked.pop(today, None)
+        logger.info(f"Cleared {count} attendance record(s) for {today}" +
+                    (f" (student {student_id})" if student_id else " (all students)"))
+        return count
+
     def retry_failed(self) -> int:
         now = datetime.now().isoformat()
         with self._db() as conn:

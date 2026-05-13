@@ -725,6 +725,27 @@ def admin_sync_status():
 </html>"""
 
 
+@app.route("/admin/clear-today", methods=["GET", "POST"])
+def admin_clear_today():
+    """
+    Testing helper: delete today's local attendance records and clear the in-memory
+    dedup set so the same face can be verified again without being blocked as a duplicate.
+    Does NOT touch Zoho Creator — delete the record there separately.
+    Protected by ADMIN_SECRET. Optional ?student_id=xxx to clear one student only.
+    """
+    secret = request.args.get("secret", "")
+    if secret != ADMIN_SECRET:
+        return make_response("Unauthorized.", 401)
+    student_id = (request.args.get("student_id") or "").strip() or None
+    count = att_queue.clear_today_attendance(student_id=student_id)
+    return jsonify({
+        "success": True,
+        "cleared": count,
+        "message": f"Cleared {count} record(s) for today" +
+                   (f" (student {student_id})" if student_id else " (all students)"),
+    })
+
+
 @app.route("/admin/retry-failed", methods=["GET", "POST"])
 def admin_retry_failed():
     """Reset all FAILED queue records to PENDING so the worker retries them."""
