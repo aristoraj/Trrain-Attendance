@@ -153,6 +153,27 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
             _preloading_keys.discard(key)
 
 
+def _update_student_in_caches(student_id: str, new_encodings: list) -> int:
+    """
+    Patch one student's encodings in every warm in-memory scope cache.
+    Called after a webhook re-encode so the change takes effect instantly
+    without invalidating the whole cache.
+    Returns the number of scope caches that contained the student.
+    """
+    patched = 0
+    with _scope_caches_lock:
+        for cache in _scope_caches.values():
+            students = cache.get()
+            if not students:
+                continue
+            for s in students:
+                if s["id"] == student_id:
+                    s["encodings"] = new_encodings
+                    patched += 1
+                    break
+    return patched
+
+
 def get_students_cached(centers: list = None, env: str = "") -> list:
     cache = _get_cache(centers=centers, env=env)
     students = cache.get()
@@ -343,6 +364,80 @@ def cache_refresh():
         else:
             hint = msg
         return jsonify({"success": False, "error": hint}), 500
+
+
+# ─── Student-update webhook ───────────────────────────────────────────────────
+
+@app.route("/api/webhook/student-update", methods=["POST"])
+def webhook_student_update():
+    """
+    Called by a Zoho Creator Deluge workflow whenever a Trainee record is
+    created or edited.  Re-fetches that single record, runs photo-change
+    detection + re-encoding, updates face_embeddings in the local DB, and
+    patches every warm in-memory scope cache in-place — no full reload needed.
+
+    Deluge snippet (On Add / On Edit workflow on the Trainee form):
+
+        map body = {"student_id": input.ID.toString()};
+        response = invokeurl
+        [
+            url: "https://<your-app>.onrender.com/api/webhook/student-update?secret=<ADMIN_SECRET>"
+            type: POST
+            body: body.toString()
+            content-type: "application/json"
+        ];
+
+    Auth: pass ADMIN_SECRET as ?secret= query param or X-Webhook-Secret header.
+    """
+    secret = request.headers.get("X-Webhook-Secret") or request.args.get("secret", "")
+    if secret != ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    body       = request.get_json(force=True) or {}
+    student_id = (body.get("student_id") or body.get("ID") or "").strip()
+    env        = _resolve_env(body.get("zoho_environment") or body.get("environment") or "")
+
+    if not student_id:
+        return jsonify({"error": "student_id is required"}), 400
+
+    logger.info(f"Webhook: re-encoding student {student_id} (env={env or 'production'})")
+
+    # ── 1. Fetch the single record from Zoho ──────────────────────────────────
+    try:
+        url  = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_id}"
+        resp = zoho._request("get", url, env=env, timeout=15)
+        resp.raise_for_status()
+        record = resp.json().get("data")
+        if not record:
+            return jsonify({"error": "Student not found in Zoho"}), 404
+    except Exception as e:
+        logger.error(f"Webhook: Zoho fetch failed for {student_id}: {e}")
+        return jsonify({"error": f"Failed to fetch student from Zoho: {str(e)}"}), 500
+
+    # ── 2. Re-encode (photo-change detection + DB upsert handled inside) ──────
+    student = zoho._process_record(record, env=env)
+
+    if not student:
+        logger.warning(f"Webhook: no face found for student {student_id} — embedding unchanged")
+        return jsonify({
+            "success": False,
+            "message": "No face detected in the photo. Check photo quality and try again.",
+        })
+
+    # ── 3. Patch in-memory caches so next verify uses the new encoding ─────────
+    patched = _update_student_in_caches(student["id"], student["encodings"])
+    logger.info(
+        f"Webhook: '{student['name']}' ({student_id}) re-encoded — "
+        f"{len(student['encodings'])} embedding(s), {patched} cache scope(s) patched"
+    )
+
+    return jsonify({
+        "success":        True,
+        "student":        student["name"],
+        "student_number": student.get("student_number", ""),
+        "encodings":      len(student["encodings"]),
+        "caches_patched": patched,
+    })
 
 
 # ─── Main verify endpoint ─────────────────────────────────────────────────────
@@ -951,7 +1046,12 @@ def user_centers_api():
     if not email:
         return jsonify({"centers": []})
     env = _resolve_env(request.args.get("zoho_environment"))
-    raw = get_user_centers_cached(email, env=env)
+    try:
+        raw = get_user_centers_cached(email, env=env)
+    except Exception as e:
+        logger.warning(f"user_centers_api: could not fetch centres for {email}: {e}")
+        # Return empty list so the frontend shows the email-override bar
+        return jsonify({"centers": []})
     # raw contains both numeric IDs and display names — keep only human-readable names
     display = [c for c in raw if not c.strip().isdigit()]
     return jsonify({"centers": display})
