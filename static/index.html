@@ -857,10 +857,10 @@ function _pauseForInactivity() {
 
 function reactivateCamera() {
   document.getElementById('inactive-overlay').classList.remove('show');
-  if (faceMeshInstance) {
-    try { faceMeshInstance.close(); } catch (_) {}
-    faceMeshInstance = null;
-  }
+  // Null these BEFORE _fullReset so any in-flight callbacks from the old session
+  // hit the staleness guard in initFaceMesh and are discarded immediately.
+  faceMeshInstance = null;
+  cameraInstance   = null;
   _fullReset();
   startCamera();
 }
@@ -900,25 +900,36 @@ async function startCamera() {
 // ── MediaPipe ─────────────────────────────────────────────────────────────────
 
 function initFaceMesh() {
-  faceMeshInstance = new FaceMesh({
+  // Use local refs so each camera session is self-contained.
+  // The staleness guard (faceMeshInstance !== mesh) ensures callbacks from a
+  // previous session are silently discarded after reactivateCamera() nulls
+  // faceMeshInstance — preventing stale results from setting step1Done = true
+  // on the fresh state before the new camera has even started.
+  const mesh = new FaceMesh({
     locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`,
   });
-  faceMeshInstance.setOptions({
+  mesh.setOptions({
     maxNumFaces:            1,
     refineLandmarks:        true,
     minDetectionConfidence: 0.7,
     minTrackingConfidence:  0.6,
   });
-  faceMeshInstance.onResults(onFaceMeshResults);
+  mesh.onResults(results => {
+    if (faceMeshInstance !== mesh) return;
+    onFaceMeshResults(results);
+  });
+  faceMeshInstance = mesh;
 
-  cameraInstance = new Camera(videoEl, {
+  const cam = new Camera(videoEl, {
     onFrame: async () => {
-      if (!state.done && !state.verifying) await faceMeshInstance.send({ image: videoEl });
+      if (faceMeshInstance !== mesh) return;
+      if (!state.done && !state.verifying) await mesh.send({ image: videoEl });
     },
     width: 640, height: 480,
   });
+  cameraInstance = cam;
 
-  cameraInstance.start().then(() => {
+  cam.start().then(() => {
     setStatus('active', 'Position your face in the oval');
     activateStep(1);
   });
