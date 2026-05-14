@@ -78,7 +78,10 @@ class FaceCache:
 
     @property
     def age_seconds(self):
-        return time.time() - self._timestamp if self._data is not None else None
+        if self._data is None:
+            return None
+        age = time.time() - self._timestamp
+        return age if age < self._ttl else None  # None when TTL already expired
 
     @property
     def size(self):

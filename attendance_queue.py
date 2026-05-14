@@ -377,8 +377,40 @@ class AttendanceQueue:
             self._mark_in_memory(student_id, date_str)
         logger.info(f"SDK attendance marked for {student_name} ({date_str})")
 
-    def enqueue(self, student_id: str, student_name: str, date_str: str,
-                environment: str = "") -> int:
+    def enqueue_if_not_marked(self, student_id: str, student_name: str,
+                              date_str: str, environment: str = "") -> tuple:
+        """
+        Atomic dedup-check + enqueue in one call.
+        Returns (queue_id, is_duplicate).
+
+        Holding self._lock while marking in-memory blocks any concurrent
+        in-process request from passing the dedup check before this one
+        has written to the DB, closing the TOCTOU window.
+        The subsequent DB COUNT check covers cross-process duplicates
+        (e.g. multiple Render instances sharing the same PostgreSQL).
+        """
+        with self._lock:
+            if student_id in self._global_marked.get(date_str, set()):
+                return None, True
+            # Claim the slot in memory immediately so concurrent threads
+            # hitting this block next will see it as already marked.
+            self._mark_in_memory(student_id, date_str)
+
+        # Cross-process durability check (DB is authoritative across instances)
+        with self._db() as conn:
+            count = conn.execute(
+                self._q(
+                    "SELECT COUNT(*) AS cnt FROM attendance_queue "
+                    "WHERE student_id=? AND date_str=? "
+                    "AND status IN ('PENDING','PROCESSING','POSTED','SDK_POSTED')"
+                ),
+                (student_id, date_str),
+            ).fetchone()["cnt"]
+
+        if count > 0:
+            logger.info(f"DB dedup blocked duplicate for {student_name} ({date_str})")
+            return None, True
+
         now = datetime.now().isoformat()
         sql = self._q("""
             INSERT INTO attendance_queue
@@ -390,14 +422,28 @@ class AttendanceQueue:
             sql += " RETURNING id"
         with self._db() as conn:
             cur = conn.execute(sql, (student_id, student_name, date_str, now, now, now, environment))
-            if self._is_postgres:
-                rec_id = cur.fetchone()["id"]
-            else:
-                rec_id = cur.lastrowid
+            rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
+        logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
+        return rec_id, False
+
+    def enqueue(self, student_id: str, student_name: str, date_str: str,
+                environment: str = "") -> int:
+        """Legacy single-step enqueue (no dedup). Use enqueue_if_not_marked for verify flow."""
+        now = datetime.now().isoformat()
+        sql = self._q("""
+            INSERT INTO attendance_queue
+                (student_id, student_name, date_str,
+                 status, attempts, created_at, updated_at, next_retry_at, environment)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?)
+        """)
+        if self._is_postgres:
+            sql += " RETURNING id"
+        with self._db() as conn:
+            cur = conn.execute(sql, (student_id, student_name, date_str, now, now, now, environment))
+            rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
         with self._lock:
             self._mark_in_memory(student_id, date_str)
-
         logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
         return rec_id
 
@@ -547,18 +593,37 @@ class AttendanceQueue:
             )
 
     def clear_enrollment_embeddings(self) -> int:
-        """
-        Delete all enrollment and no_photo entries from the local cache.
-        Called on manual refresh so the next load re-reads Face_Embedding
-        from Zoho (or re-downloads photos) instead of using stale local data.
-        Verified_N live-capture embeddings are preserved.
-        """
+        """Delete ALL enrollment embeddings (used when no scope is known)."""
         with self._db() as conn:
             cur = conn.execute(
                 "DELETE FROM face_embeddings WHERE source IN ('enrollment', 'no_photo')"
             )
             count = cur.rowcount
         logger.info(f"Cleared {count} enrollment/no_photo embeddings from local cache.")
+        return count
+
+    def clear_enrollment_embeddings_for_scope(self, scope_key: str) -> int:
+        """
+        Delete enrollment embeddings only for students in the given scope.
+        Prevents a refresh of one centre from wiping another centre's embeddings.
+        """
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT student_id FROM student_cache WHERE scope_key=?"),
+                (scope_key,),
+            ).fetchall()
+        student_ids = [r["student_id"] for r in rows]
+        if not student_ids:
+            return 0
+        ph = ", ".join([self._ph] * len(student_ids))
+        with self._db() as conn:
+            cur = conn.execute(
+                f"DELETE FROM face_embeddings "
+                f"WHERE source IN ('enrollment', 'no_photo') AND student_id IN ({ph})",
+                tuple(student_ids),
+            )
+            count = cur.rowcount
+        logger.info(f"Cleared {count} enrollment embeddings for scope '{scope_key}'.")
         return count
 
     # ── Persistent student cache (Option A: survive restarts) ────────────────────
@@ -659,17 +724,25 @@ class AttendanceQueue:
         """Must be called while holding self._lock."""
         if date_str not in self._global_marked:
             self._global_marked[date_str] = set()
+            # Purge keys older than today to prevent unbounded growth
+            for old_key in [k for k in self._global_marked if k != date_str]:
+                del self._global_marked[old_key]
         self._global_marked[date_str].add(student_id)
 
     # ── Background drain loop ─────────────────────────────────────────────────
 
     def _drain_loop(self):
+        consecutive_errors = 0
         while True:
             try:
                 self._drain()
+                consecutive_errors = 0
+                time.sleep(WORKER_POLL_INTERVAL)
             except Exception as e:
-                logger.error(f"Queue drain error: {e}")
-            time.sleep(WORKER_POLL_INTERVAL)
+                consecutive_errors += 1
+                backoff = min(WORKER_POLL_INTERVAL * (2 ** consecutive_errors), 60)
+                logger.error(f"Queue drain error (attempt {consecutive_errors}): {e} — retrying in {backoff}s")
+                time.sleep(backoff)
 
     def _drain(self):
         now_iso = datetime.now().isoformat()
@@ -712,7 +785,7 @@ class AttendanceQueue:
             name        = row["student_name"]
             student_id  = row["student_id"]
             attempts    = row["attempts"]
-            environment = row["environment"] if "environment" in row.keys() else ""
+            environment = row["environment"]
             try:
                 result = self._zoho.post_attendance(
                     student_id=student_id,

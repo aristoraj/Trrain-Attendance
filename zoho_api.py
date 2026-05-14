@@ -6,6 +6,7 @@ and posting attendance records.
 
 import logging
 import os
+import threading
 import time
 import requests
 from datetime import datetime
@@ -35,6 +36,7 @@ class ZohoCreatorAPI:
     def __init__(self):
         self._access_token = None
         self._token_expiry = 0.0   # Unix timestamp; 0 means "not yet fetched"
+        self._token_lock   = threading.Lock()
         self._embedding_cache = None  # set to att_queue after init (see app.py)
         self._base_url = self.BASE_URL_TEMPLATE.format(
             dc=ZOHO_DATA_CENTER,
@@ -81,9 +83,10 @@ class ZohoCreatorAPI:
         cache (one per photo download). Zoho allows ~10 token requests per
         minute per client — loading 18 students exceeded that instantly.
         """
-        if self._access_token and time.time() < self._token_expiry:
-            return self._access_token
-        return self._refresh_token()
+        with self._token_lock:
+            if self._access_token and time.time() < self._token_expiry:
+                return self._access_token
+            return self._refresh_token()
 
     def _headers(self, env: str = "") -> dict:
         token = self._get_token()   # cached — only calls Zoho when token expires

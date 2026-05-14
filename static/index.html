@@ -686,6 +686,7 @@ function tryInitZohoUser() {
           _SDK_MODE   = false;
           _dataLoaded = true;
           fetchAndShowCenters(USER_EMAIL);
+          triggerPreload(USER_EMAIL);
         });
       } else if (USER_EMAIL) {
         fetchAndShowCenters(USER_EMAIL);
@@ -847,7 +848,7 @@ async function submitEmailOverride() {
   const input = document.getElementById('email-override-input');
   const btn   = input && input.nextElementSibling;
   const email = (input && input.value.trim()) || '';
-  if (!email || !email.includes('@')) { showBanner('Please enter a valid email address.', 'warning'); return; }
+  if (!email || (input && !input.validity.valid)) { showBanner('Please enter a valid email address.', 'warning'); return; }
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
   USER_EMAIL = email;
   try {
@@ -875,7 +876,10 @@ function fetchAndShowCenters(email) {
       const centers = (data.centers || []).filter(Boolean);
       if (centers.length) hideEmailOverride(); else showEmailOverride(email);
     })
-    .catch(() => {});
+    .catch(err => {
+      console.warn('[FaceVerify] Centre lookup failed:', err);
+      showBanner('Could not verify your centre. Check network and try again.', 'warning');
+    });
 }
 
 function triggerPreload(email) {
@@ -887,10 +891,10 @@ function triggerPreload(email) {
 // ── Face recognition config ───────────────────────────────────────────────────
 
 const BLINKS_REQUIRED       = 2;
-const EAR_CLOSE_THRESH      = 0.10;
-const EAR_OPEN_THRESH       = 0.20;
+const EAR_CLOSE_THRESH      = 0.18;
+const EAR_OPEN_THRESH       = 0.25;
 const EAR_SMOOTH_ALPHA      = 0.3;
-const CLOSED_FRAMES_NEEDED  = 2;    // consecutive frames eye must stay closed
+const CLOSED_FRAMES_NEEDED  = 4;    // consecutive frames eye must stay closed
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 
@@ -1038,6 +1042,9 @@ function onFaceMeshResults(results) {
       setFrameClass('');
       blinkOverlay.classList.remove('show');
     }
+    // Reset in-progress blink state so credits don't survive face-absent frames
+    state.closedFrames  = 0;
+    state.eyeWasClosed  = false;
     return;
   }
 
@@ -1060,17 +1067,18 @@ function onFaceMeshResults(results) {
   const earPct = Math.min(Math.max(state.smoothedEAR / 0.35, 0), 1) * 100;
   earVal.textContent   = state.smoothedEAR.toFixed(3);
   earFill.style.width  = earPct + '%';
-  earFill.style.background = avgEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
+  const sEAR = state.smoothedEAR;
+  earFill.style.background = sEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
 
   if (!state.blinkVerified) {
-    if (avgEAR < EAR_CLOSE_THRESH) {
+    if (sEAR < EAR_CLOSE_THRESH) {
       state.closedFrames++;
       if (state.closedFrames >= CLOSED_FRAMES_NEEDED) {
         state.eyeWasClosed = true;
       }
       setFrameClass('liveness');
       setStatus('blink', 'Blink detected…');
-    } else if (avgEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
+    } else if (sEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
       state.eyeWasClosed = false;
       state.closedFrames = 0;
       state.blinkCount++;
@@ -1086,7 +1094,7 @@ function onFaceMeshResults(results) {
         const rem = BLINKS_REQUIRED - state.blinkCount;
         setStatus('blink', `Good! ${rem} more blink${rem > 1 ? 's' : ''}…`);
       }
-    } else if (avgEAR > EAR_OPEN_THRESH) {
+    } else if (sEAR > EAR_OPEN_THRESH) {
       state.closedFrames = 0;
     }
   }
@@ -1127,14 +1135,18 @@ async function captureAndVerify(cachedImage = null) {
   state.verifying = true;
 
   if (!_zohoInitDone) {
+    showSpinner(true);
     setStatus('active', 'Authenticating…');
     await waitForZohoInit(5000);
   }
 
   if (_SDK_MODE && !_dataLoaded) {
+    showSpinner(true);
     setStatus('active', 'Loading student data…');
     await waitForDataLoaded(30000);
     if (!_dataLoaded) {
+      showSpinner(false);
+      _dataLoading = false;  // allow retry to trigger a fresh load
       showBanner('Student data not ready. Please try again.', 'danger');
       state.verifying = false;
       return;
@@ -1183,10 +1195,20 @@ async function captureAndVerify(cachedImage = null) {
 
     showSpinner(false);
 
-    // 503: cache not ready — one-time message, no looping retry
+    // 503: cache not ready — auto-retry after countdown
     if (resp.status === 503 && data.loading) {
-      showBanner('Student data is still loading. Please wait a moment, then try again.', 'info');
-      resetForRetry();
+      let secs = 5;
+      showBanner(`Student data loading… retrying in ${secs}s`, 'info');
+      const iv = setInterval(() => {
+        secs--;
+        if (secs > 0) {
+          showBanner(`Student data loading… retrying in ${secs}s`, 'info');
+        } else {
+          clearInterval(iv);
+          showBanner('Retrying…', 'info');
+          captureAndVerify(imageData);
+        }
+      }, 1000);
       return;
     }
 
@@ -1221,11 +1243,6 @@ async function captureAndVerify(cachedImage = null) {
   }
 }
 
-function _getTodayStr() {
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const d = new Date();
-  return String(d.getDate()).padStart(2, '0') + '-' + months[d.getMonth()] + '-' + d.getFullYear();
-}
 
 // ── Result display ────────────────────────────────────────────────────────────
 
@@ -1377,11 +1394,21 @@ async function showFinishModal() {
       emptyEl.style.display = 'block';
     } else {
       data.records.forEach((rec, i) => {
+        const s = rec.status || 'PENDING';
+        const posted = s === 'POSTED' || s === 'SDK_POSTED';
+        const failed = s === 'FAILED';
+        const badgeStyle = posted
+          ? 'background:rgba(34,197,94,.15);color:#4ade80;border:1px solid rgba(34,197,94,.3)'
+          : failed
+            ? 'background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.3)'
+            : 'background:rgba(234,179,8,.15);color:#facc15;border:1px solid rgba(234,179,8,.3)';
+        const icon  = posted ? 'bi-check-circle-fill' : failed ? 'bi-x-circle-fill' : 'bi-clock';
+        const label = posted ? 'Posted' : failed ? 'Failed' : 'Pending';
         const tr = document.createElement('tr');
         tr.innerHTML =
           '<td class="row-num">' + (i + 1) + '</td>' +
           '<td>' + esc(rec.name) + '</td>' +
-          '<td><span class="status-badge"><i class="bi bi-check-circle-fill"></i> Present</span></td>';
+          '<td><span class="status-badge" style="' + badgeStyle + '"><i class="bi ' + icon + '"></i> ' + label + '</span></td>';
         tbody.appendChild(tr);
       });
     }
@@ -1403,7 +1430,7 @@ function closeFinishModal() {
       successCount = data.total;
       document.getElementById('count-success').textContent = successCount;
     }
-  }).catch(() => {});
+  }).catch(err => console.warn('[FaceVerify] Could not restore today count:', err));
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     permScreen.querySelector('p').textContent =

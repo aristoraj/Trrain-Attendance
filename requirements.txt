@@ -7,6 +7,7 @@
 # Web framework
 flask==3.0.3
 flask-cors==4.0.1
+flask-limiter==3.8.0
 
 # Face recognition — pre-built ONNX wheels, no compilation needed
 insightface==0.7.3

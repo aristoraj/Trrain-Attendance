@@ -4,10 +4,13 @@ All values are loaded from environment variables.
 Update your Render environment variables to match your Zoho Creator setup.
 """
 
+import logging
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_cfg_logger = logging.getLogger(__name__)
 
 # ─── Zoho OAuth Credentials ───────────────────────────────────────────────────
 ZOHO_CLIENT_ID = os.environ.get("ZOHO_CLIENT_ID", "")
@@ -46,7 +49,7 @@ ZOHO_ENVIRONMENT = os.environ.get("ZOHO_ENVIRONMENT", "")   # "" = production (d
 
 # ─── Face Recognition Settings ────────────────────────────────────────────────
 FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
-CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
+CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "86400"))
 
 # ─── Batch filtering (ongoing batches only) ──────────────────────────────────
 ZOHO_BATCHES_REPORT = os.environ.get("ZOHO_BATCHES_REPORT", "All_Batches")
@@ -67,7 +70,13 @@ FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 # ─── App Settings ─────────────────────────────────────────────────────────────
 PORT       = int(os.environ.get("PORT", 5000))
 DEBUG      = os.environ.get("DEBUG", "false").lower() == "true"
-SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret-key-in-production")
+_SECRET_KEY_DEFAULT = "change-this-secret-key-in-production"
+SECRET_KEY = os.environ.get("SECRET_KEY", _SECRET_KEY_DEFAULT)
+if SECRET_KEY == _SECRET_KEY_DEFAULT:
+    _cfg_logger.critical(
+        "SECRET_KEY is using the insecure default — set a strong random secret in "
+        "Render environment variables immediately. Flask sessions are at risk."
+    )
 
 # Self URL for the always-on keepalive ping (set to your Render URL)
 # e.g. https://face-attendance-3wel.onrender.com
@@ -81,4 +90,10 @@ RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
 
 # Secret passcode to protect the /admin/reauth page from public access
 # Set this to any random string in your Render environment variables
-ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "train-admin-2026")
+_ADMIN_SECRET_DEFAULT = "train-admin-2026"
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", _ADMIN_SECRET_DEFAULT)
+if ADMIN_SECRET == _ADMIN_SECRET_DEFAULT:
+    _cfg_logger.critical(
+        "ADMIN_SECRET is using the default value — set a strong secret in "
+        "Render environment variables immediately. Admin endpoints are at risk."
+    )

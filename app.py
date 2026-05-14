@@ -15,15 +15,21 @@ Endpoints:
   GET  /api/debug/students     → Debug raw Zoho records
 """
 
+import html as _html
 import logging
 import os
 import threading
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 import requests as req
 from flask import Flask, jsonify, request, send_from_directory, make_response
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from config import (
     PORT, DEBUG, SECRET_KEY, FACE_MATCH_TOLERANCE,
@@ -54,7 +60,22 @@ logger = logging.getLogger(__name__)
 # ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder="static")
 app.secret_key = SECRET_KEY
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+_ALLOWED_ORIGINS = [
+    r"https://creatorapp\.zoho\.in",
+    r"https://creatorapp\.zoho\.com",
+    r"https://creator\.zoho\.in",
+    r"https://creator\.zoho\.com",
+    r"https://.*\.onrender\.com",
+    r"http://localhost(:\d+)?",
+    r"http://127\.0\.0\.1(:\d+)?",
+]
+CORS(app, resources={r"/api/*": {"origins": _ALLOWED_ORIGINS}})
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
 
 zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
@@ -181,7 +202,31 @@ def get_students_cached(centers: list = None, env: str = "") -> list:
         age = cache.age_seconds
         logger.info(f"Cache hit — {cache.size} students (age: {age:.0f}s)" if age is not None
                     else f"Cache hit — {cache.size} students (just loaded)")
-    return students  # None means cache is cold (caller should trigger background load)
+        return students
+
+    # In-memory cache is cold (TTL expired or first request after restart).
+    # Try local PostgreSQL before falling back to a slow Zoho API call.
+    key = _build_scope_key(centers, env)
+    raw = att_queue.load_students_from_db(key)
+    if raw:
+        restored = []
+        for s in raw:
+            encodings = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+            encodings = [e for e in encodings if e is not None]
+            if encodings:
+                restored.append({
+                    "id":             s["id"],
+                    "name":           s["name"],
+                    "student_number": s["student_number"],
+                    "encodings":      encodings,
+                })
+        if restored:
+            cache.set(restored)
+            logger.info(f"TTL expired — restored {len(restored)} students from local DB "
+                        f"for scope '{key}' (no Zoho API call).")
+            return restored
+
+    return None  # truly cold — caller triggers background load from Zoho API
 
 
 # ─── User-centers cache (email → list[center_id/name], TTL 5 min) ─────────────
@@ -246,8 +291,18 @@ def _keepalive_worker():
 _keepalive_thread = threading.Thread(target=_keepalive_worker, daemon=True)
 _keepalive_thread.start()
 
-# Rebuild FaceCaches from local DB so the first verify request doesn't wait 60s
-_restore_face_caches_from_db()
+# Rebuild FaceCaches from local DB in a background thread (non-blocking startup)
+threading.Thread(target=_restore_face_caches_from_db, daemon=True, name="db-restore").start()
+
+def _warmup_face_model():
+    try:
+        from face_utils import _get_face_app
+        _get_face_app()
+        logger.info("InsightFace model pre-loaded successfully.")
+    except Exception as e:
+        logger.critical(f"InsightFace model failed to load — all /api/verify calls will return 500: {e}")
+
+threading.Thread(target=_warmup_face_model, daemon=True, name="face-warmup").start()
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -313,6 +368,7 @@ def preload_students():
 
 
 @app.route("/api/cache/refresh", methods=["POST"])
+@limiter.limit("5 per minute")
 def cache_refresh():
     body       = request.get_json(silent=True) or {}
     user_email = request.args.get("user_email") or body.get("user_email") or None
@@ -334,9 +390,9 @@ def cache_refresh():
     try:
         cache = _get_cache(centers=centers, env=env)
         cache.invalidate()
-        # Clear local DB so next load re-fetches everything fresh from Zoho
-        cleared_emb = att_queue.clear_enrollment_embeddings()
         scope_key = _build_scope_key(centers, env)
+        # Clear only this scope's embeddings — don't wipe other centres' data
+        cleared_emb = att_queue.clear_enrollment_embeddings_for_scope(scope_key)
         cleared_sc = att_queue.clear_student_scope(scope_key)
         logger.info(f"Refresh: cleared {cleared_emb} embeddings + {cleared_sc} cached students — will re-fetch from Zoho.")
         # Trigger background reload so the HTTP response isn't blocked
@@ -574,9 +630,15 @@ def verify():
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
-        # ── 6. Dedup check (in-memory O(1) + DB <1ms) ────────────────────────
-        today_str = datetime.now().strftime("%d-%b-%Y")
-        if att_queue.is_already_marked(best_match["id"], today_str):
+        # ── 6 & 7. Atomic dedup-check + enqueue ──────────────────────────────
+        today_str = datetime.now(_IST).strftime("%d-%b-%Y")
+        queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
+            student_id=best_match["id"],
+            student_name=best_match["name"],
+            date_str=today_str,
+            environment=env,
+        )
+        if is_duplicate:
             logger.info(f"Duplicate blocked for {best_match['name']}")
             return jsonify({
                 "success":           True,
@@ -591,13 +653,6 @@ def verify():
                 "message": f"{best_match['name']} is already marked present today.",
             })
 
-        # ── 7. Enqueue to SQLite; background worker posts to Zoho ────────────
-        queue_id = att_queue.enqueue(
-            student_id=best_match["id"],
-            student_name=best_match["name"],
-            date_str=today_str,
-            environment=env,
-        )
         logger.info(
             f"Attendance queued for {best_match['name']} "
             f"(queue #{queue_id}, liveness={liveness_score:.2f})"
@@ -827,12 +882,13 @@ def admin_sync_status():
 @app.route("/api/today-attendance")
 def today_attendance():
     """Return today's attendance records from the local queue for the Finish summary screen."""
-    today = datetime.now().strftime("%d-%b-%Y")
+    today = datetime.now(_IST).strftime("%d-%b-%Y")
     records = att_queue.get_today_attendance(today)
     return jsonify({"date": today, "total": len(records), "records": records})
 
 
 @app.route("/admin/clear-today", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def admin_clear_today():
     """
     Testing helper: delete today's local attendance records and clear the in-memory
@@ -854,6 +910,7 @@ def admin_clear_today():
 
 
 @app.route("/admin/retry-failed", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def admin_retry_failed():
     """Reset all FAILED queue records to PENDING so the worker retries them."""
     secret = request.args.get("secret", "")
@@ -867,6 +924,7 @@ def admin_retry_failed():
 # ─── Reauth ───────────────────────────────────────────────────────────────────
 
 @app.route("/admin/reauth", methods=["GET"])
+@limiter.limit("10 per minute")
 def admin_reauth_page():
     secret = request.args.get("secret", "")
     if secret != ADMIN_SECRET:
@@ -874,6 +932,7 @@ def admin_reauth_page():
 
     render_configured = bool(RENDER_API_KEY and RENDER_SERVICE_ID)
 
+    secret_safe = _html.escape(secret, quote=True)
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -922,7 +981,7 @@ def admin_reauth_page():
     <li>Set duration to <strong>10 minutes</strong>, click Create, copy the code</li>
     <li>Paste it below and click Submit</li>
   </ol>
-  <form method="POST" action="/admin/reauth?secret={secret}">
+  <form method="POST" action="/admin/reauth?secret={secret_safe}">
     <label style="font-size:13px; color:#8b949e;">Zoho Authorization Code</label>
     <textarea name="auth_code" placeholder="1000.xxxxxxxxxxxx.xxxxxxxxxxxx" required></textarea>
     <button type="submit">↻ Exchange Code &amp; Save Refresh Token</button>
@@ -934,6 +993,7 @@ def admin_reauth_page():
 
 
 @app.route("/admin/reauth", methods=["POST"])
+@limiter.limit("5 per minute")
 def admin_reauth_submit():
     secret = request.args.get("secret", "")
     if secret != ADMIN_SECRET:
