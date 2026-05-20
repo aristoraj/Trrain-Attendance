@@ -589,9 +589,10 @@ def verify():
                 "error": "Liveness check failed. Please blink naturally in front of the camera.",
             }), 400
 
-        user_email   = data.get("user_email") or None
-        env          = _resolve_env(data.get("zoho_environment"))
-        scope_key_in = (data.get("scope_key") or "").strip() or None
+        user_email        = data.get("user_email") or None
+        env               = _resolve_env(data.get("zoho_environment"))
+        scope_key_in      = (data.get("scope_key") or "").strip() or None
+        device_session_id = (data.get("device_session_id") or "").strip()
 
         # ── 1. Decode image ───────────────────────────────────────────────────
         try:
@@ -690,6 +691,7 @@ def verify():
             student_name=best_match["name"],
             date_str=today_str,
             environment=env,
+            device_session_id=device_session_id,
         )
         if is_duplicate:
             logger.info(f"Duplicate blocked for {best_match['name']}")
@@ -934,9 +936,12 @@ def admin_sync_status():
 
 @app.route("/api/today-attendance")
 def today_attendance():
-    """Return today's attendance records from the local queue for the Finish summary screen."""
-    today = datetime.now(_IST).strftime("%d-%b-%Y")
-    records = att_queue.get_today_attendance(today)
+    """Return today's attendance records from the local queue for the Summary screen.
+    Filters by device_session_id when provided so users sharing the same login
+    across multiple locations each see only their own device's entries."""
+    today             = datetime.now(_IST).strftime("%d-%b-%Y")
+    device_session_id = (request.args.get("device_session_id") or "").strip() or None
+    records           = att_queue.get_today_attendance(today, device_session_id=device_session_id)
     return jsonify({"date": today, "total": len(records), "records": records})
 
 

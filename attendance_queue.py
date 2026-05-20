@@ -306,11 +306,22 @@ class AttendanceQueue:
                 except Exception:
                     conn.execute("ROLLBACK TO SAVEPOINT add_env_col")
                     conn.execute("RELEASE SAVEPOINT add_env_col")
+                try:
+                    conn.execute("SAVEPOINT add_dsid_col")
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN device_session_id TEXT NOT NULL DEFAULT ''")
+                    conn.execute("RELEASE SAVEPOINT add_dsid_col")
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT add_dsid_col")
+                    conn.execute("RELEASE SAVEPOINT add_dsid_col")
             else:
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
                 except Exception:
-                    pass  # Column already exists (SQLite doesn't abort the txn)
+                    pass  # Column already exists
+                try:
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN device_session_id TEXT NOT NULL DEFAULT ''")
+                except Exception:
+                    pass
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_status_retry "
                 "ON attendance_queue(status, next_retry_at)"
@@ -378,7 +389,8 @@ class AttendanceQueue:
         logger.info(f"SDK attendance marked for {student_name} ({date_str})")
 
     def enqueue_if_not_marked(self, student_id: str, student_name: str,
-                              date_str: str, environment: str = "") -> tuple:
+                              date_str: str, environment: str = "",
+                              device_session_id: str = "") -> tuple:
         """
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
@@ -415,13 +427,17 @@ class AttendanceQueue:
         sql = self._q("""
             INSERT INTO attendance_queue
                 (student_id, student_name, date_str,
-                 status, attempts, created_at, updated_at, next_retry_at, environment)
-            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?)
+                 status, attempts, created_at, updated_at, next_retry_at,
+                 environment, device_session_id)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
         with self._db() as conn:
-            cur = conn.execute(sql, (student_id, student_name, date_str, now, now, now, environment))
+            cur = conn.execute(sql, (
+                student_id, student_name, date_str, now, now, now,
+                environment, device_session_id,
+            ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
         logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
@@ -482,17 +498,32 @@ class AttendanceQueue:
             "stuck_pending":  [dict(r) for r in pending_old],
         }
 
-    def get_today_attendance(self, date_str: str) -> list:
-        """Return all attendance records for date_str that are not FAILED."""
+    def get_today_attendance(self, date_str: str, device_session_id: str = None) -> list:
+        """
+        Return today's attendance records that are not FAILED.
+        If device_session_id is provided, only return records from that device session
+        so users sharing the same login across multiple locations see only their own entries.
+        """
         with self._db() as conn:
-            rows = conn.execute(
-                self._q(
-                    "SELECT student_name, status, created_at FROM attendance_queue "
-                    "WHERE date_str=? AND status NOT IN ('FAILED') "
-                    "ORDER BY created_at ASC"
-                ),
-                (date_str,),
-            ).fetchall()
+            if device_session_id:
+                rows = conn.execute(
+                    self._q(
+                        "SELECT student_name, status, created_at FROM attendance_queue "
+                        "WHERE date_str=? AND status NOT IN ('FAILED') "
+                        "AND device_session_id=? "
+                        "ORDER BY created_at ASC"
+                    ),
+                    (date_str, device_session_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    self._q(
+                        "SELECT student_name, status, created_at FROM attendance_queue "
+                        "WHERE date_str=? AND status NOT IN ('FAILED') "
+                        "ORDER BY created_at ASC"
+                    ),
+                    (date_str,),
+                ).fetchall()
         return [
             {
                 "name":   row["student_name"],

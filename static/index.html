@@ -630,6 +630,25 @@ let _cfg             = null;
 let _zohoInitDone    = false;
 let _zohoInitAttempts = 0;
 
+// ── Device session ID — unique per device per day, persists across app restarts ──
+// Stored in localStorage with a date key so it survives the user exiting and
+// returning to the widget. Automatically resets the next calendar day.
+// Multiple devices sharing the same Zoho login each keep their own separate ID.
+(function _initDsid() {
+  const today = new Date().toISOString().slice(0, 10);   // "2025-05-20"
+  const key   = 'faceAttendDsid_' + today;
+  let id = localStorage.getItem(key);
+  if (!id) {
+    // Clean up IDs from previous days so localStorage doesn't grow unbounded
+    Object.keys(localStorage)
+      .filter(k => k.startsWith('faceAttendDsid_') && k !== key)
+      .forEach(k => localStorage.removeItem(k));
+    id = 'ds_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem(key, id);
+  }
+  window.DEVICE_SESSION_ID = id;
+})();
+
 // ── Session counters ──────────────────────────────────────────────────────────
 let successCount  = 0;
 
@@ -1182,7 +1201,7 @@ async function captureAndVerify(cachedImage = null) {
   showSpinner(true);
 
   try {
-    const body = { image: imageData, blink_verified: true };
+    const body = { image: imageData, blink_verified: true, device_session_id: DEVICE_SESSION_ID };
     if (_SDK_MODE)       body.scope_key = _SCOPE_KEY;
     else if (USER_EMAIL) body.user_email = USER_EMAIL;
     if (ZOHO_ENV) body.zoho_environment = ZOHO_ENV;
@@ -1399,7 +1418,7 @@ async function showFinishModal() {
   modal.classList.add('show');
 
   try {
-    const data = await fetch('/api/today-attendance').then(r => r.json());
+    const data = await fetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID)).then(r => r.json());
     dateEl.textContent  = data.date;
     totalEl.textContent = data.total;
     tbody.innerHTML = '';
@@ -1438,13 +1457,14 @@ function closeFinishModal() {
 // ── Auto-start ────────────────────────────────────────────────────────────────
 
 (async function init() {
-  // Restore today's count from local DB so the counter survives page reloads.
-  fetch('/api/today-attendance').then(r => r.json()).then(data => {
-    if (data && data.total > 0) {
-      successCount = data.total;
-      document.getElementById('count-success').textContent = successCount;
-    }
-  }).catch(err => console.warn('[FaceVerify] Could not restore today count:', err));
+  // Restore this device's today count so the counter survives page reloads.
+  fetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID))
+    .then(r => r.json()).then(data => {
+      if (data && data.total > 0) {
+        successCount = data.total;
+        document.getElementById('count-success').textContent = successCount;
+      }
+    }).catch(err => console.warn('[FaceVerify] Could not restore today count:', err));
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     permScreen.querySelector('p').textContent =
