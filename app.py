@@ -174,25 +174,65 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
             _preloading_keys.discard(key)
 
 
-def _update_student_in_caches(student_id: str, new_encodings: list) -> int:
+def _inject_or_update_student_in_caches(student: dict, centre_id: str = None) -> tuple:
     """
-    Patch one student's encodings in every warm in-memory scope cache.
-    Called after a webhook re-encode so the change takes effect instantly
-    without invalidating the whole cache.
-    Returns the number of scope caches that contained the student.
+    Insert or update a student in all warm in-memory scope caches that match centre_id.
+
+    - If centre_id is given: only touches scopes whose key contains that centre ID
+      (format "C:id1,id2" or "env:C:id1,id2"). Appends if absent, patches if present.
+    - If centre_id is None: falls back to update-only across every warm scope (old behaviour).
+
+    Returns (injected, updated) counts. DB is written outside the lock to avoid blocking.
     """
-    patched = 0
+    injected = 0
+    updated  = 0
+    scopes_to_persist = []
+
     with _scope_caches_lock:
-        for cache in _scope_caches.values():
+        for scope_key, cache in _scope_caches.items():
+            if centre_id:
+                # Scope key format: "C:id1,id2"  or  "env:C:id1,id2"
+                parts = scope_key.split(":")
+                try:
+                    c_idx = parts.index("C")
+                    ids_in_scope = set(parts[c_idx + 1].split(","))
+                except (ValueError, IndexError):
+                    continue   # ALL scope or unexpected format — skip
+                if centre_id not in ids_in_scope:
+                    continue
+
             students = cache.get()
-            if not students:
-                continue
+            if students is None:
+                continue   # cold cache — nothing to inject into
+
+            found = False
             for s in students:
-                if s["id"] == student_id:
-                    s["encodings"] = new_encodings
-                    patched += 1
+                if s["id"] == student["id"]:
+                    s["encodings"] = student["encodings"]
+                    found = True
+                    updated += 1
                     break
-    return patched
+
+            if not found:
+                students.append({
+                    "id":             student["id"],
+                    "name":           student["name"],
+                    "student_number": student.get("student_number", ""),
+                    "encodings":      student["encodings"],
+                })
+                injected += 1
+
+            cache.set(students)           # resets TTL timestamp
+            scopes_to_persist.append(scope_key)
+
+    # Persist outside the lock so DB latency doesn't block the cache dict
+    for scope_key in scopes_to_persist:
+        try:
+            att_queue.upsert_student_in_scope(scope_key, student)
+        except Exception as e:
+            logger.warning(f"Could not persist student {student['id']} to scope '{scope_key}': {e}")
+
+    return injected, updated
 
 
 def get_students_cached(centers: list = None, env: str = "") -> list:
@@ -428,20 +468,27 @@ def cache_refresh():
 def webhook_student_update():
     """
     Called by a Zoho Creator Deluge workflow whenever a Trainee record is
-    created or edited.  Re-fetches that single record, runs photo-change
-    detection + re-encoding, updates face_embeddings in the local DB, and
-    patches every warm in-memory scope cache in-place — no full reload needed.
+    created or its photo is updated. Re-fetches that single record, re-encodes
+    the face, updates face_embeddings in the local DB, and injects or patches
+    the student in all warm in-memory scope caches for the given centre — no
+    full reload needed, even for brand-new trainees.
 
-    Deluge snippet (On Add / On Edit workflow on the Trainee form):
+    Deluge snippet (On Add / On Edit — photo-change condition):
 
-        map body = {"student_id": input.ID.toString()};
-        response = invokeurl
-        [
-            url: "https://<your-app>.onrender.com/api/webhook/student-update?secret=<ADMIN_SECRET>"
-            type: POST
-            body: body.toString()
-            content-type: "application/json"
-        ];
+        if(input.Upload_Photo1 != old.Upload_Photo1)
+        {
+            body = {
+                "student_id": input.ID.toString(),
+                "centre_id":  input.Centre_Name.ID.toString()
+            };
+            response = invokeurl
+            [
+                url :"https://<your-app>.onrender.com/api/webhook/student-update?secret=<ADMIN_SECRET>"
+                type :POST
+                body:body.toString()
+                headers:{"environment":thisapp.environment.linkname}
+            ];
+        }
 
     Auth: pass ADMIN_SECRET as ?secret= query param or X-Webhook-Secret header.
     """
@@ -451,6 +498,7 @@ def webhook_student_update():
 
     body       = request.get_json(force=True) or {}
     student_id = (body.get("student_id") or body.get("ID") or "").strip()
+    centre_id  = (body.get("centre_id") or "").strip() or None
     env        = _resolve_env(
         body.get("zoho_environment") or body.get("environment") or
         request.args.get("zoho_environment") or request.args.get("environment") or
@@ -460,7 +508,10 @@ def webhook_student_update():
     if not student_id:
         return jsonify({"error": "student_id is required"}), 400
 
-    logger.info(f"Webhook: re-encoding student {student_id} (env={env or 'production'})")
+    logger.info(
+        f"Webhook: re-encoding student {student_id} "
+        f"(centre={centre_id or 'unknown'}, env={env or 'production'})"
+    )
 
     # ── 1. Fetch the single record from Zoho ──────────────────────────────────
     try:
@@ -484,19 +535,21 @@ def webhook_student_update():
             "message": "No face detected in the photo. Check photo quality and try again.",
         })
 
-    # ── 3. Patch in-memory caches so next verify uses the new encoding ─────────
-    patched = _update_student_in_caches(student["id"], student["encodings"])
+    # ── 3. Inject into (new) or patch (existing) warm in-memory scope caches ──
+    injected, updated = _inject_or_update_student_in_caches(student, centre_id=centre_id)
     logger.info(
         f"Webhook: '{student['name']}' ({student_id}) re-encoded — "
-        f"{len(student['encodings'])} embedding(s), {patched} cache scope(s) patched"
+        f"{len(student['encodings'])} embedding(s), "
+        f"{injected} scope(s) injected, {updated} scope(s) patched"
     )
 
     return jsonify({
-        "success":        True,
-        "student":        student["name"],
-        "student_number": student.get("student_number", ""),
-        "encodings":      len(student["encodings"]),
-        "caches_patched": patched,
+        "success":         True,
+        "student":         student["name"],
+        "student_number":  student.get("student_number", ""),
+        "encodings":       len(student["encodings"]),
+        "caches_injected": injected,
+        "caches_updated":  updated,
     })
 
 

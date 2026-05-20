@@ -890,11 +890,11 @@ function triggerPreload(email) {
 
 // ── Face recognition config ───────────────────────────────────────────────────
 
-const BLINKS_REQUIRED       = 2;
-const EAR_CLOSE_THRESH      = 0.18;
+const BLINKS_REQUIRED       = 1;
+const EAR_CLOSE_THRESH      = 0.20;
 const EAR_OPEN_THRESH       = 0.25;
 const EAR_SMOOTH_ALPHA      = 0.3;
-const CLOSED_FRAMES_NEEDED  = 4;    // consecutive frames eye must stay closed
+const CLOSED_FRAMES_NEEDED  = 2;    // consecutive frames eye must stay closed
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 
@@ -1005,6 +1005,7 @@ function initFaceMesh() {
     minDetectionConfidence: 0.7,
     minTrackingConfidence:  0.6,
   });
+  mesh.initialize();
   mesh.onResults(results => {
     if (faceMeshInstance !== mesh) return;
     onFaceMeshResults(results);
@@ -1038,13 +1039,20 @@ function onFaceMeshResults(results) {
   if (!landmarks) {
     if (state.faceDetected) {
       state.faceDetected = false;
+      if (!state.blinkVerified) {
+        state.step1Done    = false;
+        state.blinkCount   = 0;
+        state.closedFrames = 0;
+        state.eyeWasClosed = false;
+        document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
+        activateStep(1);
+      }
       setStatus('dot', 'Position your face in the oval');
       setFrameClass('');
       blinkOverlay.classList.remove('show');
     }
-    // Reset in-progress blink state so credits don't survive face-absent frames
-    state.closedFrames  = 0;
-    state.eyeWasClosed  = false;
+    state.closedFrames = 0;
+    state.eyeWasClosed = false;
     return;
   }
 
@@ -1067,18 +1075,17 @@ function onFaceMeshResults(results) {
   const earPct = Math.min(Math.max(state.smoothedEAR / 0.35, 0), 1) * 100;
   earVal.textContent   = state.smoothedEAR.toFixed(3);
   earFill.style.width  = earPct + '%';
-  const sEAR = state.smoothedEAR;
-  earFill.style.background = sEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
+  earFill.style.background = avgEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
 
   if (!state.blinkVerified) {
-    if (sEAR < EAR_CLOSE_THRESH) {
+    if (avgEAR < EAR_CLOSE_THRESH) {
       state.closedFrames++;
       if (state.closedFrames >= CLOSED_FRAMES_NEEDED) {
         state.eyeWasClosed = true;
       }
       setFrameClass('liveness');
       setStatus('blink', 'Blink detected…');
-    } else if (sEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
+    } else if (avgEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
       state.eyeWasClosed = false;
       state.closedFrames = 0;
       state.blinkCount++;
@@ -1094,7 +1101,7 @@ function onFaceMeshResults(results) {
         const rem = BLINKS_REQUIRED - state.blinkCount;
         setStatus('blink', `Good! ${rem} more blink${rem > 1 ? 's' : ''}…`);
       }
-    } else if (sEAR > EAR_OPEN_THRESH) {
+    } else if (avgEAR > EAR_OPEN_THRESH) {
       state.closedFrames = 0;
     }
   }

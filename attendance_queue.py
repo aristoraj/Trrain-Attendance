@@ -680,6 +680,20 @@ class AttendanceQueue:
             rows = conn.execute("SELECT DISTINCT scope_key FROM student_cache").fetchall()
         return [r["scope_key"] for r in rows]
 
+    def upsert_student_in_scope(self, scope_key: str, student: dict) -> None:
+        """Add or update a single student row in student_cache for the given scope key."""
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            conn.execute(self._q("""
+                INSERT INTO student_cache (student_id, scope_key, name, student_number, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(student_id, scope_key) DO UPDATE
+                    SET name=excluded.name,
+                        student_number=excluded.student_number,
+                        updated_at=excluded.updated_at
+            """), (student["id"], scope_key, student.get("name", ""), student.get("student_number", ""), now))
+        logger.debug(f"Upserted student {student['id']} in scope '{scope_key}'.")
+
     def clear_student_scope(self, scope_key: str) -> int:
         """Remove all student metadata for a scope (called on manual refresh)."""
         with self._db() as conn:
