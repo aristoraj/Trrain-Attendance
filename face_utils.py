@@ -147,11 +147,31 @@ def encode_face_from_bytes(image_bytes: bytes):
     """
     Encode a face from raw image bytes (e.g. downloaded from Zoho Creator URL).
     Returns (embedding, det_score, error).
+
+    Auto-corrects EXIF orientation first (handles sideways mobile photos).
+    If no face is found at the corrected orientation, tries 90/180/270° rotations
+    so a photo uploaded at the wrong angle doesn't silently fail.
     """
     try:
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        embedding, _, det_score, err = _encode_largest_face(np.array(image))
-        return embedding, det_score, err
+        from PIL import ImageOps
+        image = Image.open(io.BytesIO(image_bytes))
+        # Apply EXIF rotation tag so the pixel data matches the visual orientation
+        image = ImageOps.exif_transpose(image)
+        image = image.convert("RGB")
+
+        embedding, det_score, err = _encode_largest_face(np.array(image))
+        if embedding is not None:
+            return embedding, det_score, err
+
+        # Brute-force remaining rotations for photos with missing/wrong EXIF
+        for angle in (90, 180, 270):
+            rotated = image.rotate(angle, expand=True)
+            embedding, det_score, err = _encode_largest_face(np.array(rotated))
+            if embedding is not None:
+                logger.info(f"Face found after {angle}° rotation — enrollment photo was sideways")
+                return embedding, det_score, err
+
+        return None, None, "No face detected in the image."
     except Exception as e:
         return None, None, str(e)
 
