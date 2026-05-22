@@ -509,30 +509,52 @@ def webhook_student_update():
         return jsonify({"error": "student_id is required"}), 400
 
     logger.info(
-        f"Webhook: re-encoding student {student_id} "
+        f"Webhook: encoding student {student_id} "
         f"(centre={centre_id or 'unknown'}, env={env or 'production'})"
     )
 
-    # ── 1. Fetch the single record from Zoho ──────────────────────────────────
+    # ── 1. Download photo → encode → write Face_Embedding to Creator ──────────
+    # encode_and_save_to_creator uses ?serviceType=DownloadFile so image fields
+    # never return null. It also updates local DB and clears stale verified_N.
+    success, message = zoho.encode_and_save_to_creator(student_id, env=env)
+    if not success:
+        logger.warning(f"Webhook: encode failed for {student_id} — {message}")
+        return jsonify({
+            "success": False,
+            "message": f"Could not encode photo: {message}. "
+                       "Check photo quality and re-save the record to retry.",
+        })
+
+    # ── 2. Fetch record to get name / student_number for cache injection ───────
     try:
-        url  = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_id}"
-        resp = zoho._request("get", url, env=env, timeout=15)
+        url    = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_id}"
+        resp   = zoho._request("get", url, env=env, timeout=15)
         resp.raise_for_status()
         record = resp.json().get("data")
-        if not record:
-            return jsonify({"error": "Student not found in Zoho"}), 404
     except Exception as e:
-        logger.error(f"Webhook: Zoho fetch failed for {student_id}: {e}")
-        return jsonify({"error": f"Failed to fetch student from Zoho: {str(e)}"}), 500
+        logger.warning(f"Webhook: record re-fetch failed for {student_id}: {e} (embedding was saved)")
+        return jsonify({
+            "success": True,
+            "message": f"Encoded and saved to Creator ({message}). "
+                       "Cache will refresh on next request.",
+        })
 
-    # ── 2. Re-encode (photo-change detection + DB upsert handled inside) ──────
+    if not record:
+        return jsonify({
+            "success": True,
+            "message": f"Encoded and saved to Creator ({message}). "
+                       "Cache will refresh on next request.",
+        })
+
+    # ── 3. Build student dict — local DB hit because step 1 already wrote it ──
     student = zoho._process_record(record, env=env)
 
     if not student:
-        logger.warning(f"Webhook: no face found for student {student_id} — embedding unchanged")
+        logger.warning(f"Webhook: _process_record returned None for {student_id} after encoding")
         return jsonify({
-            "success": False,
-            "message": "No face detected in the photo. Check photo quality and try again.",
+            "success": True,
+            "message": f"Encoded and saved to Creator ({message}). "
+                       "Cache will refresh on next request.",
         })
 
     # ── 3. Inject into (new) or patch (existing) warm in-memory scope caches ──

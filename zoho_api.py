@@ -333,7 +333,17 @@ class ZohoCreatorAPI:
         return students
 
     def _process_record(self, record: dict, env: str = "") -> dict | None:
-        """Parse a raw Zoho Creator record into a student dict with face encodings."""
+        """
+        Build a student dict from a Zoho Creator record.
+
+        Priority:
+          1. Local DB enrollment embedding  (cache of Creator field — fastest, no API call)
+          2. Creator Face_Embedding field   (source of truth — cached locally on first read)
+          3. Photo download + encode        (first time only, before webhook has run)
+
+        On all failures: returns None with NO marker saved.
+        Photo-change re-encoding is handled by encode_and_save_to_creator() via the webhook.
+        """
         student_id = record.get("ID") or record.get("id")
 
         name_raw = record.get(FIELD_STUDENT_NAME)
@@ -348,162 +358,108 @@ class ZohoCreatorAPI:
 
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
-        # ── Extract current photo URL early — used for change detection ───────
-        photo_raw = record.get(FIELD_STUDENT_PHOTO)
-        if isinstance(photo_raw, dict):
-            current_photo_url = (
-                photo_raw.get("url")
-                or photo_raw.get("link")
-                or photo_raw.get("href")
-                or photo_raw.get("download_url")
-                or photo_raw.get("value")
-                or ""
-            )
-            if not current_photo_url:
-                logger.warning(
-                    f"Photo field is a dict but no URL key found for '{name}' — "
-                    f"keys: {list(photo_raw.keys())}, raw: {str(photo_raw)[:200]}"
-                )
-        else:
-            current_photo_url = str(photo_raw).strip() if photo_raw else ""
-
-        if current_photo_url.startswith("/"):
-            current_photo_url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{current_photo_url}"
-
-        # Zoho Creator v2 API returns null for image fields in single-record GET responses.
-        # Fall back to the standard file-download endpoint built from the record ID.
-        if not current_photo_url and student_id:
-            current_photo_url = (
-                f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
-                f"/{student_id}/{FIELD_STUDENT_PHOTO}?serviceType=DownloadFile"
-            )
-            logger.info(
-                f"Photo URL null in record for '{name}' — "
-                f"using constructed download URL for student {student_id}"
-            )
-
-        # ── 1a. Local SQLite/PostgreSQL embedding cache (fastest — no network) ──
-        photo_changed = False   # set True when URL mismatch detected — skips step 1b
-        if self._embedding_cache:
-            cached = self._embedding_cache.get_local_embeddings(student_id)
-            if cached:
-                # No-photo marker: re-check only if a photo has since been uploaded
-                if any(c["source"] == "no_photo" for c in cached):
-                    if not current_photo_url:
-                        logger.warning(f"Skipping '{name}' ({student_number}) — still no photo (no_photo marker active)")
-                        return None
-                    # Photo now exists — clear the no_photo marker and fall through to encode
-                    logger.info(f"'{name}' ({student_number}) now has a photo — re-encoding")
-                    cached = [c for c in cached if c["source"] != "no_photo"]
-
-                # Photo-change detection: if the stored URL differs, invalidate enrollment embedding
-                enrollment = next((c for c in cached if c["source"] == "enrollment"), None)
-                if enrollment and current_photo_url and enrollment.get("photo_url"):
-                    if enrollment["photo_url"] != current_photo_url:
-                        logger.info(
-                            f"'{name}' ({student_number}) photo changed — re-encoding "
-                            f"(was: {enrollment['photo_url'][-40:]}, "
-                            f"now: {current_photo_url[-40:]})"
-                        )
-                        # Remove stale enrollment entry; keep verified_N live captures
-                        cached = [c for c in cached if c["source"] != "enrollment"]
-                        enrollment = None
-                        photo_changed = True   # must download new photo — skip Zoho field
-
-                if cached and enrollment:
-                    encodings = []
-                    for item in cached:
+        def _build_encodings(enrollment_json: str) -> list:
+            """enrollment embedding + any verified_N live captures from local DB."""
+            encodings = []
+            try:
+                encodings.append(json_to_embedding(enrollment_json))
+            except Exception:
+                pass
+            if self._embedding_cache:
+                for c in self._embedding_cache.get_local_embeddings(student_id):
+                    if c["source"].startswith("verified_"):
                         try:
-                            encodings.append(json_to_embedding(item["embedding"]))
+                            encodings.append(json_to_embedding(c["embedding"]))
                         except Exception:
                             pass
-                    if encodings:
-                        logger.info(
-                            f"Local cache hit for '{name}' ({student_number}) "
-                            f"— {len(encodings)} embedding(s), skipping photo download"
-                        )
-                        return {
-                            "id":             student_id,
-                            "student_number": student_number,
-                            "name":           name,
-                            "encodings":      encodings,
-                        }
+            return encodings
 
-        # ── 1b. Try pre-computed embedding from Zoho field ────────────────────
-        # Skipped when photo_changed=True — the Zoho field still holds the OLD
-        # embedding and must not be used; fall through to download the new photo.
-        embedding_raw = record.get(FIELD_STUDENT_EMBEDDING, "") if not photo_changed else ""
-        if embedding_raw and isinstance(embedding_raw, str) and embedding_raw.strip().startswith("["):
-            try:
-                embedding = json_to_embedding(embedding_raw.strip())
-                logger.info(f"Zoho-stored embedding loaded for '{name}' ({student_number})")
-                if self._embedding_cache:
-                    try:
-                        self._embedding_cache.save_local_embedding(
-                            student_id, embedding_raw.strip(),
-                            source="enrollment", photo_url=current_photo_url or None
-                        )
-                    except Exception:
-                        pass
-                return {
-                    "id":             student_id,
-                    "student_number": student_number,
-                    "name":           name,
-                    "encodings":      [embedding],
-                }
-            except Exception as e:
-                logger.warning(f"Bad stored embedding for '{name}': {e} — falling back to photo")
-
-        # ── 2. Fallback: download photo and encode ────────────────────────────
-        if not current_photo_url:
-            logger.warning(f"Skipping '{name}' ({student_number}) — no photo and no stored embedding.")
-            if self._embedding_cache:
-                try:
-                    self._embedding_cache.save_local_embedding(
-                        student_id, "NO_PHOTO", source="no_photo"
+        # ── 1. Local DB enrollment cache (instant — no network) ──────────────
+        if self._embedding_cache:
+            cached = self._embedding_cache.get_local_embeddings(student_id)
+            enrollment_local = next((c for c in cached if c["source"] == "enrollment"), None)
+            if enrollment_local:
+                encodings = _build_encodings(enrollment_local["embedding"])
+                if encodings:
+                    logger.info(
+                        f"Local DB hit for '{name}' ({student_number}) "
+                        f"— {len(encodings)} embedding(s)"
                     )
-                except Exception:
-                    pass
+                    return {
+                        "id":             student_id,
+                        "student_number": student_number,
+                        "name":           name,
+                        "encodings":      encodings,
+                    }
+
+        # ── 2. Creator Face_Embedding field (source of truth) ─────────────────
+        embedding_raw = (record.get(FIELD_STUDENT_EMBEDDING) or "").strip()
+        if embedding_raw.startswith("["):
+            try:
+                encodings = _build_encodings(embedding_raw)
+                if encodings:
+                    if self._embedding_cache:
+                        try:
+                            self._embedding_cache.save_local_embedding(
+                                student_id, embedding_raw, source="enrollment"
+                            )
+                        except Exception:
+                            pass
+                    logger.info(
+                        f"Creator embedding loaded for '{name}' ({student_number}) "
+                        f"— {len(encodings)} encoding(s), cached locally"
+                    )
+                    return {
+                        "id":             student_id,
+                        "student_number": student_number,
+                        "name":           name,
+                        "encodings":      encodings,
+                    }
+            except Exception as e:
+                logger.warning(f"Bad Creator embedding for '{name}': {e} — falling back to photo")
+
+        # ── 3. Fallback: download photo and encode ────────────────────────────
+        # Only runs when Face_Embedding is empty (new student before first webhook fires).
+        photo_url = self._extract_photo_url(record, student_id, name)
+        if not photo_url:
+            logger.warning(
+                f"Skipping '{name}' ({student_number}) — no Face_Embedding and no photo URL. "
+                "Upload a photo in Zoho Creator; the webhook will encode it automatically."
+            )
             return None
 
         try:
-            encoding, det_score, err = self._download_and_encode(current_photo_url, env=env)
+            encoding, det_score, err = self._download_and_encode(photo_url, env=env)
         except Exception as e:
-            logger.warning(f"Skipping '{name}': {e}")
+            logger.warning(f"Skipping '{name}': photo download failed: {e}")
             return None
 
         if err or encoding is None:
-            logger.warning(f"No face in photo for '{name}': {err}")
+            logger.warning(f"No face found in photo for '{name}': {err}")
             return None
 
-        # Quality warning: low det_score means the enrollment photo is poor
         if det_score is not None and det_score < 0.60:
             logger.warning(
                 f"Low quality enrollment photo for '{name}' "
                 f"(det_score={det_score:.2f}) — consider replacing in Zoho Creator"
             )
 
-        logger.info(f"Encoded face from photo for '{name}' ({student_number}, det_score={det_score:.2f})")
+        logger.info(f"Encoded '{name}' from photo (det_score={det_score:.2f})")
         embedding_json = embedding_to_json(encoding)
 
-        # ── 3. Save to local cache (instant on next reload) ───────────────────
         if self._embedding_cache:
             try:
                 self._embedding_cache.save_local_embedding(
                     student_id, embedding_json, source="enrollment",
-                    det_score=det_score, photo_url=current_photo_url or None
+                    det_score=det_score, photo_url=photo_url
                 )
-                # Photo changed → old live captures belong to the previous person; wipe them
-                if photo_changed:
-                    self._embedding_cache.clear_verified_embeddings(student_id)
             except Exception as e:
-                logger.warning(f"Could not save local embedding for '{name}': {e} (non-fatal)")
+                logger.warning(f"Could not save local embedding for '{name}': {e}")
 
-        # ── 4. Save to Zoho Creator as backup ────────────────────────────────
         try:
             self.save_embedding(student_id, encoding, env=env)
         except Exception as e:
-            logger.warning(f"Could not save Zoho embedding for '{name}': {e} (non-fatal)")
+            logger.warning(f"Could not save Creator embedding for '{name}': {e} (non-fatal)")
 
         return {
             "id":             student_id,
@@ -511,6 +467,77 @@ class ZohoCreatorAPI:
             "name":           name,
             "encodings":      [encoding],
         }
+
+    def _extract_photo_url(self, record: dict, student_id: str, name: str) -> str:
+        """Extract the photo download URL from a record, with fallback to serviceType=DownloadFile."""
+        photo_raw = record.get(FIELD_STUDENT_PHOTO)
+        if isinstance(photo_raw, dict):
+            url = (
+                photo_raw.get("url") or photo_raw.get("link") or
+                photo_raw.get("href") or photo_raw.get("download_url") or
+                photo_raw.get("value") or ""
+            )
+            if not url:
+                logger.warning(
+                    f"Photo field dict has no URL key for '{name}' — "
+                    f"keys: {list(photo_raw.keys())}"
+                )
+        else:
+            url = str(photo_raw).strip() if photo_raw else ""
+
+        if url.startswith("/"):
+            url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{url}"
+
+        # Zoho Creator v2 single-record GET returns null for image fields.
+        # Fall back to the DownloadFile endpoint which always works.
+        if not url and student_id:
+            url = (
+                f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
+                f"/{student_id}/{FIELD_STUDENT_PHOTO}?serviceType=DownloadFile"
+            )
+            logger.info(f"Photo URL null for '{name}' — using serviceType=DownloadFile")
+
+        return url
+
+    def encode_and_save_to_creator(self, student_id: str, env: str = "") -> tuple[bool, str]:
+        """
+        Download a student's photo, encode the face, and write the embedding to
+        the Face_Embedding field in Zoho Creator. Also updates the local DB cache
+        and clears stale verified_N captures so the new identity is live immediately.
+
+        Called by the webhook whenever a student is added or their photo is changed.
+        Always uses ?serviceType=DownloadFile so image fields never return null.
+        Returns (success, message).
+        """
+        photo_url = (
+            f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
+            f"/{student_id}/{FIELD_STUDENT_PHOTO}?serviceType=DownloadFile"
+        )
+        try:
+            encoding, det_score, err = self._download_and_encode(photo_url, env=env)
+        except Exception as e:
+            return False, f"Photo download failed: {e}"
+
+        if err or encoding is None:
+            return False, f"No face detected: {err}"
+
+        try:
+            self.save_embedding(student_id, encoding, env=env)
+        except Exception as e:
+            return False, f"Failed to save embedding to Creator: {e}"
+
+        if self._embedding_cache:
+            embedding_json = embedding_to_json(encoding)
+            try:
+                self._embedding_cache.save_local_embedding(
+                    student_id, embedding_json, source="enrollment", det_score=det_score
+                )
+                self._embedding_cache.clear_verified_embeddings(student_id)
+            except Exception as e:
+                logger.warning(f"Local cache update failed for {student_id}: {e} (non-fatal)")
+
+        logger.info(f"Student {student_id}: encoded and saved to Creator (det_score={det_score:.3f})")
+        return True, f"Encoded successfully (det_score={det_score:.2f})"
 
     def _download_and_encode(self, url: str, env: str = ""):
         resp = self._request("get", url, env=env, timeout=20)
