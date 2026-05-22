@@ -735,6 +735,25 @@ class AttendanceQueue:
         logger.info(f"Cleared {count} students from local DB for scope '{scope_key}'.")
         return count
 
+    def clear_verified_embeddings(self, student_id: str) -> int:
+        """
+        Delete all verified_N live-capture embeddings for a student.
+        Called when the enrollment photo changes so stale live captures
+        from the previous person don't pollute the new identity.
+        """
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q(
+                    "DELETE FROM face_embeddings "
+                    "WHERE student_id=? AND source IN ('verified_1','verified_2','verified_3')"
+                ),
+                (student_id,),
+            )
+            count = cur.rowcount
+        if count:
+            logger.info(f"Cleared {count} stale verified embedding(s) for student {student_id} (photo changed)")
+        return count
+
     def add_verified_embedding(self, student_id: str, embedding_json: str) -> None:
         """
         Persist a live-capture embedding for future angle-variant matching.

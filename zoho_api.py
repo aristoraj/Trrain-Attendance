@@ -481,6 +481,9 @@ class ZohoCreatorAPI:
                     student_id, embedding_json, source="enrollment",
                     det_score=det_score, photo_url=current_photo_url or None
                 )
+                # Photo changed → old live captures belong to the previous person; wipe them
+                if photo_changed:
+                    self._embedding_cache.clear_verified_embeddings(student_id)
             except Exception as e:
                 logger.warning(f"Could not save local embedding for '{name}': {e} (non-fatal)")
 
