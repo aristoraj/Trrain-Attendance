@@ -43,6 +43,12 @@ class ZohoCreatorAPI:
             owner=ZOHO_ACCOUNT_OWNER,
             app=ZOHO_APP_NAME,
         )
+        # v2.1 data API base — used for file field downloads
+        # URL pattern: {_download_base_url}/report/{report}/{record_id}/{field}/download
+        self._download_base_url = (
+            f"https://creator.zoho.{ZOHO_DATA_CENTER}/creator/v2.1/data"
+            f"/{ZOHO_ACCOUNT_OWNER}/{ZOHO_APP_NAME}"
+        )
         self._token_url = self.TOKEN_URL_TEMPLATE.format(dc=ZOHO_DATA_CENTER)
 
     # ─── Auth ──────────────────────────────────────────────────────────────────
@@ -512,28 +518,14 @@ class ZohoCreatorAPI:
         Returns (success, message).
         """
         if not photo_url:
-            # Single-record GET returns null for image fields.
-            # Fetch via list API with a criteria filter — this always returns the real URL.
-            try:
-                list_url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
-                resp = self._request(
-                    "get", list_url, env=env,
-                    params={"criteria": f"(ID=={student_id})", "limit": 1},
-                    timeout=15,
-                )
-                resp.raise_for_status()
-                records = resp.json().get("data", [])
-                if not records:
-                    return False, "Student record not found in Zoho"
-                record    = records[0]
-                name_raw  = record.get(FIELD_STUDENT_NAME, "")
-                name      = name_raw.get("display_value", "") if isinstance(name_raw, dict) else str(name_raw)
-                photo_url = self._extract_photo_url(record, student_id, name)
-            except Exception as e:
-                return False, f"Could not fetch student record: {e}"
-
-        if not photo_url:
-            return False, "No photo uploaded for this student in Zoho Creator"
+            # No photo URL supplied (called from webhook — no record in hand).
+            # Use the Zoho Creator v2.1 data API file-download endpoint.
+            # Format: /creator/v2.1/data/{owner}/{app}/report/{report}/{id}/{field}/download
+            photo_url = (
+                f"{self._download_base_url}/report/{ZOHO_STUDENT_REPORT}"
+                f"/{student_id}/{FIELD_STUDENT_PHOTO}/download"
+            )
+            logger.info(f"Constructing v2.1 download URL for student {student_id}")
 
         try:
             encoding, det_score, err = self._download_and_encode(photo_url, env=env)

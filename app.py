@@ -91,6 +91,11 @@ _scope_caches_lock = threading.Lock()
 _bulk_encode_status: dict = {}
 _bulk_encode_lock = threading.Lock()
 
+# ─── Per-scope embedding progress (for SDK first-time setup) ──────────────────
+
+_scope_encoding: dict = {}          # scope_key → {total, done, running}
+_scope_encoding_lock = threading.Lock()
+
 # Track keys that are currently being loaded in a background thread
 _preloading_keys: set[str] = set()
 _preloading_lock  = threading.Lock()
@@ -378,11 +383,19 @@ def health():
 @app.route("/api/cache/status")
 def cache_status():
     status = {}
+    with _scope_encoding_lock:
+        enc_snapshot = dict(_scope_encoding)
     for key, cache in _scope_caches.items():
+        enc = enc_snapshot.get(key, {})
         status[key] = {
             "students_cached": cache.size,
             "age_seconds":     cache.age_seconds,
             "ttl_seconds":     CACHE_TTL_SECONDS,
+            "encoding": {
+                "total":   enc.get("total", 0),
+                "done":    enc.get("done",  0),
+                "running": enc.get("running", False),
+            } if enc else None,
         }
     return jsonify(status if status else {"ALL": {"students_cached": 0}})
 
@@ -801,40 +814,119 @@ def load_students():
     """
     Accept raw Zoho Creator records fetched by the Widget SDK and seed the face cache.
 
+    Students with Face_Embedding populated are seeded immediately.
+    Students without Face_Embedding are encoded in a background thread (first-time
+    setup) — the response includes encoding_pending so the frontend can show
+    a "Storing embeddings… please wait" message and poll /api/cache/status.
+
     Request JSON:
     {
-        "records":   [ ...raw Zoho trainee records... ],
-        "scope_key": "C:id1,id2"   ← built by the frontend from centre IDs
+        "records":          [ ...raw Zoho trainee records... ],
+        "scope_key":        "C:id1,id2",
+        "zoho_environment": ""            ← optional
     }
     """
     data        = request.get_json(force=True) or {}
     raw_records = data.get("records", [])
     scope_key   = (data.get("scope_key") or "").strip() or "ALL"
+    env         = _resolve_env(data.get("zoho_environment"))
 
-    students = []
+    students       = []
+    needs_encoding = []
+
     for rec in raw_records:
-        embedding_raw = (rec.get(FIELD_STUDENT_EMBEDDING) or "").strip()
-        if not embedding_raw or not embedding_raw.startswith("["):
-            continue
-        embedding = json_to_embedding(embedding_raw)
-        if embedding is None:
-            continue
-        students.append({
-            "id":             str(rec.get("ID") or rec.get("id") or ""),
-            "name":           str(rec.get(FIELD_STUDENT_NAME) or rec.get("Name") or ""),
-            "student_number": str(rec.get(FIELD_STUDENT_NUMBER) or ""),
-            "encodings":      [embedding],
-        })
+        student_id     = str(rec.get("ID") or rec.get("id") or "")
+        name_raw       = rec.get(FIELD_STUDENT_NAME) or rec.get("Name") or ""
+        name           = (name_raw.get("display_value", "") if isinstance(name_raw, dict)
+                          else str(name_raw))
+        student_number = str(rec.get(FIELD_STUDENT_NUMBER) or "")
+        embedding_raw  = (rec.get(FIELD_STUDENT_EMBEDDING) or "").strip()
 
+        if embedding_raw.startswith("["):
+            emb = json_to_embedding(embedding_raw)
+            if emb is not None:
+                students.append({
+                    "id":             student_id,
+                    "name":           name,
+                    "student_number": student_number,
+                    "encodings":      [emb],
+                })
+        elif student_id:
+            needs_encoding.append(rec)
+
+    # ── Seed already-encoded students immediately ─────────────────────────────
     if students:
         with _scope_caches_lock:
             if scope_key not in _scope_caches:
                 _scope_caches[scope_key] = FaceCache(ttl=CACHE_TTL_SECONDS)
             _scope_caches[scope_key].set(students)
-        logger.info(f"SDK seeded {len(students)} students into cache key '{scope_key}'")
-    else:
-        logger.warning(f"SDK load-students: 0 valid embeddings in {len(raw_records)} records for scope '{scope_key}'")
-    return jsonify({"success": True, "loaded": len(students), "scope_key": scope_key})
+        logger.info(f"SDK seeded {len(students)} student(s) into scope '{scope_key}'")
+
+    # ── Background encoding for students missing Face_Embedding ───────────────
+    if needs_encoding:
+        with _scope_encoding_lock:
+            _scope_encoding[scope_key] = {
+                "total":   len(needs_encoding),
+                "done":    0,
+                "running": True,
+            }
+
+        def _encode_missing():
+            for rec in needs_encoding:
+                sid            = str(rec.get("ID") or rec.get("id") or "")
+                nr             = rec.get(FIELD_STUDENT_NAME) or ""
+                sname          = nr.get("display_value", "") if isinstance(nr, dict) else str(nr or "")
+                student_number = str(rec.get(FIELD_STUDENT_NUMBER) or "")
+
+                photo_url = zoho._extract_photo_url(rec, sid, sname)
+                if photo_url:
+                    ok, _ = zoho.encode_and_save_to_creator(sid, env=env, photo_url=photo_url)
+                    if ok:
+                        local_embs = att_queue.get_local_embeddings(sid)
+                        enroll = next((e for e in local_embs if e["source"] == "enrollment"), None)
+                        if enroll:
+                            try:
+                                enc = json_to_embedding(enroll["embedding"])
+                                if enc is not None:
+                                    _inject_or_update_student_in_caches({
+                                        "id":             sid,
+                                        "name":           sname,
+                                        "student_number": student_number,
+                                        "encodings":      [enc],
+                                    })
+                            except Exception:
+                                pass
+
+                with _scope_encoding_lock:
+                    _scope_encoding[scope_key]["done"] += 1
+
+                time.sleep(0.3)   # ~3 students/sec — stay under Zoho rate limit
+
+            with _scope_encoding_lock:
+                _scope_encoding[scope_key]["running"] = False
+            logger.info(
+                f"Embedding encoding complete for scope '{scope_key}': "
+                f"{_scope_encoding[scope_key]['done']}/{_scope_encoding[scope_key]['total']}"
+            )
+
+        threading.Thread(target=_encode_missing, daemon=True,
+                         name=f"encode-{scope_key[:20]}").start()
+        logger.info(
+            f"SDK: {len(students)} seeded immediately, "
+            f"{len(needs_encoding)} queued for background encoding (scope '{scope_key}')"
+        )
+
+    if not students and not needs_encoding:
+        logger.warning(
+            f"SDK load-students: 0 valid records in {len(raw_records)} for scope '{scope_key}'"
+        )
+
+    return jsonify({
+        "success":          True,
+        "loaded":           len(students),
+        "encoding_pending": len(needs_encoding),
+        "scope_key":        scope_key,
+    })
 
 
 # ─── Admin: queue sync status ─────────────────────────────────────────────────

@@ -811,13 +811,43 @@ async function loadDataViaSdk(email) {
     console.log('[SDK] Fetched', allTrainees.length, 'trainee record(s)');
     setStatus('active', 'Seeding face recognition cache…');
 
-    await fetch('/api/load-students', {
+    const loadResp = await fetch('/api/load-students', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
     }).then(r => r.json());
 
-    console.log('[SDK] Cache seeded for scope', _SCOPE_KEY);
+    console.log('[SDK] Cache seeded for scope', _SCOPE_KEY, loadResp);
+
+    // If some students are missing Face_Embedding, the server encodes them in the
+    // background. Block the UI until encoding finishes so attendance never runs
+    // against an incomplete cache.
+    if (loadResp && loadResp.encoding_pending > 0) {
+      const total = loadResp.encoding_pending;
+      setStatus('active', `Storing face embeddings for ${total} student(s)… please wait`);
+
+      await (async function pollEncoding() {
+        while (true) {
+          await new Promise(r => setTimeout(r, 2500));
+          try {
+            const st = await fetch('/api/cache/status').then(r => r.json());
+            const enc = (st[_SCOPE_KEY] || {}).encoding || {};
+            const done = enc.done || 0;
+            const running = enc.running !== false;   // treat missing as "still running"
+            setStatus('active',
+              `Storing face embeddings… ${done} / ${total} done — please wait`);
+            console.log('[SDK] encoding poll:', enc);
+            if (!running) break;
+          } catch (e) {
+            console.warn('[SDK] encoding poll error:', e);
+          }
+        }
+      })();
+
+      setStatus('active', 'Face embeddings stored. Loading attendance module…');
+      await new Promise(r => setTimeout(r, 800));
+    }
+
     _dataLoaded = true;
     setStatus('active', 'Position your face in the oval');
   } catch (err) {
