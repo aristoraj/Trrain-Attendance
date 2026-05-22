@@ -86,6 +86,11 @@ zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoh
 _scope_caches: dict[str, FaceCache] = {}
 _scope_caches_lock = threading.Lock()
 
+# ─── Bulk-encode job state ─────────────────────────────────────────────────────
+
+_bulk_encode_status: dict = {}
+_bulk_encode_lock = threading.Lock()
+
 # Track keys that are currently being loaded in a background thread
 _preloading_keys: set[str] = set()
 _preloading_lock  = threading.Lock()
@@ -1036,6 +1041,224 @@ def admin_clear_student_embeddings():
             "to trigger a fresh webhook re-encode."
         ),
     })
+
+
+@app.route("/admin/encode-all-students", methods=["GET", "POST"])
+@limiter.limit("5 per minute")
+def admin_encode_all_students():
+    """
+    Bulk-encode all student photos and write embeddings to the Face_Embedding
+    field in Zoho Creator. Runs in a background thread; the page auto-refreshes
+    every 3 seconds while running.
+
+    GET  → view current status / start page
+    POST → start the encoding job (or GET with ?start=1)
+
+    Protected by ADMIN_SECRET.
+    """
+    secret = request.args.get("secret", "")
+    if secret != ADMIN_SECRET:
+        return make_response("Unauthorized.", 401)
+
+    env = _resolve_env(request.args.get("zoho_environment"))
+
+    should_start = request.method == "POST" or request.args.get("start") == "1"
+
+    with _bulk_encode_lock:
+        already_running = _bulk_encode_status.get("running", False)
+
+    if should_start and not already_running:
+        with _bulk_encode_lock:
+            _bulk_encode_status.clear()
+            _bulk_encode_status.update({
+                "running":     True,
+                "total":       0,
+                "success":     0,
+                "failed":      0,
+                "errors":      [],
+                "started_at":  datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S IST"),
+                "finished_at": None,
+                "env":         env or "production",
+            })
+
+        def _run_bulk_encode():
+            try:
+                url        = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}"
+                page_start = 1
+                page_size  = 200
+
+                while True:
+                    resp = zoho._request(
+                        "get", url, env=env,
+                        params={"from": page_start, "limit": page_size},
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                    records = resp.json().get("data", [])
+                    if not records:
+                        break
+
+                    for record in records:
+                        student_id = record.get("ID") or record.get("id")
+                        name_raw   = record.get(FIELD_STUDENT_NAME)
+                        name = (
+                            name_raw.get("display_value")
+                            if isinstance(name_raw, dict)
+                            else str(name_raw or "Unknown")
+                        )
+
+                        if not student_id:
+                            continue
+
+                        with _bulk_encode_lock:
+                            _bulk_encode_status["total"] += 1
+
+                        ok, msg = zoho.encode_and_save_to_creator(student_id, env=env)
+
+                        with _bulk_encode_lock:
+                            if ok:
+                                _bulk_encode_status["success"] += 1
+                                logger.info(
+                                    f"encode-all [{_bulk_encode_status['success']}/"
+                                    f"{_bulk_encode_status['total']}]: {name} — {msg}"
+                                )
+                            else:
+                                _bulk_encode_status["failed"] += 1
+                                err_entry = f"{name} ({student_id}): {msg}"
+                                _bulk_encode_status["errors"].append(err_entry)
+                                if len(_bulk_encode_status["errors"]) > 100:
+                                    _bulk_encode_status["errors"] = _bulk_encode_status["errors"][-100:]
+                                logger.warning(f"encode-all: FAILED {name} — {msg}")
+
+                        # ~2 students/sec — keeps us well under Zoho's rate limit
+                        time.sleep(0.5)
+
+                    if len(records) < page_size:
+                        break
+                    page_start += page_size
+
+            except Exception as e:
+                logger.error(f"encode-all: unexpected error: {e}")
+                with _bulk_encode_lock:
+                    _bulk_encode_status["errors"].append(f"Fatal error: {e}")
+            finally:
+                with _bulk_encode_lock:
+                    _bulk_encode_status["running"]     = False
+                    _bulk_encode_status["finished_at"] = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
+                logger.info(
+                    f"encode-all finished: "
+                    f"{_bulk_encode_status['success']} encoded, "
+                    f"{_bulk_encode_status['failed']} failed"
+                )
+                # Invalidate all in-memory caches so next request loads fresh embeddings
+                with _scope_caches_lock:
+                    for cache in _scope_caches.values():
+                        cache.invalidate()
+                logger.info("encode-all: scope caches invalidated — will reload from DB on next request")
+
+        threading.Thread(target=_run_bulk_encode, daemon=True, name="bulk-encode").start()
+
+    # ── Build HTML status page ────────────────────────────────────────────────
+    with _bulk_encode_lock:
+        status = dict(_bulk_encode_status)
+
+    running  = status.get("running", False)
+    total    = status.get("total",   0)
+    success  = status.get("success", 0)
+    failed   = status.get("failed",  0)
+    errors   = status.get("errors",  [])
+    pct      = int(success / total * 100) if total > 0 else 0
+
+    status_text  = "Running..." if running else ("Done" if status.get("finished_at") else "Not started")
+    status_color = "#fbbf24" if running else ("#4ade80" if status.get("finished_at") else "#8b949e")
+
+    errors_html = "".join(
+        f"<li style='color:#f87171;font-size:12px;margin:2px 0'>{_html.escape(e)}</li>"
+        for e in errors[-30:]
+    )
+
+    start_url = f"/admin/encode-all-students?secret={_html.escape(secret, quote=True)}&start=1"
+    if env:
+        start_url += f"&zoho_environment={_html.escape(env, quote=True)}"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  {"<meta http-equiv='refresh' content='3'/>" if running else ""}
+  <title>Bulk Encode Students</title>
+  <style>
+    body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+           background:#0d1117;color:#e6edf3;margin:0;padding:24px; }}
+    h2   {{ margin:0 0 4px;font-size:20px; }}
+    .sub {{ color:#8b949e;font-size:13px;margin:0 0 24px;line-height:1.6; }}
+    .cards {{ display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px; }}
+    .card {{ background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px 24px;min-width:110px; }}
+    .num  {{ font-size:32px;font-weight:700;margin:4px 0; }}
+    .lbl  {{ font-size:12px;color:#8b949e; }}
+    .bar-wrap {{ background:#21262d;border-radius:6px;height:10px;margin-bottom:24px; }}
+    .bar  {{ background:#4ade80;height:10px;border-radius:6px;width:{pct}%;transition:width .3s; }}
+    .btn  {{ display:inline-block;padding:10px 24px;background:#2563eb;color:#fff;
+             border:none;border-radius:8px;font-size:14px;font-weight:600;
+             cursor:pointer;text-decoration:none;margin-right:12px; }}
+    .btn:hover {{ opacity:.85; }}
+    .btn-gray {{ background:#374151; }}
+    ul {{ padding-left:18px;margin:8px 0; }}
+    h3 {{ margin:16px 0 8px;font-size:15px; }}
+    code {{ background:#21262d;padding:2px 6px;border-radius:4px;font-size:12px; }}
+  </style>
+</head>
+<body>
+  <h2>Bulk Encode — Write Face_Embedding to Creator</h2>
+  <p class="sub">
+    Downloads each student's photo, encodes with InsightFace ArcFace, and writes
+    the 512-d embedding to the <code>Face_Embedding</code> multiline field in Zoho Creator.
+    Runs at ~2 students/sec to stay within Zoho API rate limits.
+    <br>Students whose photo has no detectable face are logged as failed — fix
+    the photo in Creator and re-save to trigger the webhook.
+  </p>
+
+  <div class="cards">
+    <div class="card">
+      <div class="lbl">Status</div>
+      <div class="num" style="font-size:18px;color:{status_color}">{status_text}</div>
+      <div class="lbl">{status.get("started_at") or "—"}</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Processed</div>
+      <div class="num">{total}</div>
+      <div class="lbl">students</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Encoded</div>
+      <div class="num" style="color:#4ade80">{success}</div>
+      <div class="lbl">saved to Creator</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Failed</div>
+      <div class="num" style="color:#{'f87171' if failed else '4ade80'}">{failed}</div>
+      <div class="lbl">no face / bad photo</div>
+    </div>
+  </div>
+
+  {"<div class='bar-wrap'><div class='bar'></div></div>" if total > 0 else ""}
+  {"<p style='color:#fbbf24;font-size:13px'>⟳ Auto-refreshing every 3 seconds...</p>" if running else ""}
+
+  {f"<p style='color:#4ade80;font-size:13px'>✓ Finished at {status.get('finished_at')}. All scope caches invalidated — next attendance request reloads embeddings from local DB.</p>" if status.get("finished_at") and not running else ""}
+
+  {f'<h3>Failed students ({len(errors)})</h3><ul>{errors_html}</ul><p style="font-size:12px;color:#8b949e">Fix their photos in Zoho Creator, then re-save each record — the webhook will re-encode them automatically.</p>' if errors else ""}
+
+  {"" if running else f'<a class="btn" href="{start_url}">▶ {"Re-run Encoding" if status.get("finished_at") else "Start Bulk Encode"}</a>'}
+  <a class="btn btn-gray" href="/admin/encode-all-students?secret={_html.escape(secret, quote=True)}">↻ Refresh</a>
+
+  <p style="margin-top:24px;font-size:13px;">
+    <a href="/admin/sync-status?secret={_html.escape(secret, quote=True)}" style="color:#60a5fa">Attendance sync status →</a>
+    &nbsp;|&nbsp;
+    <a href="/" style="color:#60a5fa">← Attendance app</a>
+  </p>
+</body>
+</html>"""
 
 
 @app.route("/admin/retry-failed", methods=["GET", "POST"])
