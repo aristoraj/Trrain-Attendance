@@ -43,7 +43,7 @@ def _get_face_app():
                     providers=["CPUExecutionProvider"],
                 )
                 # 640×640 detection grid: catches faces at distance and odd angles
-                app.prepare(ctx_id=0, det_size=(640, 640))
+                app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
                 _face_app = app
                 logger.info("InsightFace buffalo_l model loaded successfully.")
     return _face_app

@@ -361,6 +361,7 @@ class ZohoCreatorAPI:
             current_photo_url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{current_photo_url}"
 
         # ── 1a. Local SQLite/PostgreSQL embedding cache (fastest — no network) ──
+        photo_changed = False   # set True when URL mismatch detected — skips step 1b
         if self._embedding_cache:
             cached = self._embedding_cache.get_local_embeddings(student_id)
             if cached:
@@ -382,9 +383,10 @@ class ZohoCreatorAPI:
                             f"(was: {enrollment['photo_url'][-40:]}, "
                             f"now: {current_photo_url[-40:]})"
                         )
-                        # Remove the stale enrollment entry; keep verified_N embeddings
+                        # Remove stale enrollment entry; keep verified_N live captures
                         cached = [c for c in cached if c["source"] != "enrollment"]
                         enrollment = None
+                        photo_changed = True   # must download new photo — skip Zoho field
 
                 if cached and enrollment:
                     encodings = []
@@ -406,8 +408,9 @@ class ZohoCreatorAPI:
                         }
 
         # ── 1b. Try pre-computed embedding from Zoho field ────────────────────
-        # Only use if we haven't already detected a photo change above
-        embedding_raw = record.get(FIELD_STUDENT_EMBEDDING, "")
+        # Skipped when photo_changed=True — the Zoho field still holds the OLD
+        # embedding and must not be used; fall through to download the new photo.
+        embedding_raw = record.get(FIELD_STUDENT_EMBEDDING, "") if not photo_changed else ""
         if embedding_raw and isinstance(embedding_raw, str) and embedding_raw.strip().startswith("["):
             try:
                 embedding = json_to_embedding(embedding_raw.strip())
