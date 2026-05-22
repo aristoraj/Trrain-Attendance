@@ -469,7 +469,11 @@ class ZohoCreatorAPI:
         }
 
     def _extract_photo_url(self, record: dict, student_id: str, name: str) -> str:
-        """Extract the photo download URL from a record, with fallback to serviceType=DownloadFile."""
+        """
+        Extract the photo download URL from a list-API record.
+        Returns empty string when the photo field is null (no photo uploaded).
+        Never constructs a fallback URL — callers must handle the empty case.
+        """
         photo_raw = record.get(FIELD_STUDENT_PHOTO)
         if isinstance(photo_raw, dict):
             url = (
@@ -478,7 +482,7 @@ class ZohoCreatorAPI:
                 photo_raw.get("value") or ""
             )
             if not url:
-                logger.warning(
+                logger.debug(
                     f"Photo field dict has no URL key for '{name}' — "
                     f"keys: {list(photo_raw.keys())}"
                 )
@@ -487,15 +491,6 @@ class ZohoCreatorAPI:
 
         if url.startswith("/"):
             url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{url}"
-
-        # Zoho Creator v2 single-record GET returns null for image fields.
-        # Fall back to the DownloadFile endpoint which always works.
-        if not url and student_id:
-            url = (
-                f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
-                f"/{student_id}/{FIELD_STUDENT_PHOTO}?serviceType=DownloadFile"
-            )
-            logger.info(f"Photo URL null for '{name}' — using serviceType=DownloadFile")
 
         return url
 
