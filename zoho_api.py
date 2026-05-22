@@ -352,8 +352,18 @@ class ZohoCreatorAPI:
         photo_raw = record.get(FIELD_STUDENT_PHOTO)
         if isinstance(photo_raw, dict):
             current_photo_url = (
-                photo_raw.get("url") or photo_raw.get("value") or photo_raw.get("download_url") or ""
+                photo_raw.get("url")
+                or photo_raw.get("link")
+                or photo_raw.get("href")
+                or photo_raw.get("download_url")
+                or photo_raw.get("value")
+                or ""
             )
+            if not current_photo_url:
+                logger.warning(
+                    f"Photo field is a dict but no URL key found for '{name}' — "
+                    f"keys: {list(photo_raw.keys())}, raw: {str(photo_raw)[:200]}"
+                )
         else:
             current_photo_url = str(photo_raw).strip() if photo_raw else ""
 
@@ -368,7 +378,7 @@ class ZohoCreatorAPI:
                 # No-photo marker: re-check only if a photo has since been uploaded
                 if any(c["source"] == "no_photo" for c in cached):
                     if not current_photo_url:
-                        logger.debug(f"Skipping '{name}' ({student_number}) — still no photo")
+                        logger.warning(f"Skipping '{name}' ({student_number}) — still no photo (no_photo marker active)")
                         return None
                     # Photo now exists — clear the no_photo marker and fall through to encode
                     logger.info(f"'{name}' ({student_number}) now has a photo — re-encoding")
