@@ -489,8 +489,19 @@ class ZohoCreatorAPI:
 
     def _download_and_encode(self, url: str, env: str = ""):
         resp = self._request("get", url, env=env, timeout=20)
+        content_type = resp.headers.get("Content-Type", "unknown")
+        logger.info(
+            f"Photo download: HTTP {resp.status_code}, "
+            f"{len(resp.content)} bytes, content-type={content_type}"
+        )
         resp.raise_for_status()
+        if len(resp.content) < 1000:
+            logger.warning(f"Suspiciously small photo ({len(resp.content)} bytes) — may be an error page, not an image")
         encoding, det_score, err = encode_face_from_bytes(resp.content)
+        if err:
+            logger.warning(f"encode_face_from_bytes error: {err}")
+        elif encoding is not None:
+            logger.info(f"Face encoded successfully (det_score={det_score:.3f})")
         return encoding, det_score, err
 
     def save_embedding(self, student_system_id: str, embedding, env: str = "") -> None:
