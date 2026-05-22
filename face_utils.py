@@ -159,14 +159,14 @@ def encode_face_from_bytes(image_bytes: bytes):
         image = ImageOps.exif_transpose(image)
         image = image.convert("RGB")
 
-        embedding, det_score, err = _encode_largest_face(np.array(image))
+        embedding, _, det_score, err = _encode_largest_face(np.array(image))
         if embedding is not None:
             return embedding, det_score, err
 
         # Brute-force remaining rotations for photos with missing/wrong EXIF
         for angle in (90, 180, 270):
             rotated = image.rotate(angle, expand=True)
-            embedding, det_score, err = _encode_largest_face(np.array(rotated))
+            embedding, _, det_score, err = _encode_largest_face(np.array(rotated))
             if embedding is not None:
                 logger.info(f"Face found after {angle}° rotation — enrollment photo was sideways")
                 return embedding, det_score, err

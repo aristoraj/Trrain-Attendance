@@ -745,7 +745,7 @@ class AttendanceQueue:
             rows = conn.execute(
                 self._q(
                     "SELECT source FROM face_embeddings "
-                    "WHERE student_id=? AND source LIKE 'verified_%'"
+                    "WHERE student_id=? AND source IN ('verified_1','verified_2','verified_3')"
                 ),
                 (student_id,),
             ).fetchall()
