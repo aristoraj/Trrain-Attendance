@@ -967,6 +967,55 @@ def admin_clear_today():
     })
 
 
+@app.route("/admin/clear-student-embeddings", methods=["GET", "POST"])
+@limiter.limit("20 per minute")
+def admin_clear_student_embeddings():
+    """
+    Delete ALL face_embeddings rows for a student (enrollment + no_photo + verified_N)
+    and evict them from every warm in-memory scope cache.
+    Use when a student's photo was swapped and stale verified captures keep matching.
+    Required: ?student_id=xxx&secret=YOUR_ADMIN_SECRET
+    """
+    secret = request.args.get("secret", "")
+    if secret != ADMIN_SECRET:
+        return make_response("Unauthorized.", 401)
+    student_id = (request.args.get("student_id") or "").strip()
+    if not student_id:
+        return jsonify({"success": False, "error": "student_id is required"}), 400
+
+    # 1. Wipe from DB
+    deleted = att_queue.clear_all_embeddings_for_student(student_id)
+
+    # 2. Remove from every warm in-memory scope cache
+    evicted_scopes = 0
+    with _scope_caches_lock:
+        for cache in _scope_caches.values():
+            students = cache.get()
+            if students is None:
+                continue
+            before = len(students)
+            updated = [s for s in students if s["id"] != student_id]
+            if len(updated) < before:
+                cache.set(updated)
+                evicted_scopes += 1
+
+    logger.info(
+        f"Admin: cleared all embeddings for student {student_id} "
+        f"({deleted} DB rows, evicted from {evicted_scopes} scope cache(s))"
+    )
+    return jsonify({
+        "success":        True,
+        "student_id":     student_id,
+        "db_rows_deleted": deleted,
+        "scopes_evicted": evicted_scopes,
+        "message": (
+            f"Cleared {deleted} embedding(s) from DB and removed student from "
+            f"{evicted_scopes} cache(s). Re-save their record in Zoho Creator "
+            "to trigger a fresh webhook re-encode."
+        ),
+    })
+
+
 @app.route("/admin/retry-failed", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def admin_retry_failed():

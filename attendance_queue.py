@@ -735,6 +735,17 @@ class AttendanceQueue:
         logger.info(f"Cleared {count} students from local DB for scope '{scope_key}'.")
         return count
 
+    def clear_all_embeddings_for_student(self, student_id: str) -> int:
+        """Delete every face_embeddings row for a student (enrollment + no_photo + all verified_N)."""
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q("DELETE FROM face_embeddings WHERE student_id=?"),
+                (student_id,),
+            )
+            count = cur.rowcount
+        logger.info(f"Cleared all {count} embedding row(s) for student {student_id}")
+        return count
+
     def clear_verified_embeddings(self, student_id: str) -> int:
         """
         Delete all verified_N live-capture embeddings for a student.
