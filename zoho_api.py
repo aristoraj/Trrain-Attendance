@@ -499,20 +499,47 @@ class ZohoCreatorAPI:
 
         return url
 
-    def encode_and_save_to_creator(self, student_id: str, env: str = "") -> tuple[bool, str]:
+    def encode_and_save_to_creator(
+        self,
+        student_id: str,
+        env: str = "",
+        photo_url: str = "",
+    ) -> tuple[bool, str]:
         """
         Download a student's photo, encode the face, and write the embedding to
         the Face_Embedding field in Zoho Creator. Also updates the local DB cache
         and clears stale verified_N captures so the new identity is live immediately.
 
-        Called by the webhook whenever a student is added or their photo is changed.
-        Always uses ?serviceType=DownloadFile so image fields never return null.
+        Called by the webhook (no photo_url — fetches via list API which returns real
+        image URLs unlike single-record GET) and by the bulk-encode loop (photo_url
+        already extracted from the paginated list fetch, no extra API call needed).
+
         Returns (success, message).
         """
-        photo_url = (
-            f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
-            f"/{student_id}/{FIELD_STUDENT_PHOTO}?serviceType=DownloadFile"
-        )
+        if not photo_url:
+            # Single-record GET returns null for image fields.
+            # Fetch via list API with a criteria filter — this always returns the real URL.
+            try:
+                list_url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
+                resp = self._request(
+                    "get", list_url, env=env,
+                    params={"criteria": f"(ID=={student_id})", "limit": 1},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                records = resp.json().get("data", [])
+                if not records:
+                    return False, "Student record not found in Zoho"
+                record    = records[0]
+                name_raw  = record.get(FIELD_STUDENT_NAME, "")
+                name      = name_raw.get("display_value", "") if isinstance(name_raw, dict) else str(name_raw)
+                photo_url = self._extract_photo_url(record, student_id, name)
+            except Exception as e:
+                return False, f"Could not fetch student record: {e}"
+
+        if not photo_url:
+            return False, "No photo uploaded for this student in Zoho Creator"
+
         try:
             encoding, det_score, err = self._download_and_encode(photo_url, env=env)
         except Exception as e:

@@ -1110,10 +1110,22 @@ def admin_encode_all_students():
                         if not student_id:
                             continue
 
+                        # Extract photo URL from the list-API record (list responses
+                        # return real image URLs; single-record GET would return null).
+                        photo_url = zoho._extract_photo_url(record, student_id, name)
+                        if not photo_url:
+                            with _bulk_encode_lock:
+                                _bulk_encode_status["failed"] += 1
+                                _bulk_encode_status["errors"].append(
+                                    f"{name} ({student_id}): No photo uploaded in Creator"
+                                )
+                            logger.info(f"encode-all: skipping {name} — no photo in Creator")
+                            continue
+
                         with _bulk_encode_lock:
                             _bulk_encode_status["total"] += 1
 
-                        ok, msg = zoho.encode_and_save_to_creator(student_id, env=env)
+                        ok, msg = zoho.encode_and_save_to_creator(student_id, env=env, photo_url=photo_url)
 
                         with _bulk_encode_lock:
                             if ok:
