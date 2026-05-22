@@ -370,6 +370,18 @@ class ZohoCreatorAPI:
         if current_photo_url.startswith("/"):
             current_photo_url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{current_photo_url}"
 
+        # Zoho Creator v2 API returns null for image fields in single-record GET responses.
+        # Fall back to the standard file-download endpoint built from the record ID.
+        if not current_photo_url and student_id:
+            current_photo_url = (
+                f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
+                f"/{student_id}/{FIELD_STUDENT_PHOTO}?serviceType=DownloadFile"
+            )
+            logger.info(
+                f"Photo URL null in record for '{name}' — "
+                f"using constructed download URL for student {student_id}"
+            )
+
         # ── 1a. Local SQLite/PostgreSQL embedding cache (fastest — no network) ──
         photo_changed = False   # set True when URL mismatch detected — skips step 1b
         if self._embedding_cache:
