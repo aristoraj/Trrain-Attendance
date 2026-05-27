@@ -578,7 +578,7 @@ class ZohoCreatorAPI:
         """
         url = f"{self._download_base_url}/report/{ZOHO_STUDENT_REPORT}/{student_system_id}"
         payload = {"data": {FIELD_STUDENT_EMBEDDING: embedding_to_json(embedding)}}
-        resp = self._request("patch", url, env=env, json=payload, timeout=15)
+        resp = self._request("patch", url, env=env, json=payload, timeout=30)
         try:
             resp_json = resp.json()
         except Exception:
