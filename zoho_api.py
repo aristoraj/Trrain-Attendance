@@ -576,13 +576,30 @@ class ZohoCreatorAPI:
         Future cache loads will read from here — no photo download needed.
         NOTE: Requires a Multi Line field named 'Face_Embedding' on Student Database form.
         """
-        url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_system_id}"
+        url = f"{self._download_base_url}/report/{ZOHO_STUDENT_REPORT}/{student_system_id}"
         payload = {"data": {FIELD_STUDENT_EMBEDDING: embedding_to_json(embedding)}}
         resp = self._request("patch", url, env=env, json=payload, timeout=15)
+        try:
+            resp_json = resp.json()
+        except Exception:
+            resp_json = None
+        logger.info(
+            f"save_embedding PATCH → HTTP {resp.status_code} | "
+            f"field={FIELD_STUDENT_EMBEDDING} | body={str(resp_json)[:300]}"
+        )
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"PATCH embedding failed HTTP {resp.status_code}: {resp.text[:200]}"
             )
+        # Zoho Creator returns HTTP 200 even when it silently ignores the update
+        # (e.g. wrong field link name). Detect and raise so the caller knows.
+        if resp_json and isinstance(resp_json, dict):
+            code = resp_json.get("code")
+            if code is not None and str(code) != "3000":
+                raise RuntimeError(
+                    f"Creator rejected embedding update (code={code}): "
+                    f"{resp_json.get('message', resp.text[:200])}"
+                )
         logger.info(f"Saved embedding for student {student_system_id}")
 
     # ─── Duplicate Attendance Guard ────────────────────────────────────────────
