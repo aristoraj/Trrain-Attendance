@@ -126,7 +126,11 @@ RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
 # Set this to any random string in your Render environment variables
 _ADMIN_SECRET_DEFAULT = "train-admin-2026"
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", _ADMIN_SECRET_DEFAULT)
-if ADMIN_SECRET == _ADMIN_SECRET_DEFAULT:
+if not ADMIN_SECRET:
+    import sys as _sys
+    _cfg_logger.critical("ADMIN_SECRET is empty — refusing to start. Set it in Render environment variables.")
+    _sys.exit(1)
+elif ADMIN_SECRET == _ADMIN_SECRET_DEFAULT:
     _msg = (
         "ADMIN_SECRET is using the publicly known default 'train-admin-2026'. "
         "Set a strong random secret in your Render environment variables immediately."

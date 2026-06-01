@@ -66,6 +66,8 @@ logger = logging.getLogger(__name__)
 # ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder="static")
 app.secret_key = SECRET_KEY
+# DDoS: cap request body at 5 MB — prevents memory bombs via oversized image uploads
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024   # 5 MB
 _ALLOWED_ORIGINS = [
     r"https://creatorapp\.zoho\.in",
     r"https://creatorapp\.zoho\.com",
@@ -339,10 +341,8 @@ def get_students_cached(centers: list = None, env: str = "") -> list:
 
 
 # ─── Webhook per-student cooldown (prevents PATCH→On Edit→webhook loop) ─────────
-# When our server PATCHes Face_Embedding, Creator fires "On Edit" again.
-# Without a photo-change guard in Deluge this creates an infinite loop.
-# We break it here: ignore webhook calls for a student encoded < 10 min ago.
 _webhook_cooldowns: dict[str, float] = {}
+_webhook_cooldowns_lock = threading.Lock()
 _WEBHOOK_COOLDOWN = 600   # seconds
 
 
@@ -452,6 +452,11 @@ def index():
     return send_from_directory("static", "index.html")
 
 
+@app.errorhandler(413)
+def request_too_large(e):
+    return jsonify({"error": "Request body too large. Maximum 5 MB."}), 413
+
+
 @app.route("/api/health")
 def health():
     total_cached = sum(c.size for c in _scope_caches.values())
@@ -471,6 +476,8 @@ def health():
 
 
 @app.route("/api/cache/status")
+@require_session
+@limiter.limit("60 per minute")
 def cache_status():
     status = {}
     with _scope_encoding_lock:
@@ -623,13 +630,14 @@ def webhook_student_update():
     # Our own PATCH to Face_Embedding triggers Creator's On Edit → webhook again.
     # Without a photo-change guard in Deluge this loops forever.
     now = time.time()
-    last = _webhook_cooldowns.get(student_id, 0)
-    if now - last < _WEBHOOK_COOLDOWN:
-        logger.info(
-            f"Webhook: skipping {student_id} — encoded {int(now - last)}s ago (cooldown={_WEBHOOK_COOLDOWN}s)"
-        )
-        return jsonify({"success": True, "message": "Skipped (cooldown)"}), 200
-    _webhook_cooldowns[student_id] = now
+    with _webhook_cooldowns_lock:
+        last = _webhook_cooldowns.get(student_id, 0)
+        if now - last < _WEBHOOK_COOLDOWN:
+            logger.info(
+                f"Webhook: skipping {student_id} — encoded {int(now - last)}s ago (cooldown={_WEBHOOK_COOLDOWN}s)"
+            )
+            return jsonify({"success": True, "message": "Skipped (cooldown)"}), 200
+        _webhook_cooldowns[student_id] = now
 
     logger.info(
         f"Webhook: encoding student {student_id} "
@@ -950,7 +958,8 @@ def create_session():
     if not user_known:
         # Check All_Users report (uses 24h DB cache — usually no API call)
         cache_key = f"{env}:{email}"
-        cached = _feature_cache.get(cache_key)
+        with _feature_cache_lock:
+            cached = _feature_cache.get(cache_key)
         if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
             user_known = True   # was in system at last check
         else:
@@ -981,13 +990,15 @@ def create_session():
 
 # ─── Feature-access check ─────────────────────────────────────────────────────
 _feature_cache: dict[str, tuple[bool, float]] = {}
+_feature_cache_lock = threading.Lock()
 _FEATURE_CACHE_TTL = 600   # seconds
 
 
 def _get_feature_access(email: str, env: str = "") -> bool:
     """Core logic: returns True if email has Face_Recognition_Feature enabled."""
     cache_key = f"{env}:{email}"
-    cached = _feature_cache.get(cache_key)
+    with _feature_cache_lock:
+        cached = _feature_cache.get(cache_key)
     if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
         return cached[0]
     url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
@@ -1001,7 +1012,8 @@ def _get_feature_access(email: str, env: str = "") -> bool:
             return True
         records    = resp_json.get("data", [])
         has_access = isinstance(records, list) and len(records) > 0
-        _feature_cache[cache_key] = (has_access, time.time())
+        with _feature_cache_lock:
+            _feature_cache[cache_key] = (has_access, time.time())
         logger.info(f"Feature-access: {email} → {'enabled' if has_access else 'disabled'}")
         return has_access
     except Exception as e:
@@ -1056,6 +1068,7 @@ def api_config():
 
 @app.route("/api/load-students", methods=["POST"])
 @require_session
+@limiter.limit("30 per minute")
 def load_students():
     """
     Accept raw Zoho Creator records fetched by the Widget SDK and seed the face cache.
@@ -1253,6 +1266,7 @@ def _check_admin_auth():
 
 
 @app.route("/admin/login", methods=["GET", "POST"])
+@limiter.limit("5 per minute")
 def admin_login():
     """Admin login — POST {secret} sets a cookie, GET shows a minimal form."""
     if request.method == "POST":
@@ -1406,6 +1420,7 @@ def admin_sync_status():
 
 @app.route("/api/today-attendance")
 @require_session
+@limiter.limit("60 per minute")
 def today_attendance():
     """Return today's attendance records from the local queue for the Summary screen.
     Filters by device_session_id when provided so users sharing the same login
@@ -1439,7 +1454,9 @@ def admin_clear_daily_cache():
     with _batch_ids_lock:
         cleared_mem += len(_batch_ids_cache)
         _batch_ids_cache.clear()
-    _feature_cache.clear()
+    with _feature_cache_lock:
+        cleared_mem += len(_feature_cache)
+        _feature_cache.clear()
 
     logger.info(f"Daily cache cleared — {cleared_db} DB rows, {cleared_mem} memory entries")
     return jsonify({
@@ -1947,6 +1964,7 @@ def _reauth_result(success, message, secret, render_updated=False, token_preview
 
 @app.route("/api/user/centers")
 @require_session
+@limiter.limit("60 per minute")
 def user_centers_api():
     """Return display names of the logged-in user's centres (used by the header UI)."""
     email = request.args.get("user_email", "").strip()

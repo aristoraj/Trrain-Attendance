@@ -824,9 +824,11 @@ function waitForZohoInit(maxMs) {
   });
 }
 
-// ── SDK data loading ──────────────────────────────────────────────────────────
+// loadDataViaSdk removed — Creator report permissions block widget users from
+// querying All_Trainees directly. All student loading now goes via the
+// server-side preload path (loadStudentsHybrid → /api/get-context + /api/preload).
 
-async function loadDataViaSdk(email) {
+async function loadDataViaSdk_REMOVED(email) {
   if (_dataLoading) return;
   _dataLoading = true;
   _dataLoaded  = false;
@@ -1030,13 +1032,8 @@ async function submitEmailOverride() {
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
   USER_EMAIL = email;
   try {
-    if (_SDK_MODE) {
-      _dataLoaded = false; _dataLoading = false;
-      await loadDataViaSdk(email);
-    } else {
-      fetchAndShowCenters(email);
-      triggerPreload(email);
-    }
+    fetchAndShowCenters(email);
+    triggerPreload(email);
     hideEmailOverride();
   } catch (err) {
     showBanner('Failed to load students: ' + (err && err.message || String(err)), 'danger');
