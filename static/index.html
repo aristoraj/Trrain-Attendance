@@ -474,6 +474,43 @@
 
 <div id="sdk-debug"></div>
 
+<!-- Feature-gate overlay: shown when Face_Recognition_Feature != true for logged-in user -->
+<div id="feature-gate" style="display:none;position:fixed;inset:0;z-index:9999;
+  background:#FBF8F6;display:none;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="background:#1A1A1A;padding:14px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;">
+    <div style="width:36px;height:36px;background:var(--gold);border-radius:8px;display:flex;
+      align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:14px;flex-shrink:0;">TR</div>
+    <div>
+      <div style="color:#fff;font-size:17px;font-weight:600;letter-spacing:.3px;">TRRAIN</div>
+      <div style="color:var(--gold);font-size:12px;margin-top:1px;">Face Attendance</div>
+    </div>
+  </div>
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px 16px;">
+    <div style="background:#fff;border:1px solid #E5D9CF;border-radius:16px;padding:40px 32px;
+      max-width:420px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+      <div style="width:76px;height:76px;background:#FBF8F6;border:2px solid #E5D9CF;border-radius:50%;
+        display:flex;align-items:center;justify-content:center;margin:0 auto 22px;font-size:34px;">🔒</div>
+      <div style="font-size:19px;font-weight:700;color:#1A1A1A;margin-bottom:10px;">Feature Not Available Yet</div>
+      <div style="font-size:14px;color:#7A6B62;line-height:1.65;margin-bottom:26px;">
+        Face Attendance has not been enabled for your centre.<br>
+        This feature is being rolled out in phases — your centre coordinator will notify you once it is activated.
+      </div>
+      <div style="display:inline-flex;align-items:center;gap:7px;background:#FFF8E8;
+        border:1px solid #E8C86A;color:#7A5200;border-radius:20px;padding:8px 18px;font-size:13px;font-weight:500;">
+        <span style="width:8px;height:8px;background:var(--gold);border-radius:50%;
+          animation:fg-pulse 1.8s infinite;display:inline-block;"></span>
+        Rollout in progress
+      </div>
+    </div>
+  </div>
+  <div style="padding:14px;text-align:center;font-size:12px;color:#7A6B62;border-top:1px solid #E5D9CF;">
+    TRRAIN &mdash; Technology for Retail &amp; Allied Industries
+  </div>
+</div>
+<style>
+@keyframes fg-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
+</style>
+
 <!-- Email override bar -->
 <div id="email-override-bar">
   <i class="bi bi-exclamation-triangle"></i>
@@ -748,6 +785,32 @@ async function loadDataViaSdk(email) {
 
     if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
     const cfg = _cfg;
+
+    // ── Feature-gate check ────────────────────────────────────────────────────
+    // Query User_Management to confirm Face_Recognition_Feature == true for this user.
+    // If not enabled, show the "not yet released" overlay and stop loading.
+    try {
+      const userReport = cfg.reports.user_management || 'All_Users';
+      const emailField = cfg.fields.user_email       || 'Email';
+      const flagField  = cfg.fields.face_feature     || 'Face_Recognition_Feature';
+      const accessResp = await ZOHO.CREATOR.DATA.getRecords({
+        appName: APP_LINK_NAME, reportName: userReport,
+        criteria: '(' + emailField + '=="' + email + '" && ' + flagField + '==true)',
+        page: 1, pageSize: 1,
+      });
+      const hasAccess = accessResp && accessResp.data && accessResp.data.length > 0;
+      if (!hasAccess) {
+        console.log('[FaceVerify] Feature not enabled for', email, '— showing gate');
+        const gate = document.getElementById('feature-gate');
+        if (gate) gate.style.display = 'flex';
+        _dataLoading = false;
+        return;
+      }
+    } catch (e) {
+      // If the check fails (network, wrong report name, etc.) allow through so
+      // legitimate users aren't locked out by a configuration error.
+      console.warn('[FaceVerify] Feature-gate check failed (allowing through):', e);
+    }
 
     const centreResp = await ZOHO.CREATOR.DATA.getRecords({
       appName: APP_LINK_NAME, reportName: cfg.reports.centres,

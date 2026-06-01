@@ -67,6 +67,13 @@ FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Centre_Na
 # Field link name of the Center lookup in the student database
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 
+# ─── User Management (feature-flag gate) ─────────────────────────────────────
+# Report that holds one record per Zoho user with feature-flag fields.
+# Used by the Widget SDK to check if Face Recognition is enabled for the user.
+ZOHO_USER_MGMT_REPORT     = os.environ.get("ZOHO_USER_MGMT_REPORT",     "All_Users")
+FIELD_USER_MGMT_EMAIL     = os.environ.get("FIELD_USER_MGMT_EMAIL",     "Email")
+FIELD_USER_FACE_FEATURE   = os.environ.get("FIELD_USER_FACE_FEATURE",   "Face_Recognition_Feature")
+
 # ─── App Settings ─────────────────────────────────────────────────────────────
 PORT       = int(os.environ.get("PORT", 5000))
 DEBUG      = os.environ.get("DEBUG", "false").lower() == "true"

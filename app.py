@@ -41,6 +41,7 @@ from config import (
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
+    ZOHO_USER_MGMT_REPORT, FIELD_USER_MGMT_EMAIL, FIELD_USER_FACE_FEATURE,
 )
 from face_utils import (
     FaceCache, decode_base64_image,
@@ -789,6 +790,7 @@ def api_config():
             "attendance_form": ZOHO_ATTENDANCE_FORM,
             "batches":         ZOHO_BATCHES_REPORT,
             "centres":         ZOHO_CENTRES_REPORT,
+            "user_management": ZOHO_USER_MGMT_REPORT,
         },
         "fields": {
             "student_embedding": FIELD_STUDENT_EMBEDDING,
@@ -799,6 +801,8 @@ def api_config():
             "att_status":        FIELD_ATT_STATUS,
             "centre_email":      FIELD_CENTRE_LOGIN_EMAIL,
             "centre_name":       FIELD_CENTRE_NAME,
+            "user_email":        FIELD_USER_MGMT_EMAIL,
+            "face_feature":      FIELD_USER_FACE_FEATURE,
             "batch_status":      FIELD_BATCH_STATUS,
             "batch_center":      FIELD_BATCH_CENTER,
             "student_batch":     FIELD_STUDENT_BATCH,
