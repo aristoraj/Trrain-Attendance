@@ -807,10 +807,12 @@ async function loadDataViaSdk(email) {
       return;
     }
 
+    // Using snake_case keys — Zoho Creator Widget SDK v2 pre-flight validator
+    // throws "Invalid Configuration" when camelCase keys are passed.
     const centreResp = await ZOHO.CREATOR.DATA.getRecords({
-      appName: APP_LINK_NAME, reportName: cfg.reports.centres,
+      app_name: APP_LINK_NAME, report_name: cfg.reports.centres,
       criteria: '(' + cfg.fields.centre_email + '=="' + email + '")',
-      page: 1, pageSize: 200,
+      page: 1, page_size: 200,
     });
     const centreRecords = (centreResp && centreResp.data) || [];
     const centreNames   = centreRecords.map(r => r[cfg.fields.centre_name] || '').filter(Boolean);
@@ -826,8 +828,8 @@ async function loadDataViaSdk(email) {
     }
 
     const batchResp = await ZOHO.CREATOR.DATA.getRecords({
-      appName: APP_LINK_NAME, reportName: cfg.reports.batches,
-      criteria: '(' + batchCriteria + ')', page: 1, pageSize: 200,
+      app_name: APP_LINK_NAME, report_name: cfg.reports.batches,
+      criteria: '(' + batchCriteria + ')', page: 1, page_size: 200,
     });
     const batchIds = ((batchResp && batchResp.data) || [])
       .map(r => String(r.ID || r.id || '')).filter(Boolean);
@@ -844,8 +846,8 @@ async function loadDataViaSdk(email) {
         let page = 1;
         while (true) {
           const resp = await ZOHO.CREATOR.DATA.getRecords({
-            appName: APP_LINK_NAME, reportName: cfg.reports.students,
-            criteria: '(' + filter + ')', page, pageSize: 200,
+            app_name: APP_LINK_NAME, report_name: cfg.reports.students,
+            criteria: '(' + filter + ')', page, page_size: 200,
           });
           const records = (resp && resp.data) || [];
           allTrainees.push(...records);
@@ -857,7 +859,7 @@ async function loadDataViaSdk(email) {
       let page = 1;
       while (true) {
         const resp = await ZOHO.CREATOR.DATA.getRecords({
-          appName: APP_LINK_NAME, reportName: cfg.reports.students, page, pageSize: 200,
+          app_name: APP_LINK_NAME, report_name: cfg.reports.students, page, page_size: 200,
         });
         const records = (resp && resp.data) || [];
         allTrainees.push(...records);
@@ -935,7 +937,7 @@ async function postAttendanceSdk(student, dateStr) {
   record[cfg.fields.att_date]    = dateStr;
   record[cfg.fields.att_status]  = 'Present';
   await ZOHO.CREATOR.DATA.addRecord({
-    appName: APP_LINK_NAME, formName: cfg.reports.attendance_form, data: record,
+    app_name: APP_LINK_NAME, form_name: cfg.reports.attendance_form, data: record,
   });
 }
 
