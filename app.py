@@ -279,6 +279,14 @@ def get_students_cached(centers: list = None, env: str = "") -> list:
     return None  # truly cold — caller triggers background load from Zoho API
 
 
+# ─── Webhook per-student cooldown (prevents PATCH→On Edit→webhook loop) ─────────
+# When our server PATCHes Face_Embedding, Creator fires "On Edit" again.
+# Without a photo-change guard in Deluge this creates an infinite loop.
+# We break it here: ignore webhook calls for a student encoded < 10 min ago.
+_webhook_cooldowns: dict[str, float] = {}
+_WEBHOOK_COOLDOWN = 600   # seconds
+
+
 # ─── User-centers cache (email → list[center_id/name], TTL 5 min) ─────────────
 _user_centers_cache: dict[str, tuple[list, float]] = {}
 _user_centers_lock  = threading.Lock()
@@ -525,6 +533,18 @@ def webhook_student_update():
 
     if not student_id:
         return jsonify({"error": "student_id is required"}), 400
+
+    # ── Cooldown: skip if this student was encoded within the last 10 min ────────
+    # Our own PATCH to Face_Embedding triggers Creator's On Edit → webhook again.
+    # Without a photo-change guard in Deluge this loops forever.
+    now = time.time()
+    last = _webhook_cooldowns.get(student_id, 0)
+    if now - last < _WEBHOOK_COOLDOWN:
+        logger.info(
+            f"Webhook: skipping {student_id} — encoded {int(now - last)}s ago (cooldown={_WEBHOOK_COOLDOWN}s)"
+        )
+        return jsonify({"success": True, "message": "Skipped (cooldown)"}), 200
+    _webhook_cooldowns[student_id] = now
 
     logger.info(
         f"Webhook: encoding student {student_id} "
