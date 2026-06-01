@@ -722,19 +722,32 @@ function tryInitZohoUser() {
 
       _zohoInitDone = true;
 
-      if (USER_EMAIL && APP_LINK_NAME) {
-        _SDK_MODE = true;
-        loadDataViaSdk(USER_EMAIL).catch(err => {
-          console.error('[SDK] loadDataViaSdk failed — falling back:', err);
-          _showSdkDebug('SDK load error: ' + (err && err.message || String(err)));
-          _SDK_MODE   = false;
-          _dataLoaded = true;
+      if (USER_EMAIL) {
+        // Feature gate check → then always use server-side preload.
+        // SDK-based student loading (loadDataViaSdk) is removed: Creator report
+        // permissions block widget users from querying All_Trainees directly.
+        // The server-side preload uses the admin OAuth token and always works.
+        (async () => {
+          try {
+            const gate = document.getElementById('feature-gate');
+            const showGate = () => { if (gate) gate.style.display = 'flex'; };
+            const ar = await fetch(
+              '/api/feature-access?user_email=' + encodeURIComponent(USER_EMAIL) +
+              '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
+            ).then(r => r.json());
+            console.log('[FaceVerify] Feature-gate response:', JSON.stringify(ar));
+            if (!ar.has_access) {
+              console.log('[FaceVerify] Feature not enabled — showing gate');
+              showGate();
+              return;
+            }
+            console.log('[FaceVerify] Feature enabled — loading via server preload');
+          } catch (e) {
+            console.warn('[FaceVerify] Feature-gate check failed (allowing through):', e);
+          }
           fetchAndShowCenters(USER_EMAIL);
           triggerPreload(USER_EMAIL);
-        });
-      } else if (USER_EMAIL) {
-        fetchAndShowCenters(USER_EMAIL);
-        triggerPreload(USER_EMAIL);
+        })();
       }
     })
     .catch(e => {
