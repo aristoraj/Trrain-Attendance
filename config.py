@@ -48,8 +48,23 @@ FIELD_ATT_STATUS  = os.environ.get("FIELD_ATT_STATUS",  "Attendance")   # dropdo
 ZOHO_ENVIRONMENT = os.environ.get("ZOHO_ENVIRONMENT", "")   # "" = production (default)
 
 # ─── Face Recognition Settings ────────────────────────────────────────────────
-FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
-CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "86400"))
+try:
+    FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
+    if not (0.20 <= FACE_MATCH_TOLERANCE <= 0.80):
+        _cfg_logger.critical(
+            f"FACE_MATCH_TOLERANCE={FACE_MATCH_TOLERANCE} is outside safe range [0.20, 0.80]. "
+            "Clamping to 0.40 — set a value between 0.20 and 0.80."
+        )
+        FACE_MATCH_TOLERANCE = 0.40
+except (ValueError, TypeError):
+    _cfg_logger.critical("FACE_MATCH_TOLERANCE is not a valid float — using default 0.40.")
+    FACE_MATCH_TOLERANCE = 0.40
+
+try:
+    CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "86400"))
+except (ValueError, TypeError):
+    _cfg_logger.critical("CACHE_TTL_SECONDS is not a valid integer — using default 86400.")
+    CACHE_TTL_SECONDS = 86400
 
 # ─── Batch filtering (ongoing batches only) ──────────────────────────────────
 ZOHO_BATCHES_REPORT = os.environ.get("ZOHO_BATCHES_REPORT", "All_Batches")
@@ -75,15 +90,27 @@ FIELD_USER_MGMT_EMAIL     = os.environ.get("FIELD_USER_MGMT_EMAIL",     "Zoho_ID
 FIELD_USER_FACE_FEATURE   = os.environ.get("FIELD_USER_FACE_FEATURE",   "Face_Recognition_Feature")
 
 # ─── App Settings ─────────────────────────────────────────────────────────────
-PORT       = int(os.environ.get("PORT", 5000))
+try:
+    PORT = int(os.environ.get("PORT", 5000))
+except (ValueError, TypeError):
+    PORT = 5000
+
 DEBUG      = os.environ.get("DEBUG", "false").lower() == "true"
+_IS_RENDER = bool(os.environ.get("RENDER"))   # True when running on Render
+
 _SECRET_KEY_DEFAULT = "change-this-secret-key-in-production"
 SECRET_KEY = os.environ.get("SECRET_KEY", _SECRET_KEY_DEFAULT)
 if SECRET_KEY == _SECRET_KEY_DEFAULT:
-    _cfg_logger.critical(
-        "SECRET_KEY is using the insecure default — set a strong random secret in "
-        "Render environment variables immediately. Flask sessions are at risk."
+    msg = (
+        "SECRET_KEY is using the insecure default value. "
+        "Set a strong random secret in your Render environment variables immediately."
     )
+    if _IS_RENDER and not DEBUG:
+        import sys as _sys
+        _cfg_logger.critical(msg + " Refusing to start in production with insecure default.")
+        _sys.exit(1)
+    else:
+        _cfg_logger.critical(msg)
 
 # Self URL for the always-on keepalive ping (set to your Render URL)
 # e.g. https://face-attendance-3wel.onrender.com
@@ -100,7 +127,13 @@ RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
 _ADMIN_SECRET_DEFAULT = "train-admin-2026"
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", _ADMIN_SECRET_DEFAULT)
 if ADMIN_SECRET == _ADMIN_SECRET_DEFAULT:
-    _cfg_logger.critical(
-        "ADMIN_SECRET is using the default value — set a strong secret in "
-        "Render environment variables immediately. Admin endpoints are at risk."
+    _msg = (
+        "ADMIN_SECRET is using the publicly known default 'train-admin-2026'. "
+        "Set a strong random secret in your Render environment variables immediately."
     )
+    if _IS_RENDER and not DEBUG:
+        import sys as _sys
+        _cfg_logger.critical(_msg + " Refusing to start in production with insecure default.")
+        _sys.exit(1)
+    else:
+        _cfg_logger.critical(_msg)

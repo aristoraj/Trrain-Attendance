@@ -764,30 +764,37 @@ function tryInitZohoUser() {
       _zohoInitDone = true;
 
       if (USER_EMAIL) {
-        // Feature gate check → then always use server-side preload.
-        // SDK-based student loading (loadDataViaSdk) is removed: Creator report
-        // permissions block widget users from querying All_Trainees directly.
-        // The server-side preload uses the admin OAuth token and always works.
+        // /api/session now does two things in one call:
+        // 1. Verifies the email is a known user in our system (N-001 fix)
+        // 2. Returns has_access (feature flag) so no separate /api/feature-access call needed
         (async () => {
+          const gate     = document.getElementById('feature-gate');
+          const showGate = () => { if (gate) gate.style.display = 'flex'; };
           try {
-            const gate = document.getElementById('feature-gate');
-            const showGate = () => { if (gate) gate.style.display = 'flex'; };
-            const ar = await fetch(
-              '/api/feature-access?user_email=' + encodeURIComponent(USER_EMAIL) +
-              '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
-            ).then(r => r.json());
-            console.log('[FaceVerify] Feature-gate response:', JSON.stringify(ar));
-            if (!ar.has_access) {
+            const sr = await fetch('/api/session', {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body:    JSON.stringify({ user_email: USER_EMAIL, zoho_environment: ZOHO_ENV || '' }),
+            }).then(r => r.json());
+            console.log('[FaceVerify] Session response:', JSON.stringify(sr));
+
+            if (!sr.session_token) {
+              // 403 — email not found in system
+              console.log('[FaceVerify] User not in system — showing gate');
+              showGate();
+              return;
+            }
+            _SESSION_TOKEN = sr.session_token;
+
+            if (!sr.has_access) {
               console.log('[FaceVerify] Feature not enabled — showing gate');
               showGate();
               return;
             }
-            console.log('[FaceVerify] Feature enabled — loading context then trainees');
+            console.log('[FaceVerify] Session issued, feature enabled — loading students');
           } catch (e) {
-            console.warn('[FaceVerify] Feature-gate check failed (allowing through):', e);
+            console.warn('[FaceVerify] Session init failed (allowing through):', e);
           }
-          // Issue session token then load students
-          await _initSession();
           loadStudentsHybrid(USER_EMAIL);
         })();
       }
@@ -826,7 +833,7 @@ async function loadDataViaSdk(email) {
   try {
     setStatus('active', 'Loading student data from Zoho…');
 
-    if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
+    if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
     const cfg = _cfg;
 
     // ── Feature-gate check ────────────────────────────────────────────────────
@@ -1082,7 +1089,7 @@ async function loadStudentsHybrid(email) {
     }
 
     // Fetch trainees via SDK (All_Trainees has widget GET access)
-    if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
+    if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
     const CHUNK = 10;
     const allTrainees = [];
     for (let i = 0; i < batchIds.length; i += CHUNK) {

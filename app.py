@@ -592,14 +592,16 @@ def webhook_student_update():
             };
             response = invokeurl
             [
-                url :"https://<your-app>.onrender.com/api/webhook/student-update?secret=<ADMIN_SECRET>"
+                url :"https://<your-app>.onrender.com/api/webhook/student-update"
                 type :POST
                 body:body.toString()
-                headers:{"environment":thisapp.environment.linkname}
+                headers:{"environment":thisapp.environment.linkname,"X-Webhook-Secret":"<ADMIN_SECRET>"}
             ];
         }
 
-    Auth: pass ADMIN_SECRET as ?secret= query param or X-Webhook-Secret header.
+    Auth: pass ADMIN_SECRET in the X-Webhook-Secret REQUEST HEADER only.
+    Do NOT pass it as a ?secret= URL query param — URL params appear in
+    Zoho workflow logs and Render access logs, exposing the secret.
     """
     secret = request.headers.get("X-Webhook-Secret") or request.args.get("secret", "")
     if not _hmac.compare_digest(secret, ADMIN_SECRET):
@@ -917,12 +919,15 @@ def get_context():
 @limiter.limit("10 per minute")
 def create_session():
     """
-    Issue a short-lived session token to the widget after SDK init.
-    Called once after getInitParams() succeeds. The token is then attached to
-    every subsequent request via Authorization: Bearer <token>.
+    Issue a short-lived session token AND check feature-access in one call.
+
+    Verifies that the email is a known user in our system (has centres or exists
+    in All_Users) before issuing a token. This prevents spoofed emails from
+    receiving valid session tokens (N-001 fix).
 
     Request JSON: {user_email, zoho_environment}
-    Response:     {session_token, expires_in}
+    Response:     {session_token, has_access, expires_in}
+                  OR {error} with 403 if email not found in system
     """
     data  = request.get_json(force=True) or {}
     email = (data.get("user_email") or "").strip().lower()
@@ -931,60 +936,93 @@ def create_session():
     if not email or "@" not in email:
         return jsonify({"error": "Invalid email"}), 400
 
+    # ── Verify email is a known user in our system ─────────────────────────────
+    # Check centres cache first (fast, no API call if cached).
+    # Falls through to All_Users lookup if centres are empty (admin users may
+    # have no centres but should still get a token).
+    user_known = False
+    try:
+        centres = get_user_centers_cached(email, env=env)
+        user_known = bool(centres)
+    except Exception:
+        pass
+
+    if not user_known:
+        # Check All_Users report (uses 24h DB cache — usually no API call)
+        cache_key = f"{env}:{email}"
+        cached = _feature_cache.get(cache_key)
+        if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
+            user_known = True   # was in system at last check
+        else:
+            try:
+                url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
+                criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}")'
+                resp     = zoho._request("get", url, env=env,
+                                         params={"criteria": criteria, "limit": 1}, timeout=10)
+                resp_j   = resp.json()
+                if resp_j.get("code") == 4000:
+                    user_known = True   # quota limit — fail open so users aren't locked out
+                else:
+                    user_known = bool(resp_j.get("data"))
+            except Exception:
+                user_known = True   # fail open on network error
+
+    if not user_known:
+        logger.warning(f"Session refused for unknown user: {email}")
+        return jsonify({"error": "User not found. Please open the widget from Zoho Creator."}), 403
+
+    # ── Check feature-access flag (reuse cached result if available) ───────────
+    has_access = _get_feature_access(email, env)
+
     token = _issue_session_token(email, env)
-    logger.info(f"Session issued for {email} (env={env or 'production'})")
-    return jsonify({"session_token": token, "expires_in": _SESSION_TTL})
+    logger.info(f"Session issued for {email} (env={env or 'production'}, access={has_access})")
+    return jsonify({"session_token": token, "has_access": has_access, "expires_in": _SESSION_TTL})
 
 
 # ─── Feature-access check ─────────────────────────────────────────────────────
-# Cache results for 10 min per email so repeated widget opens (QA testing,
-# refreshes) don't each consume a Zoho API call.
 _feature_cache: dict[str, tuple[bool, float]] = {}
 _FEATURE_CACHE_TTL = 600   # seconds
 
 
-@app.route("/api/feature-access")
-def feature_access():
-    """Check Face_Recognition_Feature flag for a user via admin OAuth token."""
-    email = (request.args.get("user_email") or "").strip()
-    env   = _resolve_env(request.args.get("zoho_environment") or "")
-    if not email:
-        return jsonify({"has_access": False, "reason": "no_email"})
-
-    # Serve from cache if fresh — avoids burning Zoho API calls on every widget open
+def _get_feature_access(email: str, env: str = "") -> bool:
+    """Core logic: returns True if email has Face_Recognition_Feature enabled."""
     cache_key = f"{env}:{email}"
     cached = _feature_cache.get(cache_key)
     if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
-        logger.info(f"Feature-access (cached): {email} → {'enabled' if cached[0] else 'disabled'}")
-        return jsonify({"has_access": cached[0], "cached": True})
-
+        return cached[0]
     url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
     criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}" && {FIELD_USER_FACE_FEATURE}==true)'
     try:
         resp      = zoho._request("get", url, env=env,
                                   params={"criteria": criteria, "limit": 1}, timeout=10)
         resp_json = resp.json()
-
-        # Zoho returns HTTP 200 even for API limit errors — detect code 4000
-        # and fail OPEN so users aren't locked out by quota exhaustion.
-        zoho_code = resp_json.get("code")
-        if zoho_code == 4000:
-            logger.warning(f"Feature-access: Zoho API limit reached for {email} — failing open")
-            return jsonify({"has_access": True, "reason": "api_limit"})
-
+        if resp_json.get("code") == 4000:
+            logger.warning(f"Feature-access: Zoho API limit for {email} — failing open")
+            return True
         records    = resp_json.get("data", [])
         has_access = isinstance(records, list) and len(records) > 0
         _feature_cache[cache_key] = (has_access, time.time())
         logger.info(f"Feature-access: {email} → {'enabled' if has_access else 'disabled'}")
-        return jsonify({"has_access": has_access})
+        return has_access
     except Exception as e:
         logger.warning(f"Feature-access check failed for {email}: {e} — failing open")
-        return jsonify({"has_access": True, "reason": "check_failed"})
+        return True
+
+
+@app.route("/api/feature-access")
+@require_session
+def feature_access():
+    """Check Face_Recognition_Feature flag. Requires session auth (use /api/session for initial check)."""
+    email = request.session_email
+    env   = request.session_env
+    has_access = _get_feature_access(email, env)
+    return jsonify({"has_access": has_access})
 
 
 # ─── SDK data-loading endpoints ───────────────────────────────────────────────
 
 @app.route("/api/config")
+@require_session
 def api_config():
     """Return field/report names so the frontend SDK loader can use dynamic names."""
     return jsonify({
@@ -1137,6 +1175,111 @@ def load_students():
     })
 
 
+# ─── Admin authentication helpers ────────────────────────────────────────────
+# Admin pages use a signed HttpOnly cookie so the secret never appears in
+# URLs (and therefore never in Render access logs or browser history).
+#
+# Flow:
+#   1. Visit /admin/login  → POST form with secret → cookie set → redirect to page
+#   2. All /admin/* endpoints call _check_admin_auth() which reads the cookie
+#   3. URL ?secret= param is still accepted for backward-compat CLI/curl use
+#      but the page immediately redirects after setting the cookie so secret
+#      does not persist in logs beyond the single initial request.
+
+_ADMIN_COOKIE = "admin_session"
+_ADMIN_COOKIE_TTL = 7200   # 2 hours
+
+
+def _make_admin_cookie_value() -> str:
+    ts  = int(time.time())
+    sig = _hmac.new(SECRET_KEY.encode(), f"admin:{ts}".encode(), hashlib.sha256).hexdigest()[:24]
+    return f"{ts}.{sig}"
+
+
+def _verify_admin_cookie(value: str) -> bool:
+    try:
+        ts_str, sig = value.split(".", 1)
+        ts = int(ts_str)
+        if time.time() - ts > _ADMIN_COOKIE_TTL:
+            return False
+        expected = _hmac.new(SECRET_KEY.encode(), f"admin:{ts}".encode(), hashlib.sha256).hexdigest()[:24]
+        return _hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+def _check_admin_auth():
+    """
+    Returns None if authenticated, or a 401/redirect response if not.
+    Priority: cookie → X-Admin-Secret header → (last-resort) ?secret= URL param.
+    URL param is immediately upgraded to a cookie and redirected.
+    """
+    from flask import redirect
+
+    # 1. Cookie (preferred — secret never in URL)
+    cookie_val = request.cookies.get(_ADMIN_COOKIE, "")
+    if cookie_val and _verify_admin_cookie(cookie_val):
+        return None  # authenticated
+
+    # 2. Header (for CLI / curl usage)
+    header_secret = request.headers.get("X-Admin-Secret", "")
+    if header_secret and _hmac.compare_digest(header_secret, ADMIN_SECRET):
+        return None  # authenticated
+
+    # 3. URL param (backward compat — upgrade to cookie then redirect)
+    url_secret = request.args.get("secret", "")
+    if url_secret and _hmac.compare_digest(url_secret, ADMIN_SECRET):
+        # Valid secret in URL — set cookie and redirect to clean URL
+        clean_url = request.path
+        if request.query_string:
+            params = {k: v for k, v in request.args.items() if k != "secret"}
+            if params:
+                from urllib.parse import urlencode
+                clean_url += "?" + urlencode(params)
+        resp = make_response(redirect(clean_url, code=302))
+        resp.set_cookie(
+            _ADMIN_COOKIE,
+            _make_admin_cookie_value(),
+            max_age=_ADMIN_COOKIE_TTL,
+            httponly=True,
+            samesite="Strict",
+        )
+        return resp
+
+    # Not authenticated
+    return make_response(
+        "Unauthorized. Visit /admin/login to authenticate.", 401
+    )
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    """Admin login — POST {secret} sets a cookie, GET shows a minimal form."""
+    if request.method == "POST":
+        from flask import redirect
+        secret = (request.form.get("secret") or request.get_json(force=True, silent=True) or {}).get("secret", "")
+        if not _hmac.compare_digest(secret, ADMIN_SECRET):
+            return make_response("Wrong secret.", 401)
+        redirect_to = request.args.get("next", "/admin/sync-status")
+        resp = make_response(redirect(redirect_to, code=302))
+        resp.set_cookie(
+            _ADMIN_COOKIE,
+            _make_admin_cookie_value(),
+            max_age=_ADMIN_COOKIE_TTL,
+            httponly=True,
+            samesite="Strict",
+        )
+        return resp
+    return make_response("""
+<!doctype html><html><head><title>Admin Login</title></head><body style="font-family:sans-serif;padding:40px">
+<h2>Admin Login</h2>
+<form method="post">
+  <input type="password" name="secret" placeholder="Admin secret" autofocus
+         style="padding:8px;font-size:14px;width:300px">
+  <button type="submit" style="padding:8px 16px;margin-left:8px">Login</button>
+</form></body></html>""", 200, {"Content-Type": "text/html"})
+
+
 # ─── Admin: queue sync status ─────────────────────────────────────────────────
 
 @app.route("/admin/sync-status")
@@ -1145,9 +1288,9 @@ def admin_sync_status():
     Shows attendance queue health — pending/posted/failed counts and failed records.
     Protected by ADMIN_SECRET.
     """
-    secret = request.args.get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized. Add ?secret=YOUR_ADMIN_SECRET to the URL.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
 
     summary = att_queue.get_status_summary()
 
@@ -1283,9 +1426,9 @@ def admin_clear_daily_cache():
     to expire naturally.
     Protected by ADMIN_SECRET.
     """
-    secret = request.args.get("secret", "") or (request.get_json(force=True) or {}).get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
 
     prefix = (request.args.get("prefix") or "").strip()  # optional: "centres:", "batches:", "feature:"
     cleared_db   = att_queue.clear_daily_cache(prefix)
@@ -1316,9 +1459,9 @@ def admin_clear_today():
     Does NOT touch Zoho Creator — delete the record there separately.
     Protected by ADMIN_SECRET. Optional ?student_id=xxx to clear one student only.
     """
-    secret = request.args.get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
     student_id = (request.args.get("student_id") or "").strip() or None
     count = att_queue.clear_today_attendance(student_id=student_id)
     return jsonify({
@@ -1338,9 +1481,9 @@ def admin_clear_student_embeddings():
     Use when a student's photo was swapped and stale verified captures keep matching.
     Required: ?student_id=xxx&secret=YOUR_ADMIN_SECRET
     """
-    secret = request.args.get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
     student_id = (request.args.get("student_id") or "").strip()
     if not student_id:
         return jsonify({"success": False, "error": "student_id is required"}), 400
@@ -1391,9 +1534,9 @@ def admin_encode_all_students():
 
     Protected by ADMIN_SECRET.
     """
-    secret = request.args.get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
 
     env = _resolve_env(request.args.get("zoho_environment"))
 
@@ -1612,9 +1755,9 @@ def admin_encode_all_students():
 @limiter.limit("10 per minute")
 def admin_retry_failed():
     """Reset all FAILED queue records to PENDING so the worker retries them."""
-    secret = request.args.get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
     count = att_queue.retry_failed()
     return jsonify({"success": True, "records_reset": count,
                     "message": f"{count} FAILED record(s) reset to PENDING."})
@@ -1625,9 +1768,9 @@ def admin_retry_failed():
 @app.route("/admin/reauth", methods=["GET"])
 @limiter.limit("10 per minute")
 def admin_reauth_page():
-    secret = request.args.get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized. Add ?secret=YOUR_ADMIN_SECRET to the URL.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
 
     render_configured = bool(RENDER_API_KEY and RENDER_SERVICE_ID)
 
@@ -1694,9 +1837,9 @@ def admin_reauth_page():
 @app.route("/admin/reauth", methods=["POST"])
 @limiter.limit("5 per minute")
 def admin_reauth_submit():
-    secret = request.args.get("secret", "")
-    if not _hmac.compare_digest(secret, ADMIN_SECRET):
-        return make_response("Unauthorized.", 401)
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
 
     auth_code = request.form.get("auth_code", "").strip()
     if not auth_code:
