@@ -531,66 +531,43 @@ def webhook_student_update():
         f"(centre={centre_id or 'unknown'}, env={env or 'production'})"
     )
 
-    # ── 1. Download photo → encode → write Face_Embedding to Creator ──────────
-    # encode_and_save_to_creator uses ?serviceType=DownloadFile so image fields
-    # never return null. It also updates local DB and clears stale verified_N.
-    success, message = zoho.encode_and_save_to_creator(student_id, env=env)
-    if not success:
-        logger.warning(f"Webhook: encode failed for {student_id} — {message}")
-        return jsonify({
-            "success": False,
-            "message": f"Could not encode photo: {message}. "
-                       "Check photo quality and re-save the record to retry.",
-        })
+    # ── Respond immediately so Creator does NOT retry on slow encoding ─────────
+    # The PATCH back to Creator's Face_Embedding field can take 20-30 s. Zoho
+    # retries any webhook that times out, creating an infinite encode loop.
+    # Returning 200 here stops that. All real work runs in the background thread.
+    def _background_encode():
+        success, message = zoho.encode_and_save_to_creator(student_id, env=env)
+        if not success:
+            logger.warning(f"Webhook [BG]: encode failed for {student_id} — {message}")
+            return
 
-    # ── 2. Fetch record to get name / student_number for cache injection ───────
-    try:
-        url    = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_id}"
-        resp   = zoho._request("get", url, env=env, timeout=15)
-        resp.raise_for_status()
-        record = resp.json().get("data")
-    except Exception as e:
-        logger.warning(f"Webhook: record re-fetch failed for {student_id}: {e} (embedding was saved)")
-        return jsonify({
-            "success": True,
-            "message": f"Encoded and saved to Creator ({message}). "
-                       "Cache will refresh on next request.",
-        })
+        # Re-fetch record to get name/student_number for cache injection
+        try:
+            url    = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_id}"
+            resp   = zoho._request("get", url, env=env, timeout=15)
+            resp.raise_for_status()
+            record = resp.json().get("data")
+        except Exception as e:
+            logger.warning(f"Webhook [BG]: record re-fetch failed for {student_id}: {e}")
+            return
 
-    if not record:
-        return jsonify({
-            "success": True,
-            "message": f"Encoded and saved to Creator ({message}). "
-                       "Cache will refresh on next request.",
-        })
+        if not record:
+            return
 
-    # ── 3. Build student dict — local DB hit because step 1 already wrote it ──
-    student = zoho._process_record(record, env=env)
+        student = zoho._process_record(record, env=env)
+        if not student:
+            logger.warning(f"Webhook [BG]: _process_record returned None for {student_id}")
+            return
 
-    if not student:
-        logger.warning(f"Webhook: _process_record returned None for {student_id} after encoding")
-        return jsonify({
-            "success": True,
-            "message": f"Encoded and saved to Creator ({message}). "
-                       "Cache will refresh on next request.",
-        })
+        injected, updated = _inject_or_update_student_in_caches(student, centre_id=centre_id)
+        logger.info(
+            f"Webhook [BG]: '{student['name']}' ({student_id}) re-encoded — "
+            f"{len(student['encodings'])} embedding(s), "
+            f"{injected} scope(s) injected, {updated} scope(s) patched"
+        )
 
-    # ── 3. Inject into (new) or patch (existing) warm in-memory scope caches ──
-    injected, updated = _inject_or_update_student_in_caches(student, centre_id=centre_id)
-    logger.info(
-        f"Webhook: '{student['name']}' ({student_id}) re-encoded — "
-        f"{len(student['encodings'])} embedding(s), "
-        f"{injected} scope(s) injected, {updated} scope(s) patched"
-    )
-
-    return jsonify({
-        "success":         True,
-        "student":         student["name"],
-        "student_number":  student.get("student_number", ""),
-        "encodings":       len(student["encodings"]),
-        "caches_injected": injected,
-        "caches_updated":  updated,
-    })
+    threading.Thread(target=_background_encode, daemon=True).start()
+    return jsonify({"success": True, "message": "Encoding started"}), 200
 
 
 # ─── Main verify endpoint ─────────────────────────────────────────────────────

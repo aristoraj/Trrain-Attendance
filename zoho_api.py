@@ -535,11 +535,7 @@ class ZohoCreatorAPI:
         if err or encoding is None:
             return False, f"No face detected: {err}"
 
-        try:
-            self.save_embedding(student_id, encoding, env=env)
-        except Exception as e:
-            return False, f"Failed to save embedding to Creator: {e}"
-
+        # ── 1. Local DB first — attendance works even if Creator write fails ─────
         if self._embedding_cache:
             embedding_json = embedding_to_json(encoding)
             try:
@@ -550,8 +546,19 @@ class ZohoCreatorAPI:
             except Exception as e:
                 logger.warning(f"Local cache update failed for {student_id}: {e} (non-fatal)")
 
-        logger.info(f"Student {student_id}: encoded and saved to Creator (det_score={det_score:.3f})")
-        return True, f"Encoded successfully (det_score={det_score:.2f})"
+        # ── 2. Creator Face_Embedding write — best-effort, don't block on failure
+        # Creator PATCH can time out (large payload) or be rejected by form
+        # validations. Local DB is already updated above so attendance will work.
+        try:
+            self.save_embedding(student_id, encoding, env=env)
+            logger.info(f"Student {student_id}: encoded and saved to Creator+DB (det_score={det_score:.3f})")
+            return True, f"Encoded successfully (det_score={det_score:.2f})"
+        except Exception as e:
+            logger.warning(
+                f"Creator Face_Embedding write failed for {student_id}: {e} — "
+                "embedding saved to local DB, attendance will work."
+            )
+            return True, f"Encoded and saved to local DB (Creator write failed: {e})"
 
     def _download_and_encode(self, url: str, env: str = ""):
         resp = self._request("get", url, env=env, timeout=20)
