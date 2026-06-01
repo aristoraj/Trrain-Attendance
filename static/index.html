@@ -783,7 +783,10 @@ async function loadDataViaSdk(email) {
       const userReport = cfg.reports.user_management || 'All_Users';
       const emailField = cfg.fields.user_email       || 'Zoho_ID';
       const flagField  = cfg.fields.face_feature     || 'Face_Recognition_Feature';
-      const criteria   = '(' + emailField + '=="' + email + '" && ' + flagField + '==true)';
+      // Fetch user record by email only — don't filter on the boolean in criteria
+      // because Creator's SDK may return the checkbox value as true/false/string
+      // depending on the field type. We check the value in JS after fetching.
+      const criteria = '(' + emailField + '=="' + email + '")';
       console.log('[FaceVerify] Feature-gate check — report:', userReport,
                   '| email field:', emailField, '| flag field:', flagField,
                   '| criteria:', criteria, '| user:', email);
@@ -792,7 +795,12 @@ async function loadDataViaSdk(email) {
         criteria, page: 1, pageSize: 1,
       });
       console.log('[FaceVerify] Feature-gate response:', JSON.stringify(accessResp));
-      const hasAccess = accessResp && accessResp.data && accessResp.data.length > 0;
+      const record    = accessResp && accessResp.data && accessResp.data[0];
+      const flagValue = record && record[flagField];
+      console.log('[FaceVerify] Flag field value:', flagValue, '(type:', typeof flagValue, ')');
+      // Accept true (boolean), "true" (string), 1, "1" — Creator returns different
+      // types depending on whether the field is a checkbox or a boolean field.
+      const hasAccess = record && (flagValue === true || flagValue === 'true' || flagValue === 1 || flagValue === '1');
       if (!hasAccess) {
         console.log('[FaceVerify] Feature not enabled for', email, '— showing gate');
         _showGate();
