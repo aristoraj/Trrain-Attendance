@@ -47,12 +47,34 @@ print('InsightFace buffalo_l model ready.')"
 # no user interaction needed, transparent to disabled students.
 # The || echo makes this layer non-fatal: if GitHub is unreachable during build,
 # the app still starts; check_liveness() returns (True, 1.0, "model_unavailable").
-RUN mkdir -p /app/.anti_spoof && \
-    curl -fsSL --retry 3 --retry-delay 3 --max-time 60 \
-      "https://github.com/yakhyo/face-anti-spoofing/releases/download/weights/MiniFASNetV2.onnx" \
-      -o /app/.anti_spoof/MiniFASNetV2.onnx \
-    && echo "MiniFASNet liveness model ready ($(wc -c < /app/.anti_spoof/MiniFASNetV2.onnx) bytes)" \
-    || echo "WARNING: liveness model download failed — passive anti-spoofing disabled at runtime"
+RUN mkdir -p /app/.anti_spoof && python3 - <<'PYEOF'
+import sys, os
+
+MODEL_PATH = "/app/.anti_spoof/MiniFASNetV2.onnx"
+URLS = [
+    "https://github.com/yakhyo/face-anti-spoofing/releases/download/weights/MiniFASNetV2.onnx",
+]
+
+import requests
+for url in URLS:
+    try:
+        print(f"Downloading MiniFASNet liveness model from {url} ...")
+        r = requests.get(url, stream=True, timeout=120,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        data = r.content
+        if len(data) < 100_000:
+            print(f"  Response too small ({len(data)} bytes) — probably an error page, skipping")
+            continue
+        with open(MODEL_PATH, "wb") as f:
+            f.write(data)
+        print(f"MiniFASNet liveness model ready ({len(data):,} bytes)")
+        sys.exit(0)
+    except Exception as e:
+        print(f"  Failed: {e}")
+
+print("WARNING: MiniFASNet liveness model download failed — passive anti-spoofing disabled at runtime")
+PYEOF
 
 # ── Create SQLite queue directory ─────────────────────────────────────────────
 RUN mkdir -p /app/data
