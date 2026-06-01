@@ -237,6 +237,71 @@ class AttendanceQueue:
             "ON student_cache(scope_key)"
         )
 
+    def _create_daily_caches_table(self, conn):
+        """
+        Single key-value store for daily-TTL caches (centres, batches, feature-access).
+        Survives server restarts so a single Zoho API call per day is enough.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_cache (
+                cache_key  TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+    _DAILY_CACHE_TTL = 86400   # 24 hours in seconds
+
+    def get_daily_cache(self, key: str):
+        """Return cached value (parsed JSON) if fresh, else None."""
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT value_json, updated_at FROM daily_cache WHERE cache_key=?"),
+                (key,)
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            ts = datetime.fromisoformat(row["updated_at"]).timestamp()
+            if (datetime.now().timestamp() - ts) > self._DAILY_CACHE_TTL:
+                return None
+            import json as _json
+            return _json.loads(row["value_json"])
+        except Exception:
+            return None
+
+    def set_daily_cache(self, key: str, value) -> None:
+        """Store value (serialised to JSON) with current timestamp."""
+        import json as _json
+        now = datetime.now().isoformat()
+        val = _json.dumps(value)
+        with self._db() as conn:
+            if self._is_postgres:
+                conn.execute(self._q("""
+                    INSERT INTO daily_cache (cache_key, value_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(cache_key) DO UPDATE
+                        SET value_json=excluded.value_json,
+                            updated_at=excluded.updated_at
+                """), (key, val, now))
+            else:
+                conn.execute(self._q("""
+                    INSERT OR REPLACE INTO daily_cache (cache_key, value_json, updated_at)
+                    VALUES (?, ?, ?)
+                """), (key, val, now))
+
+    def clear_daily_cache(self, key_prefix: str = "") -> int:
+        """Delete daily cache entries matching prefix (empty = all)."""
+        with self._db() as conn:
+            if key_prefix:
+                cur = conn.execute(
+                    self._q("DELETE FROM daily_cache WHERE cache_key LIKE ?"),
+                    (key_prefix + "%",)
+                )
+            else:
+                cur = conn.execute("DELETE FROM daily_cache")
+            return cur.rowcount if hasattr(cur, "rowcount") else 0
+
     def _create_embeddings_table(self, conn):
         serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
         autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
@@ -334,6 +399,7 @@ class AttendanceQueue:
             self._create_embeddings_table(conn)
             self._migrate_photo_url_column(conn)
             self._create_student_cache_table(conn)
+            self._create_daily_caches_table(conn)
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now().strftime("%d-%b-%Y")

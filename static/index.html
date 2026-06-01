@@ -741,12 +741,13 @@ function tryInitZohoUser() {
               showGate();
               return;
             }
-            console.log('[FaceVerify] Feature enabled — loading via server preload');
+            console.log('[FaceVerify] Feature enabled — loading context then trainees');
           } catch (e) {
             console.warn('[FaceVerify] Feature-gate check failed (allowing through):', e);
           }
-          fetchAndShowCenters(USER_EMAIL);
-          triggerPreload(USER_EMAIL);
+          // Fetch context (centres + batch IDs) from 24h DB cache, then
+          // load trainees via SDK if possible (saves Zoho API quota).
+          loadStudentsHybrid(USER_EMAIL);
         })();
       }
     })
@@ -1015,6 +1016,67 @@ function triggerPreload(email) {
   const params = new URLSearchParams({ user_email: email });
   if (ZOHO_ENV) params.set('zoho_environment', ZOHO_ENV);
   fetch('/api/preload?' + params, { method: 'POST' }).catch(() => {});
+}
+
+// ── Hybrid student loader ─────────────────────────────────────────────────────
+// 1. GET /api/get-context → centres + batch IDs (served from 24h DB cache)
+// 2. If batch IDs available and SDK works: fetch trainees via SDK (0 API calls)
+// 3. Send to /api/load-students to seed the server cache
+// 4. Fallback: trigger server-side preload (existing path)
+async function loadStudentsHybrid(email) {
+  fetchAndShowCenters(email);  // update email-override bar in parallel
+  try {
+    const ctx = await fetch(
+      '/api/get-context?user_email=' + encodeURIComponent(email) +
+      '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
+    ).then(r => r.json());
+    console.log('[Hybrid] context:', ctx);
+    _SCOPE_KEY = ctx.scope_key || 'ALL';
+
+    const batchIds = ctx.batch_ids || [];
+    if (!batchIds.length) {
+      console.log('[Hybrid] No ongoing batches — using server preload');
+      triggerPreload(email);
+      return;
+    }
+
+    // Fetch trainees via SDK (All_Trainees has widget GET access)
+    if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
+    const CHUNK = 10;
+    const allTrainees = [];
+    for (let i = 0; i < batchIds.length; i += CHUNK) {
+      const chunk  = batchIds.slice(i, i + CHUNK);
+      const filter = chunk.map(id => _cfg.fields.student_batch + '.ID=="' + id + '"').join(' || ');
+      let page = 1;
+      while (true) {
+        const resp = await ZOHO.CREATOR.DATA.getRecords({
+          app_name: APP_LINK_NAME, report_name: _cfg.reports.students,
+          criteria: '(' + filter + ')', page, page_size: 200,
+        });
+        const records = (resp && resp.data) || [];
+        allTrainees.push(...records);
+        if (records.length < 200) break;
+        page++;
+      }
+    }
+    console.log('[Hybrid] SDK fetched', allTrainees.length, 'trainee(s)');
+
+    if (!allTrainees.length) {
+      triggerPreload(email);
+      return;
+    }
+
+    const loadResp = await fetch('/api/load-students', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
+    }).then(r => r.json());
+    console.log('[Hybrid] load-students:', loadResp);
+    setStatus('active', 'Position your face in the oval');
+  } catch (e) {
+    console.warn('[Hybrid] SDK load failed — falling back to server preload:', e);
+    triggerPreload(email);
+  }
 }
 
 // ── Face recognition config ───────────────────────────────────────────────────
@@ -1360,29 +1422,109 @@ async function captureAndVerify(cachedImage = null) {
       return;
     }
 
-    if (data.matched && data.duplicate) {
-      showDuplicate(data);
+    if (!data.matched) {
+      showNoMatch(data.message);
       return;
     }
 
-    if (data.matched) {
-      activateStep(4);
-      setTimeout(() => {
-        for (let i = 1; i <= 4; i++) {
-          const el = document.getElementById('step-' + i);
-          el.className = 'step-item done';
-        }
-      }, 600);
-      showSuccess(data);
-    } else {
-      showNoMatch(data.message);
+    // Face matched — now post attendance via SDK first, server fallback
+    activateStep(4);
+    try {
+      await postAttendanceHybrid(data);
+    } catch (postErr) {
+      console.error('[Attendance] post failed:', postErr);
+      showBanner('Attendance post failed: ' + postErr.message, 'danger');
+      resetForRetry();
+      return;
     }
+    setTimeout(() => {
+      for (let i = 1; i <= 4; i++) {
+        const el = document.getElementById('step-' + i);
+        el.className = 'step-item done';
+      }
+    }, 600);
 
   } catch (err) {
     showSpinner(false);
     showBanner('Network error: ' + err.message, 'danger');
     resetForRetry();
   }
+}
+
+// ── Hybrid attendance posting ─────────────────────────────────────────────────
+// 1. SDK getRecords(All_Face_Attendances) → duplicate check (0 server API calls)
+// 2. SDK addRecord(Face_Attendance) → post attendance (0 server API calls)
+// 3. Fallback: /api/post-attendance (server-side queue, 1 API call)
+async function postAttendanceHybrid(verifyData) {
+  const student  = verifyData.student;
+  const today    = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
+  if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
+
+  let isDuplicate = false;
+  let postedViaSDK = false;
+
+  // Step 1: SDK duplicate check
+  try {
+    const dupResp = await ZOHO.CREATOR.DATA.getRecords({
+      app_name: APP_LINK_NAME, report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
+      criteria: '(' + _cfg.fields.att_student + '.ID=="' + student.id + '" && ' +
+                _cfg.fields.att_date + '=="' + today + '")',
+      page: 1, page_size: 1,
+    });
+    isDuplicate = dupResp && dupResp.data && dupResp.data.length > 0;
+    console.log('[Attendance] SDK dup check:', isDuplicate ? 'duplicate' : 'fresh');
+  } catch (e) {
+    console.warn('[Attendance] SDK dup check failed, falling back to server:', e);
+    // Let server handle dedup in fallback
+  }
+
+  if (isDuplicate) {
+    showDuplicate({ student, confidence: verifyData.confidence, attendance_posted: false });
+    return;
+  }
+
+  // Step 2: SDK post attendance
+  if (!isDuplicate) {
+    try {
+      const record = {};
+      record[_cfg.fields.att_student] = student.id;
+      record[_cfg.fields.att_date]    = today;
+      record[_cfg.fields.att_status]  = 'Present';
+      await ZOHO.CREATOR.DATA.addRecord({
+        app_name: APP_LINK_NAME, form_name: _cfg.reports.attendance_form, data: record,
+      });
+      postedViaSDK = true;
+      console.log('[Attendance] Posted via SDK');
+    } catch (e) {
+      console.warn('[Attendance] SDK addRecord failed, falling back to server:', e);
+    }
+  }
+
+  // Step 3: Server fallback if SDK post failed
+  if (!postedViaSDK) {
+    const fallbackResp = await fetch('/api/post-attendance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id:       student.id,
+        student_name:     student.name,
+        zoho_environment: ZOHO_ENV || '',
+        device_session_id: DEVICE_SESSION_ID,
+      }),
+    }).then(r => r.json());
+    if (fallbackResp.duplicate) {
+      showDuplicate({ student, confidence: verifyData.confidence, attendance_posted: false });
+      return;
+    }
+    console.log('[Attendance] Posted via server fallback');
+  }
+
+  showSuccess({
+    student,
+    confidence:        verifyData.confidence,
+    attendance_posted: true,
+    via_sdk:           postedViaSDK,
+  });
 }
 
 

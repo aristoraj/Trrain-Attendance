@@ -220,7 +220,9 @@ def _inject_or_update_student_in_caches(student: dict, centre_id: str = None) ->
             found = False
             for s in students:
                 if s["id"] == student["id"]:
-                    s["encodings"] = student["encodings"]
+                    s["encodings"]      = student["encodings"]
+                    s["name"]           = student["name"]           # update name if changed
+                    s["student_number"] = student.get("student_number", s.get("student_number", ""))
                     found = True
                     updated += 1
                     break
@@ -289,45 +291,68 @@ _webhook_cooldowns: dict[str, float] = {}
 _WEBHOOK_COOLDOWN = 600   # seconds
 
 
-# ─── User-centers cache (email → list[center_id/name], TTL 5 min) ─────────────
+# ─── User-centers cache — L1: in-memory (fast), L2: PostgreSQL 24h TTL ──────────
+# In-memory keeps the hot path at O(1). PostgreSQL survives restarts and API
+# limit periods so Zoho is only called once per day per user.
 _user_centers_cache: dict[str, tuple[list, float]] = {}
 _user_centers_lock  = threading.Lock()
-_USER_CENTERS_TTL   = 300   # seconds
+_USER_CENTERS_TTL   = 86400   # 24 hours
 
 
 def get_user_centers_cached(email: str, env: str = "") -> list[str]:
     cache_key = f"{env}:{email}" if env else email
+    # L1: in-memory
     with _user_centers_lock:
         if cache_key in _user_centers_cache:
             centers, ts = _user_centers_cache[cache_key]
             if time.time() - ts < _USER_CENTERS_TTL:
                 logger.info(f"Centers cache hit for {cache_key}: {centers}")
                 return centers
+    # L2: PostgreSQL daily cache
+    db_key = f"centres:{cache_key}"
+    cached = att_queue.get_daily_cache(db_key)
+    if cached:
+        logger.info(f"Centers DB cache hit for {cache_key}: {cached}")
+        with _user_centers_lock:
+            _user_centers_cache[cache_key] = (cached, time.time())
+        return cached
+    # Miss: call Zoho API
     centers = zoho.get_user_centers(email, env=env)
-    # Only cache non-empty results so a Zoho hiccup doesn't lock the user out
     if centers:
         with _user_centers_lock:
             _user_centers_cache[cache_key] = (centers, time.time())
+        att_queue.set_daily_cache(db_key, centers)
     return centers
 
 
-# ─── Ongoing-batch IDs cache (scope_key → list[batch_id], TTL 30 min) ─────────
+# ─── Ongoing-batch IDs cache — L1: in-memory, L2: PostgreSQL 24h TTL ────────────
 _batch_ids_cache: dict[str, tuple[list, float]] = {}
 _batch_ids_lock  = threading.Lock()
-_BATCH_IDS_TTL   = 1800   # 30 minutes — batches don't change status often
+_BATCH_IDS_TTL   = 86400   # 24 hours
 
 
 def get_batch_ids_cached(centers: list, env: str = "") -> list[str]:
     key = _build_scope_key(centers, env)
+    # L1: in-memory
     with _batch_ids_lock:
         if key in _batch_ids_cache:
             batch_ids, ts = _batch_ids_cache[key]
             if time.time() - ts < _BATCH_IDS_TTL:
                 logger.info(f"Batch IDs cache hit for {key}: {len(batch_ids)} batch(es)")
                 return batch_ids
+    # L2: PostgreSQL daily cache
+    db_key = f"batches:{key}"
+    cached = att_queue.get_daily_cache(db_key)
+    if cached is not None:
+        logger.info(f"Batch IDs DB cache hit for {key}: {len(cached)} batch(es)")
+        with _batch_ids_lock:
+            _batch_ids_cache[key] = (cached, time.time())
+        return cached
+    # Miss: call Zoho API
     batch_ids = zoho.get_ongoing_batch_ids(centers, env=env)
     with _batch_ids_lock:
         _batch_ids_cache[key] = (batch_ids, time.time())
+    att_queue.set_daily_cache(db_key, batch_ids)
     return batch_ids
 
 
@@ -723,36 +748,7 @@ def verify():
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
-        # ── 6 & 7. Atomic dedup-check + enqueue ──────────────────────────────
-        today_str = datetime.now(_IST).strftime("%d-%b-%Y")
-        queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
-            student_id=best_match["id"],
-            student_name=best_match["name"],
-            date_str=today_str,
-            environment=env,
-            device_session_id=device_session_id,
-        )
-        if is_duplicate:
-            logger.info(f"Duplicate blocked for {best_match['name']}")
-            return jsonify({
-                "success":           True,
-                "matched":           True,
-                "duplicate":         True,
-                "student": {
-                    "id":   best_match["id"],
-                    "name": best_match["name"],
-                },
-                "confidence":        confidence,
-                "attendance_posted": False,
-                "message": f"{best_match['name']} is already marked present today.",
-            })
-
-        logger.info(
-            f"Attendance queued for {best_match['name']} "
-            f"(queue #{queue_id}, liveness={liveness_score:.2f})"
-        )
-
-        # Save this verified live capture as an angle-variant embedding (self-learning)
+        # Save verified live capture as angle-variant embedding (self-learning)
         _emb_json = embedding_to_json(submitted_encoding)
         threading.Thread(
             target=att_queue.add_verified_embedding,
@@ -760,23 +756,98 @@ def verify():
             daemon=True,
         ).start()
 
+        # Return match result only — attendance posting is handled by the
+        # frontend via SDK (addRecord on Face_Attendance form) with
+        # /api/post-attendance as fallback.
         return jsonify({
-            "success":           True,
-            "matched":           True,
-            "duplicate":         False,
+            "success":    True,
+            "matched":    True,
             "student": {
                 "id":          best_match["id"],
                 "name":        best_match["name"],
                 "roll_number": best_match.get("student_number", ""),
             },
-            "confidence":        confidence,
-            "attendance_posted": True,
-            "message":           f"Welcome, {best_match['name']}! Attendance marked successfully.",
+            "confidence":     confidence,
+            "liveness_score": round(liveness_score, 3),
         })
 
     except Exception as e:
         logger.exception("Unexpected error in /api/verify")
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
+
+
+# ─── Attendance posting fallback (called by frontend if SDK addRecord fails) ────
+
+@app.route("/api/post-attendance", methods=["POST"])
+def post_attendance():
+    """
+    Server-side attendance posting fallback.
+    Called by the frontend when SDK addRecord on Face_Attendance fails.
+    Also used directly when SDK is unavailable.
+
+    Request JSON: {student_id, student_name, zoho_environment, device_session_id}
+    """
+    data              = request.get_json(force=True) or {}
+    student_id        = (data.get("student_id") or "").strip()
+    student_name      = (data.get("student_name") or "").strip()
+    env               = _resolve_env(data.get("zoho_environment"))
+    device_session_id = (data.get("device_session_id") or "").strip()
+
+    if not student_id or not student_name:
+        return jsonify({"success": False, "error": "student_id and student_name required"}), 400
+
+    today_str = datetime.now(_IST).strftime("%d-%b-%Y")
+    queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
+        student_id=student_id,
+        student_name=student_name,
+        date_str=today_str,
+        environment=env,
+        device_session_id=device_session_id,
+    )
+    if is_duplicate:
+        return jsonify({
+            "success":   True,
+            "duplicate": True,
+            "message":   f"{student_name} is already marked present today.",
+        })
+
+    logger.info(f"Attendance queued for {student_name} via server fallback (queue #{queue_id})")
+    return jsonify({
+        "success":   True,
+        "duplicate": False,
+        "queue_id":  queue_id,
+        "message":   f"Welcome, {student_name}! Attendance marked successfully.",
+    })
+
+
+# ─── Get-context endpoint (centres + batch IDs from 24h DB cache) ──────────────
+
+@app.route("/api/get-context")
+def get_context():
+    """
+    Return the logged-in user's centre IDs and ongoing batch IDs.
+    Used by the frontend SDK flow to know which data to fetch via SDK.
+    Results served from 24h PostgreSQL cache — Zoho API only called on first
+    open of the day (or after cache cleared).
+    """
+    email = (request.args.get("user_email") or "").strip()
+    env   = _resolve_env(request.args.get("zoho_environment") or "")
+    if not email:
+        return jsonify({"centres": [], "batch_ids": [], "scope_key": "ALL"})
+
+    try:
+        centres   = get_user_centers_cached(email, env=env)
+        centre_ids = [c for c in centres if c and c.isdigit() or (c and len(c) > 10)]
+        batch_ids  = get_batch_ids_cached(centres, env=env) if centres else []
+        scope_key  = _build_scope_key(centres, env)
+        return jsonify({
+            "centres":   centres,
+            "batch_ids": batch_ids,
+            "scope_key": scope_key,
+        })
+    except Exception as e:
+        logger.warning(f"get-context failed for {email}: {e}")
+        return jsonify({"centres": [], "batch_ids": [], "scope_key": "ALL", "error": str(e)})
 
 
 # ─── Feature-access check ─────────────────────────────────────────────────────
@@ -833,11 +904,12 @@ def api_config():
     return jsonify({
         "app_name": ZOHO_APP_NAME,
         "reports": {
-            "students":        ZOHO_STUDENT_REPORT,
-            "attendance_form": ZOHO_ATTENDANCE_FORM,
-            "batches":         ZOHO_BATCHES_REPORT,
-            "centres":         ZOHO_CENTRES_REPORT,
-            "user_management": ZOHO_USER_MGMT_REPORT,
+            "students":          ZOHO_STUDENT_REPORT,
+            "attendance_form":   ZOHO_ATTENDANCE_FORM,
+            "attendance_report": ZOHO_ATTENDANCE_REPORT,
+            "batches":           ZOHO_BATCHES_REPORT,
+            "centres":           ZOHO_CENTRES_REPORT,
+            "user_management":   ZOHO_USER_MGMT_REPORT,
         },
         "fields": {
             "student_embedding": FIELD_STUDENT_EMBEDDING,
@@ -1111,6 +1183,40 @@ def today_attendance():
     device_session_id = (request.args.get("device_session_id") or "").strip() or None
     records           = att_queue.get_today_attendance(today, device_session_id=device_session_id)
     return jsonify({"date": today, "total": len(records), "records": records})
+
+
+@app.route("/admin/clear-daily-cache", methods=["GET", "POST"])
+@limiter.limit("20 per minute")
+def admin_clear_daily_cache():
+    """
+    Force-refresh the 24h centre/batch/feature-access caches.
+    Use when a new centre is added, batch status changes, or a user's
+    feature flag is toggled and you don't want to wait 24h for the cache
+    to expire naturally.
+    Protected by ADMIN_SECRET.
+    """
+    secret = request.args.get("secret", "") or (request.get_json(force=True) or {}).get("secret", "")
+    if secret != ADMIN_SECRET:
+        return make_response("Unauthorized.", 401)
+
+    prefix = (request.args.get("prefix") or "").strip()  # optional: "centres:", "batches:", "feature:"
+    cleared_db   = att_queue.clear_daily_cache(prefix)
+    cleared_mem  = 0
+    with _user_centers_lock:
+        cleared_mem += len(_user_centers_cache)
+        _user_centers_cache.clear()
+    with _batch_ids_lock:
+        cleared_mem += len(_batch_ids_cache)
+        _batch_ids_cache.clear()
+    _feature_cache.clear()
+
+    logger.info(f"Daily cache cleared — {cleared_db} DB rows, {cleared_mem} memory entries")
+    return jsonify({
+        "success":      True,
+        "cleared_db":   cleared_db,
+        "cleared_mem":  cleared_mem,
+        "message":      "Daily caches cleared. Next widget open will re-fetch from Zoho.",
+    })
 
 
 @app.route("/admin/clear-today", methods=["GET", "POST"])
