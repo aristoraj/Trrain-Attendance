@@ -778,38 +778,6 @@ def verify():
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
 
 
-# ─── Feature-access check ─────────────────────────────────────────────────────
-
-@app.route("/api/feature-access")
-def feature_access():
-    """
-    Server-side check for Face_Recognition_Feature flag.
-    Used by the widget instead of a direct SDK report query because Creator
-    widgets cannot query User_Management via SDK (Invalid Configuration error).
-    Returns {has_access: true/false}.
-    Fails OPEN (has_access: true) on any error so config mistakes don't lock
-    out real users — the gate is a pilot control, not a security boundary.
-    """
-    email = (request.args.get("user_email") or "").strip()
-    env   = _resolve_env(request.args.get("zoho_environment") or "")
-
-    if not email:
-        return jsonify({"has_access": False, "reason": "no_email"})
-
-    url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
-    criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}" && {FIELD_USER_FACE_FEATURE}==true)'
-    try:
-        resp    = zoho._request("get", url, env=env,
-                                params={"criteria": criteria, "limit": 1}, timeout=10)
-        records = resp.json().get("data", [])
-        has_access = isinstance(records, list) and len(records) > 0
-        logger.info(f"Feature-access check for {email}: {'enabled' if has_access else 'disabled'}")
-        return jsonify({"has_access": has_access})
-    except Exception as e:
-        logger.warning(f"Feature-access check failed for {email}: {e} — failing open")
-        return jsonify({"has_access": True, "reason": "check_failed"})
-
-
 # ─── SDK data-loading endpoints ───────────────────────────────────────────────
 
 @app.route("/api/config")

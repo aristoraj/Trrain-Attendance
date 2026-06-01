@@ -780,16 +780,18 @@ async function loadDataViaSdk(email) {
     const _gate = document.getElementById('feature-gate');
     const _showGate = () => { if (_gate) _gate.style.display = 'flex'; _dataLoading = false; };
     try {
-      // Use server-side check — Creator widgets can't query User_Management via
-      // SDK directly (throws "Invalid Configuration"). The server uses the existing
-      // Zoho API client which works reliably.
-      console.log('[FaceVerify] Feature-gate check via server for:', email);
-      const accessResp = await fetch(
-        '/api/feature-access?user_email=' + encodeURIComponent(email) +
-        '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
-      ).then(r => r.json());
+      const userReport = cfg.reports.user_management || 'All_Users';
+      const emailField = cfg.fields.user_email       || 'Zoho_ID';
+      const flagField  = cfg.fields.face_feature     || 'Face_Recognition_Feature';
+      const criteria   = '(' + emailField + '=="' + email + '" && ' + flagField + '==true)';
+      console.log('[FaceVerify] Feature-gate check — report:', userReport, '| criteria:', criteria);
+      const accessResp = await ZOHO.CREATOR.DATA.getRecords({
+        appName: APP_LINK_NAME, reportName: userReport,
+        criteria, page: 1, pageSize: 1,
+      });
       console.log('[FaceVerify] Feature-gate response:', JSON.stringify(accessResp));
-      if (!accessResp.has_access) {
+      const hasAccess = accessResp && accessResp.data && accessResp.data.length > 0;
+      if (!hasAccess) {
         console.log('[FaceVerify] Feature not enabled for', email, '— showing gate');
         _showGate();
         return;
