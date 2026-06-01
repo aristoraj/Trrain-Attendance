@@ -780,28 +780,16 @@ async function loadDataViaSdk(email) {
     const _gate = document.getElementById('feature-gate');
     const _showGate = () => { if (_gate) _gate.style.display = 'flex'; _dataLoading = false; };
     try {
-      const userReport = cfg.reports.user_management || 'All_Users';
-      const emailField = cfg.fields.user_email       || 'Zoho_ID';
-      const flagField  = cfg.fields.face_feature     || 'Face_Recognition_Feature';
-      // Fetch user record by email only — don't filter on the boolean in criteria
-      // because Creator's SDK may return the checkbox value as true/false/string
-      // depending on the field type. We check the value in JS after fetching.
-      const criteria = '(' + emailField + '=="' + email + '")';
-      console.log('[FaceVerify] Feature-gate check — report:', userReport,
-                  '| email field:', emailField, '| flag field:', flagField,
-                  '| criteria:', criteria, '| user:', email);
-      const accessResp = await ZOHO.CREATOR.DATA.getRecords({
-        appName: APP_LINK_NAME, reportName: userReport,
-        criteria, page: 1, pageSize: 1,
-      });
+      // Use server-side check — Creator widgets can't query User_Management via
+      // SDK directly (throws "Invalid Configuration"). The server uses the existing
+      // Zoho API client which works reliably.
+      console.log('[FaceVerify] Feature-gate check via server for:', email);
+      const accessResp = await fetch(
+        '/api/feature-access?user_email=' + encodeURIComponent(email) +
+        '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
+      ).then(r => r.json());
       console.log('[FaceVerify] Feature-gate response:', JSON.stringify(accessResp));
-      const record    = accessResp && accessResp.data && accessResp.data[0];
-      const flagValue = record && record[flagField];
-      console.log('[FaceVerify] Flag field value:', flagValue, '(type:', typeof flagValue, ')');
-      // Accept true (boolean), "true" (string), 1, "1" — Creator returns different
-      // types depending on whether the field is a checkbox or a boolean field.
-      const hasAccess = record && (flagValue === true || flagValue === 'true' || flagValue === 1 || flagValue === '1');
-      if (!hasAccess) {
+      if (!accessResp.has_access) {
         console.log('[FaceVerify] Feature not enabled for', email, '— showing gate');
         _showGate();
         return;
