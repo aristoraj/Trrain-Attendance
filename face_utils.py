@@ -23,6 +23,15 @@ import threading
 import numpy as np
 from PIL import Image
 
+# Register HEIC/HEIF opener so Pillow can decode iPhone photos (.heic/.heif).
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    logging.getLogger(__name__).warning(
+        "pillow-heif not installed — HEIC/HEIF iPhone photos will fail encoding."
+    )
+
 logger = logging.getLogger(__name__)
 
 # ── InsightFace model singleton (loaded once per process) ──────────────────────
