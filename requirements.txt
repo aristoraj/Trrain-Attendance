@@ -16,7 +16,7 @@ onnxruntime==1.16.3
 # Image processing
 opencv-python-headless==4.9.0.80
 Pillow==10.3.0
-pillow-heif==0.16.0
+pillow-heif>=0.17.0
 numpy==1.26.4
 
 # HTTP requests (Zoho API calls)

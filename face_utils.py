@@ -169,10 +169,14 @@ def encode_face_from_bytes(image_bytes: bytes):
             # Explicit HEIC/HEIF fallback for iPhone photos (.heic content-type=octet-stream).
             # pillow-heif's opener registration may not fire in all Gunicorn worker configs;
             # calling the API directly is always reliable.
+            # iPhone portrait/HDR photos embed depth maps and gain maps as auxiliary
+            # images — use primary_image to extract only the main photo and avoid
+            # the "Too many auxiliary image references" error from older libheif.
             try:
                 import pillow_heif
-                heif = pillow_heif.open_heif(io.BytesIO(image_bytes))
-                image = heif.to_pillow()
+                heif_file = pillow_heif.open_heif(io.BytesIO(image_bytes), convert_hdr_to_8bit=True)
+                primary = heif_file.primary_image if hasattr(heif_file, "primary_image") else heif_file[0]
+                image = primary.to_pillow()
                 logger.info("HEIC image decoded via pillow_heif direct API")
             except Exception as heic_err:
                 raise ValueError(f"Unsupported image format (HEIC fallback also failed: {heic_err})")
