@@ -787,29 +787,38 @@ async function loadDataViaSdk(email) {
     const cfg = _cfg;
 
     // ── Feature-gate check ────────────────────────────────────────────────────
-    // Query User_Management to confirm Face_Recognition_Feature == true for this user.
-    // If not enabled, show the "not yet released" overlay and stop loading.
+    // Query User_Management (All_Users) to confirm Face_Recognition_Feature == true.
+    // Show the "not yet released" overlay and stop if not enabled.
+    const _gate = document.getElementById('feature-gate');
+    const _showGate = () => { if (_gate) _gate.style.display = 'flex'; _dataLoading = false; };
     try {
       const userReport = cfg.reports.user_management || 'All_Users';
-      const emailField = cfg.fields.user_email       || 'Email';
+      const emailField = cfg.fields.user_email       || 'Zoho_ID';
       const flagField  = cfg.fields.face_feature     || 'Face_Recognition_Feature';
+      const criteria   = '(' + emailField + '=="' + email + '" && ' + flagField + '==true)';
+      console.log('[FaceVerify] Feature-gate check — report:', userReport,
+                  '| email field:', emailField, '| flag field:', flagField,
+                  '| criteria:', criteria, '| user:', email);
       const accessResp = await ZOHO.CREATOR.DATA.getRecords({
         appName: APP_LINK_NAME, reportName: userReport,
-        criteria: '(' + emailField + '=="' + email + '" && ' + flagField + '==true)',
-        page: 1, pageSize: 1,
+        criteria, page: 1, pageSize: 1,
       });
+      console.log('[FaceVerify] Feature-gate response:', JSON.stringify(accessResp));
       const hasAccess = accessResp && accessResp.data && accessResp.data.length > 0;
       if (!hasAccess) {
         console.log('[FaceVerify] Feature not enabled for', email, '— showing gate');
-        const gate = document.getElementById('feature-gate');
-        if (gate) gate.style.display = 'flex';
-        _dataLoading = false;
+        _showGate();
         return;
       }
+      console.log('[FaceVerify] Feature enabled for', email, '— proceeding');
     } catch (e) {
-      // If the check fails (network, wrong report name, etc.) allow through so
-      // legitimate users aren't locked out by a configuration error.
-      console.warn('[FaceVerify] Feature-gate check failed (allowing through):', e);
+      // SDK call failed — log the error and show the gate so users aren't
+      // silently admitted without a valid access check.
+      // If the report/field names are misconfigured, fix ZOHO_USER_MGMT_REPORT /
+      // FIELD_USER_MGMT_EMAIL / FIELD_USER_FACE_FEATURE env vars on Render.
+      console.error('[FaceVerify] Feature-gate SDK error — showing gate:', e);
+      _showGate();
+      return;
     }
 
     const centreResp = await ZOHO.CREATOR.DATA.getRecords({
