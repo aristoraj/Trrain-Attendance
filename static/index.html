@@ -782,16 +782,16 @@ async function loadDataViaSdk(email) {
     try {
       const userReport = cfg.reports.user_management || 'All_Users';
       const emailField = cfg.fields.user_email       || 'Zoho_ID';
-      const flagField  = cfg.fields.face_feature     || 'Face_Recognition_Feature';
-      const criteria   = '(' + emailField + '=="' + email + '" && ' + flagField + '==true)';
-      console.log('[FaceVerify] Feature-gate check — report:', userReport, '| criteria:', criteria);
-      const accessResp = await ZOHO.CREATOR.DATA.getRecords({
-        appName: APP_LINK_NAME, reportName: userReport,
-        criteria, page: 1, pageSize: 1,
-      });
+      // SDK getRecords on All_Users throws "Invalid Configuration" regardless of
+      // field/report setup — use the server-side endpoint which uses the admin
+      // OAuth token and is proven to work correctly.
+      console.log('[FaceVerify] Feature-gate check via server for:', email);
+      const accessResp = await fetch(
+        '/api/feature-access?user_email=' + encodeURIComponent(email) +
+        '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
+      ).then(r => r.json());
       console.log('[FaceVerify] Feature-gate response:', JSON.stringify(accessResp));
-      const hasAccess = accessResp && accessResp.data && accessResp.data.length > 0;
-      if (!hasAccess) {
+      if (!accessResp.has_access) {
         console.log('[FaceVerify] Feature not enabled for', email, '— showing gate');
         _showGate();
         return;

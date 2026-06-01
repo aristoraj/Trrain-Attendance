@@ -778,6 +778,29 @@ def verify():
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
 
 
+# ─── Feature-access check ─────────────────────────────────────────────────────
+
+@app.route("/api/feature-access")
+def feature_access():
+    """Check Face_Recognition_Feature flag for a user via admin OAuth token."""
+    email = (request.args.get("user_email") or "").strip()
+    env   = _resolve_env(request.args.get("zoho_environment") or "")
+    if not email:
+        return jsonify({"has_access": False, "reason": "no_email"})
+    url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
+    criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}" && {FIELD_USER_FACE_FEATURE}==true)'
+    try:
+        resp       = zoho._request("get", url, env=env,
+                                   params={"criteria": criteria, "limit": 1}, timeout=10)
+        records    = resp.json().get("data", [])
+        has_access = isinstance(records, list) and len(records) > 0
+        logger.info(f"Feature-access: {email} → {'enabled' if has_access else 'disabled'}")
+        return jsonify({"has_access": has_access})
+    except Exception as e:
+        logger.warning(f"Feature-access check failed for {email}: {e} — failing open")
+        return jsonify({"has_access": True, "reason": "check_failed"})
+
+
 # ─── SDK data-loading endpoints ───────────────────────────────────────────────
 
 @app.route("/api/config")
