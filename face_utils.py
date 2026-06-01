@@ -163,7 +163,19 @@ def encode_face_from_bytes(image_bytes: bytes):
     """
     try:
         from PIL import ImageOps
-        image = Image.open(io.BytesIO(image_bytes))
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+        except Exception:
+            # Explicit HEIC/HEIF fallback for iPhone photos (.heic content-type=octet-stream).
+            # pillow-heif's opener registration may not fire in all Gunicorn worker configs;
+            # calling the API directly is always reliable.
+            try:
+                import pillow_heif
+                heif = pillow_heif.open_heif(io.BytesIO(image_bytes))
+                image = heif.to_pillow()
+                logger.info("HEIC image decoded via pillow_heif direct API")
+            except Exception as heic_err:
+                raise ValueError(f"Unsupported image format (HEIC fallback also failed: {heic_err})")
         # Apply EXIF rotation tag so the pixel data matches the visual orientation
         image = ImageOps.exif_transpose(image)
         image = image.convert("RGB")
