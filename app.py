@@ -829,6 +829,7 @@ def api_config():
             "batch_status":      FIELD_BATCH_STATUS,
             "batch_center":      FIELD_BATCH_CENTER,
             "student_batch":     FIELD_STUDENT_BATCH,
+            "student_center":    FIELD_STUDENT_CENTER,
         },
     })
 

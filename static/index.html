@@ -856,10 +856,17 @@ async function loadDataViaSdk(email) {
         }
       }
     } else if (centreIds.length) {
+      // No ongoing batches — filter by centre instead of fetching all records.
+      // Fetching without criteria returns 403 because widget users only have
+      // permission to view their own centre's trainees.
+      const centreFilter = centreIds
+        .map(id => (cfg.fields.student_center || 'Centre_Name') + '.ID=="' + id + '"')
+        .join(' || ');
       let page = 1;
       while (true) {
         const resp = await ZOHO.CREATOR.DATA.getRecords({
-          app_name: APP_LINK_NAME, report_name: cfg.reports.students, page, page_size: 200,
+          app_name: APP_LINK_NAME, report_name: cfg.reports.students,
+          criteria: '(' + centreFilter + ')', page, page_size: 200,
         });
         const records = (resp && resp.data) || [];
         allTrainees.push(...records);
