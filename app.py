@@ -780,6 +780,11 @@ def verify():
 
 
 # ─── Feature-access check ─────────────────────────────────────────────────────
+# Cache results for 10 min per email so repeated widget opens (QA testing,
+# refreshes) don't each consume a Zoho API call.
+_feature_cache: dict[str, tuple[bool, float]] = {}
+_FEATURE_CACHE_TTL = 600   # seconds
+
 
 @app.route("/api/feature-access")
 def feature_access():
@@ -788,13 +793,31 @@ def feature_access():
     env   = _resolve_env(request.args.get("zoho_environment") or "")
     if not email:
         return jsonify({"has_access": False, "reason": "no_email"})
+
+    # Serve from cache if fresh — avoids burning Zoho API calls on every widget open
+    cache_key = f"{env}:{email}"
+    cached = _feature_cache.get(cache_key)
+    if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
+        logger.info(f"Feature-access (cached): {email} → {'enabled' if cached[0] else 'disabled'}")
+        return jsonify({"has_access": cached[0], "cached": True})
+
     url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
     criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}" && {FIELD_USER_FACE_FEATURE}==true)'
     try:
-        resp       = zoho._request("get", url, env=env,
-                                   params={"criteria": criteria, "limit": 1}, timeout=10)
-        records    = resp.json().get("data", [])
+        resp      = zoho._request("get", url, env=env,
+                                  params={"criteria": criteria, "limit": 1}, timeout=10)
+        resp_json = resp.json()
+
+        # Zoho returns HTTP 200 even for API limit errors — detect code 4000
+        # and fail OPEN so users aren't locked out by quota exhaustion.
+        zoho_code = resp_json.get("code")
+        if zoho_code == 4000:
+            logger.warning(f"Feature-access: Zoho API limit reached for {email} — failing open")
+            return jsonify({"has_access": True, "reason": "api_limit"})
+
+        records    = resp_json.get("data", [])
         has_access = isinstance(records, list) and len(records) > 0
+        _feature_cache[cache_key] = (has_access, time.time())
         logger.info(f"Feature-access: {email} → {'enabled' if has_access else 'disabled'}")
         return jsonify({"has_access": has_access})
     except Exception as e:
