@@ -12,10 +12,14 @@ Endpoints:
   POST /admin/retry-failed     → Reset FAILED queue records to PENDING
   GET  /admin/reauth           → Admin page: paste Zoho auth code → auto-updates Render env var
   POST /admin/reauth           → Exchanges auth code, saves new refresh token to Render
-  GET  /api/debug/students     → Debug raw Zoho records
 """
 
+import base64
+import functools
+import hashlib
+import hmac as _hmac
 import html as _html
+import json as _json
 import logging
 import os
 import threading
@@ -75,9 +79,60 @@ CORS(app, resources={r"/api/*": {"origins": _ALLOWED_ORIGINS}})
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=[],
+    default_limits=["120 per minute"],   # global safety net
     storage_uri="memory://",
 )
+
+# ─── Widget session token (authentication) ─────────────────────────────────────
+# Issued by /api/session after the widget SDK confirms the logged-in user.
+# All non-public endpoints require a valid Bearer token in Authorization header.
+# Token format: base64url(payload).hmac_sha256[:32]
+# Payload: {"e": email, "v": env, "t": issued_at, "x": expires_at}
+_SESSION_TTL = 1800   # 30 minutes
+
+
+def _issue_session_token(email: str, env: str) -> str:
+    payload = _json.dumps({"e": email, "v": env, "t": int(time.time()), "x": int(time.time()) + _SESSION_TTL})
+    data    = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    sig     = _hmac.new(SECRET_KEY.encode(), data.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{data}.{sig}"
+
+
+def _verify_session_token(token: str) -> dict | None:
+    """Verify signature and expiry. Returns payload dict or None."""
+    try:
+        data, sig = token.rsplit(".", 1)
+        expected = _hmac.new(SECRET_KEY.encode(), data.encode(), hashlib.sha256).hexdigest()[:32]
+        if not _hmac.compare_digest(sig, expected):
+            return None
+        payload = _json.loads(base64.urlsafe_b64decode(data + "==="))
+        if payload.get("x", 0) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def require_session(f):
+    """
+    Decorator: require a valid widget session token (Bearer in Authorization header).
+    Rejects unauthenticated requests from direct URL access, curl, Postman, etc.
+    Sets request.session_email and request.session_env for the endpoint to use.
+    """
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        auth  = request.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+        payload = _verify_session_token(token) if token else None
+        if not payload:
+            return jsonify({
+                "error": "Session required. Please open the widget from Zoho Creator.",
+                "auth_required": True,
+            }), 401
+        request.session_email = payload.get("e", "")
+        request.session_env   = payload.get("v", "")
+        return f(*args, **kwargs)
+    return wrapper
 
 zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
@@ -436,6 +491,7 @@ def cache_status():
 
 
 @app.route("/api/preload", methods=["POST"])
+@require_session
 def preload_students():
     """Trigger a background student load if the cache is cold. Called once on widget mount."""
     env        = _resolve_env(request.args.get("zoho_environment"))
@@ -546,7 +602,7 @@ def webhook_student_update():
     Auth: pass ADMIN_SECRET as ?secret= query param or X-Webhook-Secret header.
     """
     secret = request.headers.get("X-Webhook-Secret") or request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return jsonify({"error": "Unauthorized"}), 401
 
     body       = request.get_json(force=True) or {}
@@ -620,6 +676,8 @@ def webhook_student_update():
 # ─── Main verify endpoint ─────────────────────────────────────────────────────
 
 @app.route("/api/verify", methods=["POST"])
+@require_session
+@limiter.limit("30 per minute")
 def verify():
     """
     Verify a captured photo against the student database.
@@ -779,6 +837,8 @@ def verify():
 # ─── Attendance posting fallback (called by frontend if SDK addRecord fails) ────
 
 @app.route("/api/post-attendance", methods=["POST"])
+@require_session
+@limiter.limit("60 per minute")
 def post_attendance():
     """
     Server-side attendance posting fallback.
@@ -823,6 +883,7 @@ def post_attendance():
 # ─── Get-context endpoint (centres + batch IDs from 24h DB cache) ──────────────
 
 @app.route("/api/get-context")
+@require_session
 def get_context():
     """
     Return the logged-in user's centre IDs and ongoing batch IDs.
@@ -848,6 +909,31 @@ def get_context():
     except Exception as e:
         logger.warning(f"get-context failed for {email}: {e}")
         return jsonify({"centres": [], "batch_ids": [], "scope_key": "ALL", "error": str(e)})
+
+
+# ─── Widget session endpoint ──────────────────────────────────────────────────
+
+@app.route("/api/session", methods=["POST"])
+@limiter.limit("10 per minute")
+def create_session():
+    """
+    Issue a short-lived session token to the widget after SDK init.
+    Called once after getInitParams() succeeds. The token is then attached to
+    every subsequent request via Authorization: Bearer <token>.
+
+    Request JSON: {user_email, zoho_environment}
+    Response:     {session_token, expires_in}
+    """
+    data  = request.get_json(force=True) or {}
+    email = (data.get("user_email") or "").strip().lower()
+    env   = _resolve_env(data.get("zoho_environment") or "")
+
+    if not email or "@" not in email:
+        return jsonify({"error": "Invalid email"}), 400
+
+    token = _issue_session_token(email, env)
+    logger.info(f"Session issued for {email} (env={env or 'production'})")
+    return jsonify({"session_token": token, "expires_in": _SESSION_TTL})
 
 
 # ─── Feature-access check ─────────────────────────────────────────────────────
@@ -931,6 +1017,7 @@ def api_config():
 
 
 @app.route("/api/load-students", methods=["POST"])
+@require_session
 def load_students():
     """
     Accept raw Zoho Creator records fetched by the Widget SDK and seed the face cache.
@@ -1059,7 +1146,7 @@ def admin_sync_status():
     Protected by ADMIN_SECRET.
     """
     secret = request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized. Add ?secret=YOUR_ADMIN_SECRET to the URL.", 401)
 
     summary = att_queue.get_status_summary()
@@ -1175,6 +1262,7 @@ def admin_sync_status():
 
 
 @app.route("/api/today-attendance")
+@require_session
 def today_attendance():
     """Return today's attendance records from the local queue for the Summary screen.
     Filters by device_session_id when provided so users sharing the same login
@@ -1196,7 +1284,7 @@ def admin_clear_daily_cache():
     Protected by ADMIN_SECRET.
     """
     secret = request.args.get("secret", "") or (request.get_json(force=True) or {}).get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized.", 401)
 
     prefix = (request.args.get("prefix") or "").strip()  # optional: "centres:", "batches:", "feature:"
@@ -1229,7 +1317,7 @@ def admin_clear_today():
     Protected by ADMIN_SECRET. Optional ?student_id=xxx to clear one student only.
     """
     secret = request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized.", 401)
     student_id = (request.args.get("student_id") or "").strip() or None
     count = att_queue.clear_today_attendance(student_id=student_id)
@@ -1251,7 +1339,7 @@ def admin_clear_student_embeddings():
     Required: ?student_id=xxx&secret=YOUR_ADMIN_SECRET
     """
     secret = request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized.", 401)
     student_id = (request.args.get("student_id") or "").strip()
     if not student_id:
@@ -1304,7 +1392,7 @@ def admin_encode_all_students():
     Protected by ADMIN_SECRET.
     """
     secret = request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized.", 401)
 
     env = _resolve_env(request.args.get("zoho_environment"))
@@ -1525,7 +1613,7 @@ def admin_encode_all_students():
 def admin_retry_failed():
     """Reset all FAILED queue records to PENDING so the worker retries them."""
     secret = request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized.", 401)
     count = att_queue.retry_failed()
     return jsonify({"success": True, "records_reset": count,
@@ -1538,7 +1626,7 @@ def admin_retry_failed():
 @limiter.limit("10 per minute")
 def admin_reauth_page():
     secret = request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized. Add ?secret=YOUR_ADMIN_SECRET to the URL.", 401)
 
     render_configured = bool(RENDER_API_KEY and RENDER_SERVICE_ID)
@@ -1607,7 +1695,7 @@ def admin_reauth_page():
 @limiter.limit("5 per minute")
 def admin_reauth_submit():
     secret = request.args.get("secret", "")
-    if secret != ADMIN_SECRET:
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return make_response("Unauthorized.", 401)
 
     auth_code = request.form.get("auth_code", "").strip()
@@ -1715,6 +1803,7 @@ def _reauth_result(success, message, secret, render_updated=False, token_preview
 # ─── User centers API ─────────────────────────────────────────────────────────
 
 @app.route("/api/user/centers")
+@require_session
 def user_centers_api():
     """Return display names of the logged-in user's centres (used by the header UI)."""
     email = request.args.get("user_email", "").strip()
@@ -1734,27 +1823,7 @@ def user_centers_api():
 
 # ─── Debug ────────────────────────────────────────────────────────────────────
 
-@app.route("/api/debug/students")
-def debug_students():
-    """Debug — raw student records to verify field names."""
-    try:
-        token = zoho._refresh_token()
-        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-        s_url  = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}"
-        s_resp = req.get(s_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
-        s_resp.raise_for_status()
-        s_records = s_resp.json().get("data", [])
-        a_url  = f"{zoho._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
-        a_resp = req.get(a_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
-        a_records = a_resp.json().get("data", []) if a_resp.status_code == 200 else []
-        return jsonify({
-            "student_field_keys":    list(s_records[0].keys()) if s_records else [],
-            "student_sample":        [{k: str(v)[:100] for k, v in r.items()} for r in s_records[:2]],
-            "attendance_field_keys": list(a_records[0].keys()) if a_records else [],
-            "attendance_sample":     [{k: str(v)[:100] for k, v in r.items()} for r in a_records[:2]],
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# /api/debug/students removed — was unauthenticated and exposed PII + OAuth token
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

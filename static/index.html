@@ -642,8 +642,49 @@
 // ── URL params ────────────────────────────────────────────────────────────────
 const urlParams = new URLSearchParams(window.location.search);
 
-let USER_EMAIL = (urlParams.get('user_email') || urlParams.get('email') || '').trim();
-let ZOHO_ENV   = (urlParams.get('zoho_env') || '').trim();
+let USER_EMAIL    = (urlParams.get('user_email') || urlParams.get('email') || '').trim();
+let ZOHO_ENV      = (urlParams.get('zoho_env') || '').trim();
+let _SESSION_TOKEN = null;   // set by /api/session after SDK init
+
+// Authenticated fetch — attaches Bearer token to every request.
+// Falls back gracefully if no session yet (pre-init calls like /api/config).
+async function authFetch(url, opts = {}) {
+  if (_SESSION_TOKEN) {
+    opts.headers = Object.assign({}, opts.headers, {
+      'Authorization': 'Bearer ' + _SESSION_TOKEN,
+    });
+  }
+  const resp = await fetch(url, opts);
+  if (resp.status === 401) {
+    // Session expired — try to re-issue once
+    if (_SESSION_TOKEN && USER_EMAIL) {
+      console.warn('[Auth] Session expired — re-issuing');
+      await _initSession();
+      if (_SESSION_TOKEN) {
+        opts.headers['Authorization'] = 'Bearer ' + _SESSION_TOKEN;
+        return fetch(url, opts);
+      }
+    }
+  }
+  return resp;
+}
+
+async function _initSession() {
+  try {
+    const r = await fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_email: USER_EMAIL, zoho_environment: ZOHO_ENV || '' }),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      _SESSION_TOKEN = d.session_token || null;
+      console.log('[Auth] Session issued, expires in', d.expires_in, 's');
+    }
+  } catch (e) {
+    console.warn('[Auth] Session init failed:', e);
+  }
+}
 
 // ── SDK state ─────────────────────────────────────────────────────────────────
 let APP_LINK_NAME    = '';
@@ -745,8 +786,8 @@ function tryInitZohoUser() {
           } catch (e) {
             console.warn('[FaceVerify] Feature-gate check failed (allowing through):', e);
           }
-          // Fetch context (centres + batch IDs) from 24h DB cache, then
-          // load trainees via SDK if possible (saves Zoho API quota).
+          // Issue session token then load students
+          await _initSession();
           loadStudentsHybrid(USER_EMAIL);
         })();
       }
@@ -892,7 +933,7 @@ async function loadDataViaSdk(email) {
     console.log('[SDK] Fetched', allTrainees.length, 'trainee record(s)');
     setStatus('active', 'Seeding face recognition cache…');
 
-    const loadResp = await fetch('/api/load-students', {
+    const loadResp = await authFetch('/api/load-students', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
@@ -911,7 +952,7 @@ async function loadDataViaSdk(email) {
         while (true) {
           await new Promise(r => setTimeout(r, 2500));
           try {
-            const st = await fetch('/api/cache/status').then(r => r.json());
+            const st = await authFetch('/api/cache/status').then(r => r.json());
             const enc = (st[_SCOPE_KEY] || {}).encoding || {};
             const done = enc.done || 0;
             const running = enc.running !== false;   // treat missing as "still running"
@@ -1015,7 +1056,7 @@ function fetchAndShowCenters(email) {
 function triggerPreload(email) {
   const params = new URLSearchParams({ user_email: email });
   if (ZOHO_ENV) params.set('zoho_environment', ZOHO_ENV);
-  fetch('/api/preload?' + params, { method: 'POST' }).catch(() => {});
+  authFetch('/api/preload?' + params, { method: 'POST' }).catch(() => {});
 }
 
 // ── Hybrid student loader ─────────────────────────────────────────────────────
@@ -1026,7 +1067,7 @@ function triggerPreload(email) {
 async function loadStudentsHybrid(email) {
   fetchAndShowCenters(email);  // update email-override bar in parallel
   try {
-    const ctx = await fetch(
+    const ctx = await authFetch(
       '/api/get-context?user_email=' + encodeURIComponent(email) +
       '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
     ).then(r => r.json());
@@ -1066,7 +1107,7 @@ async function loadStudentsHybrid(email) {
       return;
     }
 
-    const loadResp = await fetch('/api/load-students', {
+    const loadResp = await authFetch('/api/load-students', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
@@ -1378,7 +1419,7 @@ async function captureAndVerify(cachedImage = null) {
     else if (USER_EMAIL) body.user_email = USER_EMAIL;
     if (ZOHO_ENV) body.zoho_environment = ZOHO_ENV;
 
-    const resp = await fetch('/api/verify', {
+    const resp = await authFetch('/api/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1502,7 +1543,7 @@ async function postAttendanceHybrid(verifyData) {
 
   // Step 3: Server fallback if SDK post failed
   if (!postedViaSDK) {
-    const fallbackResp = await fetch('/api/post-attendance', {
+    const fallbackResp = await authFetch('/api/post-attendance', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1670,7 +1711,7 @@ async function showFinishModal() {
   modal.classList.add('show');
 
   try {
-    const data = await fetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID)).then(r => r.json());
+    const data = await authFetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID)).then(r => r.json());
     dateEl.textContent  = data.date;
     totalEl.textContent = data.total;
     tbody.innerHTML = '';
@@ -1710,8 +1751,8 @@ function closeFinishModal() {
 
 (async function init() {
   // Restore this device's today count so the counter survives page reloads.
-  fetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID))
-    .then(r => r.json()).then(data => {
+  authFetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID))
+    .then(r => r.ok ? r.json() : null).then(data => {
       if (data && data.total > 0) {
         successCount = data.total;
         document.getElementById('count-success').textContent = successCount;
