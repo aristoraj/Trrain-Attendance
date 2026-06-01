@@ -82,7 +82,7 @@ limiter = Limiter(
     get_remote_address,
     app=app,
     default_limits=["120 per minute"],   # global safety net
-    storage_uri="memory://",
+    storage_uri=os.environ.get("REDIS_URL", "memory://"),
 )
 
 # ─── Widget session token (authentication) ─────────────────────────────────────
@@ -744,6 +744,16 @@ def verify():
 
         # ── 3. Passive liveness check (MiniFASNet) ────────────────────────────
         is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
+        if liveness_reason == "model_unavailable" and not DEBUG:
+            # Model file missing in production — block rather than fail open
+            logger.critical(
+                "Liveness model (MiniFASNetV2.onnx) is missing in production. "
+                "Anti-spoofing is disabled. Rebuild the Docker image to re-download the model."
+            )
+            return jsonify({
+                "success": False,
+                "error":   "Anti-spoofing model unavailable. Contact your administrator.",
+            }), 503
         if not is_live:
             logger.warning(
                 f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason}"
@@ -1471,11 +1481,11 @@ def admin_clear_daily_cache():
 @limiter.limit("10 per minute")
 def admin_clear_today():
     """
-    Testing helper: delete today's local attendance records and clear the in-memory
-    dedup set so the same face can be verified again without being blocked as a duplicate.
-    Does NOT touch Zoho Creator — delete the record there separately.
-    Protected by ADMIN_SECRET. Optional ?student_id=xxx to clear one student only.
+    Testing helper (DEBUG / development only): delete today's local attendance records.
+    Disabled in production (DEBUG=false) to prevent accidental data loss.
     """
+    if not DEBUG:
+        return jsonify({"error": "This endpoint is only available in DEBUG mode."}), 403
     _auth_err = _check_admin_auth()
     if _auth_err:
         return _auth_err

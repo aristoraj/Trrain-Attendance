@@ -18,7 +18,14 @@ ZOHO_CLIENT_SECRET = os.environ.get("ZOHO_CLIENT_SECRET", "")
 ZOHO_REFRESH_TOKEN = os.environ.get("ZOHO_REFRESH_TOKEN", "")
 
 # ─── Zoho Creator App Config ──────────────────────────────────────────────────
-ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "admin_trrainfoundation")
+ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "")
+if not ZOHO_ACCOUNT_OWNER:
+    # Hardcoded fallback so existing deployments don't break, but log loudly
+    ZOHO_ACCOUNT_OWNER = "admin_trrainfoundation"
+    _cfg_logger.critical(
+        "ZOHO_ACCOUNT_OWNER env var is not set — falling back to hardcoded 'admin_trrainfoundation'. "
+        "Set ZOHO_ACCOUNT_OWNER in Render environment variables to remove this risk."
+    )
 ZOHO_APP_NAME      = os.environ.get("ZOHO_APP_NAME", "trrain")
 ZOHO_DATA_CENTER   = os.environ.get("ZOHO_DATA_CENTER", "in")
 

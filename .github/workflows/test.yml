@@ -1,0 +1,75 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-glx libglib2.0-0 libgomp1 libheif1
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          # Install test-only subset (skip insightface/onnxruntime — too heavy for CI)
+          pip install flask flask-cors flask-limiter flask-limiter[redis] \
+                      Pillow pillow-heif==0.17.0 numpy opencv-python-headless \
+                      requests python-dotenv psycopg2-binary==2.9.9 \
+                      pytest==8.2.2 pytest-mock==3.14.0
+
+      - name: Syntax check
+        run: |
+          python -m py_compile app.py config.py attendance_queue.py face_utils.py liveness_utils.py zoho_api.py
+          echo "Syntax OK"
+
+      - name: Run tests (excluding slow/integration)
+        env:
+          ZOHO_CLIENT_ID: test_id
+          ZOHO_CLIENT_SECRET: test_secret
+          ZOHO_REFRESH_TOKEN: test_token
+          ZOHO_ACCOUNT_OWNER: test_owner
+          ZOHO_APP_NAME: test_app
+          ZOHO_DATA_CENTER: in
+          SECRET_KEY: ci-test-secret-key-do-not-use-in-production
+          ADMIN_SECRET: ci-test-admin-secret-do-not-use-in-production
+          DATABASE_URL: ""
+        run: |
+          pytest -v -m "not slow and not integration" --tb=short
+
+      - name: Check .env.example is up to date
+        run: |
+          python - <<'EOF'
+          import re, sys
+          config = open("config.py").read()
+          example = open(".env.example").read()
+          # Extract all env var names from config.py
+          env_vars = set(re.findall(r'os\.environ\.get\("(\w+)"', config))
+          # Extract documented vars from .env.example
+          documented = set(re.findall(r'^(\w+)=', example, re.MULTILINE))
+          missing = env_vars - documented - {
+              # Vars that are intentionally internal or set by platform
+              "RENDER", "PORT", "DEBUG", "ATTENDANCE_DB_PATH",
+          }
+          if missing:
+              print(f"FAIL: These env vars are in config.py but missing from .env.example: {missing}")
+              sys.exit(1)
+          print("OK: All config.py env vars are documented in .env.example")
+          EOF

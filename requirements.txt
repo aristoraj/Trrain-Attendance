@@ -16,7 +16,7 @@ onnxruntime==1.16.3
 # Image processing
 opencv-python-headless==4.9.0.80
 Pillow==10.3.0
-pillow-heif>=0.17.0
+pillow-heif==0.17.0
 numpy==1.26.4
 
 # HTTP requests (Zoho API calls)
@@ -28,4 +28,11 @@ python-dotenv==1.0.1
 # WSGI server
 gunicorn==21.2.0
 
-psycopg2-binary>=2.9
+psycopg2-binary==2.9.9
+
+# Redis — for shared-state rate limiting across workers (set REDIS_URL on Render)
+redis==5.0.4
+
+# Testing
+pytest==8.2.2
+pytest-mock==3.14.0
