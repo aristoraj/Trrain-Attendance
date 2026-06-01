@@ -71,7 +71,7 @@ FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 # Report that holds one record per Zoho user with feature-flag fields.
 # Used by the Widget SDK to check if Face Recognition is enabled for the user.
 ZOHO_USER_MGMT_REPORT     = os.environ.get("ZOHO_USER_MGMT_REPORT",     "All_Users")
-FIELD_USER_MGMT_EMAIL     = os.environ.get("FIELD_USER_MGMT_EMAIL",     "Email")
+FIELD_USER_MGMT_EMAIL     = os.environ.get("FIELD_USER_MGMT_EMAIL",     "Zoho_ID")
 FIELD_USER_FACE_FEATURE   = os.environ.get("FIELD_USER_FACE_FEATURE",   "Face_Recognition_Feature")
 
 # ─── App Settings ─────────────────────────────────────────────────────────────
