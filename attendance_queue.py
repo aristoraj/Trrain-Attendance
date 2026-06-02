@@ -858,6 +858,25 @@ class AttendanceQueue:
             """), (student["id"], scope_key, student.get("name", ""), student.get("student_number", ""), now))
         logger.debug(f"Upserted student {student['id']} in scope '{scope_key}'.")
 
+    def update_student_name_everywhere(self, student_id: str, name: str, student_number: str = "") -> int:
+        """
+        Update name and student_number for a student across ALL scopes in student_cache.
+        Called by the webhook after encoding so the new name is persisted even when no
+        active in-memory cache exists (0 scope(s) patched path).
+        Returns the number of rows updated.
+        """
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            cur = conn.execute(self._q("""
+                UPDATE student_cache
+                SET name=?, student_number=?, updated_at=?
+                WHERE student_id=?
+            """), (name, student_number, now, student_id))
+            count = cur.rowcount if hasattr(cur, "rowcount") else 0
+        if count:
+            logger.info(f"Updated name to '{name}' for student {student_id} across {count} scope(s).")
+        return count
+
     def clear_student_scope(self, scope_key: str) -> int:
         """Remove all student metadata for a scope (called on manual refresh)."""
         with self._db() as conn:

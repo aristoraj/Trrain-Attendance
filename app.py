@@ -713,6 +713,16 @@ def webhook_student_update():
             return
 
         injected, updated = _inject_or_update_student_in_caches(student, centre_id=centre_id)
+
+        # Always persist the latest name to student_cache regardless of whether any
+        # in-memory cache was active. Fixes stale-name bug when webhook fires while
+        # cache is cold — DB restore after TTL expiry now picks up the updated name.
+        att_queue.update_student_name_everywhere(
+            student_id,
+            student["name"],
+            student.get("student_number", ""),
+        )
+
         logger.info(
             f"Webhook [BG]: '{student['name']}' ({student_id}) re-encoded — "
             f"{len(student['encodings'])} embedding(s), "
