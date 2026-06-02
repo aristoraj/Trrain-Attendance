@@ -1359,7 +1359,9 @@ def admin_login():
     """Admin login — POST {secret} sets a cookie, GET shows a minimal form."""
     if request.method == "POST":
         from flask import redirect
-        secret = (request.form.get("secret") or request.get_json(force=True, silent=True) or {}).get("secret", "")
+        secret = request.form.get("secret") or ""
+        if not secret:
+            secret = (request.get_json(force=True, silent=True) or {}).get("secret", "")
         if not _hmac.compare_digest(secret, ADMIN_SECRET):
             return make_response("Wrong secret.", 401)
         redirect_to = request.args.get("next", "/admin/sync-status")
