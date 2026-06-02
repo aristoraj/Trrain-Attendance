@@ -1483,7 +1483,7 @@ def admin_sync_status():
     </tr></thead>
     <tbody>{failed_rows_html}</tbody>
   </table>
-  <a class="btn" href="/admin/retry-failed?secret={secret}"
+  <a class="btn" href="/admin/retry-failed"
      onclick="return confirm('Reset all FAILED records to PENDING?')">
     ↺ Retry All Failed ({summary['failed']})
   </a>
@@ -1498,9 +1498,9 @@ def admin_sync_status():
   ''' if summary['stuck_pending'] else ''}
 
   <p style="margin-top:20px;font-size:13px;">
-    <a href="/admin/sync-status?secret={secret}" style="color:#60a5fa">↻ Refresh</a>
+    <a href="/admin/sync-status" style="color:#60a5fa">↻ Refresh</a>
     &nbsp;|&nbsp;
-    <a href="/admin/reauth?secret={secret}" style="color:#60a5fa">Re-auth Zoho →</a>
+    <a href="/admin/reauth" style="color:#60a5fa">Re-auth Zoho →</a>
     &nbsp;|&nbsp;
     <a href="/" style="color:#60a5fa">← Attendance app</a>
   </p>
@@ -2039,9 +2039,9 @@ def _reauth_result(success, message, secret, render_updated=False, token_preview
   <p style="color:#8b949e;font-size:13px;">{"New token: <code>" + token_preview + "</code>" if token_preview else message}</p>
   {render_note if success else ""}
   <p style="margin-top:20px;">
-    <a href="/admin/reauth?secret={secret}">← Try again</a>
+    <a href="/admin/reauth">← Try again</a>
     &nbsp;|&nbsp;
-    <a href="/admin/sync-status?secret={secret}">Sync status →</a>
+    <a href="/admin/sync-status">Sync status →</a>
     &nbsp;|&nbsp;
     <a href="/">Attendance app →</a>
   </p>
