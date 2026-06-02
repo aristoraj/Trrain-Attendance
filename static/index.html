@@ -923,13 +923,17 @@ async function loadStudentsHybrid(email) {
       return;
     }
 
-    // Fetch trainees via SDK (CV_Management has widget GET access; All_Trainees returns 403 for widget users)
+    // Fetch trainees via SDK filtering by ongoing batch IDs.
+    // CV_Management has widget access + Batch_ID field visible.
     if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
+    const batchField = _cfg.fields.student_batch || 'Batch_ID';
     const CHUNK = 10;
     const allTrainees = [];
+
     for (let i = 0; i < batchIds.length; i += CHUNK) {
       const chunk  = batchIds.slice(i, i + CHUNK);
-      const filter = chunk.map(id => _cfg.fields.student_batch + '.ID=="' + id + '"').join(' || ');
+      // Try both lookup syntax variants: .ID== (standard) and == (plain value)
+      const filter = chunk.map(id => batchField + '.ID=="' + id + '"').join(' || ');
       let page = 1;
       while (true) {
         const resp = await ZOHO.CREATOR.DATA.getRecords({
@@ -938,13 +942,18 @@ async function loadStudentsHybrid(email) {
         });
         const records = (resp && resp.data) || [];
         allTrainees.push(...records);
+        console.log('[Hybrid] batch chunk', i/CHUNK+1, 'page', page, '→', records.length,
+                    'records | criteria:', filter);
         if (records.length < 200) break;
         page++;
       }
     }
-    console.log('[Hybrid] SDK fetched', allTrainees.length, 'trainee(s)');
+    console.log('[Hybrid] SDK fetched', allTrainees.length, 'trainee(s) from', _cfg.reports.students,
+                '| batch_ids used:', batchIds);
 
     if (!allTrainees.length) {
+      console.warn('[Hybrid] 0 trainees returned with batch filter. Check that',
+                   batchField, 'field link name is correct in CV_Management report columns.');
       triggerPreload(email);
       return;
     }
@@ -1592,14 +1601,22 @@ function closeFinishModal() {
 // ── Auto-start ────────────────────────────────────────────────────────────────
 
 (async function init() {
-  // Restore this device's today count so the counter survives page reloads.
-  authFetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID))
-    .then(r => r.ok ? r.json() : null).then(data => {
-      if (data && data.total > 0) {
-        successCount = data.total;
-        document.getElementById('count-success').textContent = successCount;
-      }
-    }).catch(err => console.warn('[FaceVerify] Could not restore today count:', err));
+  // Restore today's count AFTER session is established (requires auth).
+  // We poll until _SESSION_TOKEN is set so this never fires a premature 401.
+  (async function restoreCount() {
+    const deadline = Date.now() + 15000;
+    while (!_SESSION_TOKEN && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 300));
+    }
+    if (!_SESSION_TOKEN) return;
+    authFetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID))
+      .then(r => r.ok ? r.json() : null).then(data => {
+        if (data && data.total > 0) {
+          successCount = data.total;
+          document.getElementById('count-success').textContent = successCount;
+        }
+      }).catch(() => {});
+  })();
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     permScreen.querySelector('p').textContent =
