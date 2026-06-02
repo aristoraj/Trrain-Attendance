@@ -211,7 +211,8 @@ class ZohoCreatorAPI:
 
     # ─── Students ──────────────────────────────────────────────────────────────
 
-    def get_students(self, centers: list = None, batch_ids: list = None, env: str = "") -> list[dict]:
+    def get_students(self, centers: list = None, batch_ids: list = None, env: str = "",
+                     no_photo_out: list = None) -> list[dict]:
         """
         Fetch student records from Zoho Creator, encode face embeddings, and
         return a list of student dicts.
@@ -282,6 +283,14 @@ class ZohoCreatorAPI:
                 student = self._process_record(record, env=env)
                 if student:
                     students.append(student)
+                elif no_photo_out is not None:
+                    # Collect metadata for students with no photo/embedding so the
+                    # caller can persist them as "known but unencoded" permanently.
+                    sid  = str(record.get(FIELD_STUDENT_ID) or record.get("ID") or "")
+                    name = str(record.get(FIELD_STUDENT_NAME) or "").strip()
+                    num  = str(record.get(FIELD_STUDENT_NUMBER) or "").strip()
+                    if sid:
+                        no_photo_out.append({"id": sid, "name": name, "student_number": num})
 
             logger.info(
                 f"Page {page_start}: {len(records)} fetched, "

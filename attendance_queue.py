@@ -228,6 +228,7 @@ class AttendanceQueue:
                 scope_key      TEXT NOT NULL,
                 name           TEXT NOT NULL DEFAULT '',
                 student_number TEXT NOT NULL DEFAULT '',
+                has_embedding  BOOLEAN NOT NULL DEFAULT FALSE,
                 updated_at     TEXT NOT NULL,
                 UNIQUE(student_id, scope_key)
             )
@@ -236,6 +237,20 @@ class AttendanceQueue:
             "CREATE INDEX IF NOT EXISTS idx_sc_scope "
             "ON student_cache(scope_key)"
         )
+        # Migrate existing rows to add has_embedding column
+        if self._is_postgres:
+            conn.execute("SAVEPOINT add_has_emb")
+            try:
+                conn.execute("ALTER TABLE student_cache ADD COLUMN has_embedding BOOLEAN NOT NULL DEFAULT FALSE")
+                conn.execute("RELEASE SAVEPOINT add_has_emb")
+            except Exception:
+                conn.execute("ROLLBACK TO SAVEPOINT add_has_emb")
+                conn.execute("RELEASE SAVEPOINT add_has_emb")
+        else:
+            try:
+                conn.execute("ALTER TABLE student_cache ADD COLUMN has_embedding BOOLEAN NOT NULL DEFAULT FALSE")
+            except Exception:
+                pass  # Already exists
 
     def _create_daily_caches_table(self, conn):
         """
@@ -253,7 +268,10 @@ class AttendanceQueue:
     _DAILY_CACHE_TTL = 86400   # 24 hours in seconds
 
     def get_daily_cache(self, key: str):
-        """Return cached value (parsed JSON) if fresh, else None."""
+        """Return cached value (parsed JSON) if fresh, else None.
+        Keys prefixed with 'catalogued:' never expire — they persist until
+        explicitly cleared (e.g. /admin/clear-daily-cache).
+        """
         with self._db() as conn:
             row = conn.execute(
                 self._q("SELECT value_json, updated_at FROM daily_cache WHERE cache_key=?"),
@@ -262,9 +280,11 @@ class AttendanceQueue:
         if not row:
             return None
         try:
-            ts = datetime.fromisoformat(row["updated_at"]).timestamp()
-            if (datetime.now().timestamp() - ts) > self._DAILY_CACHE_TTL:
-                return None
+            # 'catalogued:' keys never expire — only cleared by admin action
+            if not key.startswith("catalogued:"):
+                ts = datetime.fromisoformat(row["updated_at"]).timestamp()
+                if (datetime.now().timestamp() - ts) > self._DAILY_CACHE_TTL:
+                    return None
             import json as _json
             return _json.loads(row["value_json"])
         except Exception:
@@ -735,10 +755,57 @@ class AttendanceQueue:
             conn.execute(self._q("DELETE FROM student_cache WHERE scope_key=?"), (scope_key,))
             for s in students:
                 conn.execute(self._q("""
-                    INSERT INTO student_cache (student_id, scope_key, name, student_number, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""), now))
+                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""), True, now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
+
+    def save_no_photo_students(self, scope_key: str, students: list) -> None:
+        """
+        Persist students WITHOUT embeddings so we know they exist in the system
+        but haven't uploaded a photo yet. Stored with has_embedding=False.
+        No TTL — lives forever until a webhook encodes their photo.
+        These rows are excluded from face matching but prevent unnecessary re-fetching.
+        """
+        if not students:
+            return
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            for s in students:
+                conn.execute(self._q("""
+                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(student_id, scope_key) DO NOTHING
+                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""), False, now))
+        logger.info(f"Stored {len(students)} no-photo students for scope '{scope_key}'.")
+
+    def is_scope_fully_catalogued(self, scope_key: str) -> bool:
+        """
+        Returns True if we have ever done a full Zoho scan for this scope and saved
+        all students (with and without photos). If True, subsequent preloads can skip
+        the Zoho API call entirely — the webhook handles updates.
+        """
+        return self.get_daily_cache(f"catalogued:{scope_key}") is not None
+
+    def mark_scope_catalogued(self, scope_key: str) -> None:
+        """Mark that this scope has been fully scanned. No expiry — persists indefinitely."""
+        import json as _json
+        now = datetime.now().isoformat()
+        key = f"catalogued:{scope_key}"
+        with self._db() as conn:
+            if self._is_postgres:
+                conn.execute(self._q("""
+                    INSERT INTO daily_cache (cache_key, value_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(cache_key) DO UPDATE
+                        SET value_json=excluded.value_json,
+                            updated_at=excluded.updated_at
+                """), (key, _json.dumps(True), now))
+            else:
+                conn.execute(self._q("""
+                    INSERT OR REPLACE INTO daily_cache (cache_key, value_json, updated_at)
+                    VALUES (?, ?, ?)
+                """), (key, _json.dumps(True), now))
 
     def load_students_from_db(self, scope_key: str) -> list | None:
         """

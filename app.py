@@ -235,16 +235,39 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
                 _preloading_keys.discard(key)
             return
 
+        # Skip Zoho API fetch if we've already fully scanned this scope once.
+        # No-photo students are stored permanently in student_cache; the webhook
+        # handles updates when photos are uploaded. Only run a fresh scan if the
+        # catalogue has never been built or was explicitly cleared.
+        if att_queue.is_scope_fully_catalogued(key):
+            logger.info(f"[BG] Scope '{key}' fully catalogued — skipping Zoho fetch (use /admin/clear-daily-cache to force rescan).")
+            with _preloading_lock:
+                _preloading_keys.discard(key)
+            return
+
         batch_ids = get_batch_ids_cached(centers, env=env) if centers else None
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
-        students = zoho.get_students(centers=centers, batch_ids=batch_ids, env=env)
+
+        no_photo: list = []
+        students = zoho.get_students(centers=centers, batch_ids=batch_ids, env=env,
+                                     no_photo_out=no_photo)
         if students:
             _get_cache(centers, env).set(students)
             att_queue.save_students_to_db(key, students)
             logger.info(f"[BG] Cache warm — {len(students)} students ({scope}), saved to local DB.")
         else:
-            logger.warning(f"[BG] Zoho returned 0 students ({scope}) — not caching empty result")
+            logger.warning(f"[BG] Zoho returned 0 students with embeddings ({scope})")
+
+        # Save no-photo students permanently so future preloads skip the Zoho scan
+        if no_photo:
+            att_queue.save_no_photo_students(key, no_photo)
+            logger.info(f"[BG] Stored {len(no_photo)} no-photo students for scope '{key}'.")
+
+        # Mark scope as fully catalogued — no more Zoho fetches until explicitly cleared
+        att_queue.mark_scope_catalogued(key)
+        logger.info(f"[BG] Scope '{key}' marked as catalogued ({len(students)} with embedding, {len(no_photo)} no-photo).")
+
     except Exception as e:
         logger.error(f"[BG] Student load failed: {e}")
     finally:
