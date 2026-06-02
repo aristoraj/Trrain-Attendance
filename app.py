@@ -45,6 +45,7 @@ from config import (
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
+    FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
     FIELD_STUDENT_CENTER,
     ZOHO_USER_MGMT_REPORT, FIELD_USER_MGMT_EMAIL, FIELD_USER_FACE_FEATURE,
 )
@@ -235,17 +236,36 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
                 _preloading_keys.discard(key)
             return
 
-        # Skip Zoho API fetch if we've already fully scanned this scope once.
-        # No-photo students are stored permanently in student_cache; the webhook
-        # handles updates when photos are uploaded. Only run a fresh scan if the
-        # catalogue has never been built or was explicitly cleared.
-        if att_queue.is_scope_fully_catalogued(key):
-            logger.info(f"[BG] Scope '{key}' fully catalogued — skipping Zoho fetch (use /admin/clear-daily-cache to force rescan).")
+        # ── Detect completed batches and remove their students BEFORE loading ────
+        # Get batch IDs that were Ongoing last time we scanned
+        prev_batch_ids = set(att_queue.get_known_batch_ids(key))
+
+        # Get current Ongoing batch IDs (triggers Zoho API only on cache miss)
+        batch_ids, _batch_names = get_batch_ids_cached(centers, env=env) if centers else (None, [])
+        curr_batch_ids = set(batch_ids) if batch_ids else set()
+
+        # Batches that were Ongoing before but are no longer Ongoing = completed/changed
+        removed_batches = prev_batch_ids - curr_batch_ids
+        if removed_batches:
+            logger.warning(
+                f"[BG] {len(removed_batches)} batch(es) no longer Ongoing for scope '{key}': "
+                f"{removed_batches} — removing their students from cache."
+            )
+            for rbid in removed_batches:
+                removed = att_queue.remove_students_by_batch(rbid, key)
+                att_queue.remove_batch_status(rbid, key)
+                # Also evict from in-memory cache so it rebuilds from updated DB
+                cache = _get_cache(centers, env)
+                cache.invalidate()
+                logger.info(f"[BG] Removed {removed} student(s) from scope '{key}' for batch {rbid}.")
+
+        # ── Skip Zoho fetch if scope is catalogued AND no batches changed ────────
+        if att_queue.is_scope_fully_catalogued(key) and not removed_batches:
+            logger.info(f"[BG] Scope '{key}' catalogued, no batch changes — skipping Zoho fetch.")
             with _preloading_lock:
                 _preloading_keys.discard(key)
             return
 
-        batch_ids, _batch_names = get_batch_ids_cached(centers, env=env) if centers else (None, [])
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
 
@@ -264,7 +284,7 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
             att_queue.save_no_photo_students(key, no_photo)
             logger.info(f"[BG] Stored {len(no_photo)} no-photo students for scope '{key}'.")
 
-        # Mark scope as fully catalogued — no more Zoho fetches until explicitly cleared
+        # Mark scope as fully catalogued — no more Zoho fetches until next batch change
         att_queue.mark_scope_catalogued(key)
         logger.info(f"[BG] Scope '{key}' marked as catalogued ({len(students)} with embedding, {len(no_photo)} no-photo).")
 
@@ -441,13 +461,21 @@ def get_batch_ids_cached(centers: list, env: str = "") -> tuple[list[str], list[
         with _batch_ids_lock:
             _batch_ids_cache[key] = ([db_ids, names], time.time())
         return db_ids, names
-    # Miss: call Zoho API
+    # Miss: call Zoho API — collect full batch info (ids, names, dates) in one shot
     batch_names: list = []
-    batch_ids = zoho.get_ongoing_batch_ids(centers, env=env, batch_names_out=batch_names)
+    batch_info:  list = []
+    batch_ids = zoho.get_ongoing_batch_ids(
+        centers, env=env,
+        batch_names_out=batch_names,
+        batch_info_out=batch_info,
+    )
     with _batch_ids_lock:
         _batch_ids_cache[key] = ([batch_ids, batch_names], time.time())
     att_queue.set_daily_cache(f"batches:{key}",     batch_ids)
     att_queue.set_daily_cache(f"batch_names:{key}", batch_names)
+    # Save full batch info for completed-batch detection
+    if batch_info:
+        att_queue.save_batch_statuses(key, batch_info)
     return batch_ids, batch_names
 
 

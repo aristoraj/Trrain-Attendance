@@ -74,14 +74,15 @@ except (ValueError, TypeError):
     CACHE_TTL_SECONDS = 86400
 
 # ─── Batch filtering (ongoing batches only) ──────────────────────────────────
-ZOHO_BATCHES_REPORT  = os.environ.get("ZOHO_BATCHES_REPORT",  "All_Batches")
-FIELD_BATCH_STATUS   = os.environ.get("FIELD_BATCH_STATUS",   "Batch_Status")
-FIELD_BATCH_CENTER   = os.environ.get("FIELD_BATCH_CENTER",   "Centres")
-FIELD_STUDENT_BATCH  = os.environ.get("FIELD_STUDENT_BATCH",  "Batch_ID")
-# The field in the Batches FORM that holds the human-readable batch identifier
-# (e.g. "PKGJAHMJSS2672409"). This is the display_value shown when the Batch_ID
-# lookup field is rendered in the Trainees report.
-FIELD_BATCH_DISPLAY  = os.environ.get("FIELD_BATCH_DISPLAY",  "Batch_ID")
+ZOHO_BATCHES_REPORT   = os.environ.get("ZOHO_BATCHES_REPORT",   "All_Batches")
+FIELD_BATCH_STATUS    = os.environ.get("FIELD_BATCH_STATUS",    "Batch_Status")
+FIELD_BATCH_CENTER    = os.environ.get("FIELD_BATCH_CENTER",    "Centres")
+FIELD_STUDENT_BATCH   = os.environ.get("FIELD_STUDENT_BATCH",   "Batch_ID")
+# Human-readable batch identifier field in the Batches form (e.g. "PKGJAHMJSS2672409")
+FIELD_BATCH_DISPLAY   = os.environ.get("FIELD_BATCH_DISPLAY",   "Batch_ID")
+# Start/end date fields in the Batches form — used to detect completed batches
+FIELD_BATCH_START_DATE = os.environ.get("FIELD_BATCH_START_DATE", "Batch_Start_Date")
+FIELD_BATCH_END_DATE   = os.environ.get("FIELD_BATCH_END_DATE",   "Batch_End_Date")
 
 # ─── Centres report (for center-scoped student lookup) ───────────────────────
 # Report link name of the Centres report in Zoho Creator

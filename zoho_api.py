@@ -15,7 +15,8 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN,
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_DATA_CENTER,
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
-    ZOHO_BATCHES_REPORT, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
+    ZOHO_BATCHES_REPORT, FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
+    FIELD_BATCH_DISPLAY, FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
     ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
@@ -164,7 +165,8 @@ class ZohoCreatorAPI:
     # ─── Batches ───────────────────────────────────────────────────────────────
 
     def get_ongoing_batch_ids(self, centers: list, env: str = "",
-                              batch_names_out: list = None) -> list[str]:
+                              batch_names_out: list = None,
+                              batch_info_out: list = None) -> list[str]:
         """
         Return Zoho record IDs of all Ongoing batches that belong to the given centers.
         Fetches all Ongoing batches and filters Python-side against the centers list
@@ -206,13 +208,19 @@ class ZohoCreatorAPI:
                 if c_id in center_set or c_name in center_set:
                     bid = rec.get("ID") or rec.get("id")
                     if bid:
-                        batch_ids.append(str(bid))
+                        bid = str(bid)
+                        batch_ids.append(bid)
+                        bname = str(rec.get(FIELD_BATCH_DISPLAY) or "").strip()
                         if batch_names_out is not None:
-                            # Extract batch display identifier — the value shown when
-                            # this batch appears as a lookup in the trainees report.
-                            # Defaults to FIELD_BATCH_DISPLAY ("Batch_ID") field value.
-                            bname = str(rec.get(FIELD_BATCH_DISPLAY) or "").strip()
                             batch_names_out.append(bname)
+                        if batch_info_out is not None:
+                            batch_info_out.append({
+                                "id":         bid,
+                                "name":       bname,
+                                "status":     str(rec.get(FIELD_BATCH_STATUS) or "Ongoing"),
+                                "start_date": str(rec.get(FIELD_BATCH_START_DATE) or ""),
+                                "end_date":   str(rec.get(FIELD_BATCH_END_DATE) or ""),
+                            })
 
             if len(records) < 200:
                 break
@@ -292,17 +300,26 @@ class ZohoCreatorAPI:
                     if c_id not in center_set and c_name not in center_set:
                         continue
 
+                # Extract batch_id (record ID) for completed-batch detection
+                raw_batch = record.get(FIELD_STUDENT_BATCH)
+                if isinstance(raw_batch, dict):
+                    rec_batch_id = str(raw_batch.get("ID") or "")
+                elif isinstance(raw_batch, str):
+                    rec_batch_id = raw_batch.strip()
+                else:
+                    rec_batch_id = ""
+
                 student = self._process_record(record, env=env)
                 if student:
+                    student["batch_id"] = rec_batch_id
                     students.append(student)
                 elif no_photo_out is not None:
-                    # Collect metadata for students with no photo/embedding so the
-                    # caller can persist them as "known but unencoded" permanently.
                     sid  = str(record.get(FIELD_STUDENT_ID) or record.get("ID") or "")
                     name = str(record.get(FIELD_STUDENT_NAME) or "").strip()
                     num  = str(record.get(FIELD_STUDENT_NUMBER) or "").strip()
                     if sid:
-                        no_photo_out.append({"id": sid, "name": name, "student_number": num})
+                        no_photo_out.append({"id": sid, "name": name,
+                                             "student_number": num, "batch_id": rec_batch_id})
 
             logger.info(
                 f"Page {page_start}: {len(records)} fetched, "

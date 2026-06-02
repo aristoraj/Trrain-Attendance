@@ -237,20 +237,112 @@ class AttendanceQueue:
             "CREATE INDEX IF NOT EXISTS idx_sc_scope "
             "ON student_cache(scope_key)"
         )
-        # Migrate existing rows to add has_embedding column
-        if self._is_postgres:
-            conn.execute("SAVEPOINT add_has_emb")
-            try:
-                conn.execute("ALTER TABLE student_cache ADD COLUMN has_embedding BOOLEAN NOT NULL DEFAULT FALSE")
-                conn.execute("RELEASE SAVEPOINT add_has_emb")
-            except Exception:
-                conn.execute("ROLLBACK TO SAVEPOINT add_has_emb")
-                conn.execute("RELEASE SAVEPOINT add_has_emb")
-        else:
-            try:
-                conn.execute("ALTER TABLE student_cache ADD COLUMN has_embedding BOOLEAN NOT NULL DEFAULT FALSE")
-            except Exception:
-                pass  # Already exists
+        # Migrate existing rows to add has_embedding and batch_id columns
+        for col, definition in [
+            ("has_embedding", "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("batch_id",      "TEXT    NOT NULL DEFAULT ''"),
+        ]:
+            if self._is_postgres:
+                conn.execute(f"SAVEPOINT add_{col}")
+                try:
+                    conn.execute(f"ALTER TABLE student_cache ADD COLUMN {col} {definition}")
+                    conn.execute(f"RELEASE SAVEPOINT add_{col}")
+                except Exception:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT add_{col}")
+                    conn.execute(f"RELEASE SAVEPOINT add_{col}")
+            else:
+                try:
+                    conn.execute(f"ALTER TABLE student_cache ADD COLUMN {col} {definition}")
+                except Exception:
+                    pass  # Already exists
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sc_batch "
+            "ON student_cache(batch_id, scope_key)"
+        )
+
+    def _create_batch_status_table(self, conn):
+        """
+        Tracks the last-known status, start date, and end date of every batch
+        that has been scanned for a given scope. Used to detect when a batch
+        transitions out of Ongoing so its students can be removed automatically.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS batch_status (
+                batch_id    TEXT NOT NULL,
+                scope_key   TEXT NOT NULL,
+                batch_name  TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'Ongoing',
+                start_date  TEXT NOT NULL DEFAULT '',
+                end_date    TEXT NOT NULL DEFAULT '',
+                updated_at  TEXT NOT NULL,
+                PRIMARY KEY (batch_id, scope_key)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bs_scope "
+            "ON batch_status(scope_key)"
+        )
+
+    def save_batch_statuses(self, scope_key: str, batches: list) -> None:
+        """
+        Persist the current list of Ongoing batches for a scope.
+        Each item in `batches`: {id, name, status, start_date, end_date}
+        """
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            for b in batches:
+                if self._is_postgres:
+                    conn.execute(self._q("""
+                        INSERT INTO batch_status (batch_id, scope_key, batch_name, status, start_date, end_date, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(batch_id, scope_key) DO UPDATE
+                            SET batch_name=excluded.batch_name,
+                                status=excluded.status,
+                                start_date=excluded.start_date,
+                                end_date=excluded.end_date,
+                                updated_at=excluded.updated_at
+                    """), (b["id"], scope_key, b.get("name",""), b.get("status","Ongoing"),
+                           b.get("start_date",""), b.get("end_date",""), now))
+                else:
+                    conn.execute(self._q("""
+                        INSERT OR REPLACE INTO batch_status
+                            (batch_id, scope_key, batch_name, status, start_date, end_date, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """), (b["id"], scope_key, b.get("name",""), b.get("status","Ongoing"),
+                           b.get("start_date",""), b.get("end_date",""), now))
+
+    def get_known_batch_ids(self, scope_key: str) -> list[str]:
+        """Return batch IDs previously recorded as Ongoing for this scope."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT batch_id FROM batch_status WHERE scope_key=?"),
+                (scope_key,)
+            ).fetchall()
+        return [r["batch_id"] for r in rows]
+
+    def remove_students_by_batch(self, batch_id: str, scope_key: str) -> int:
+        """
+        Remove all student_cache rows for a batch that is no longer Ongoing.
+        The face_embeddings rows are retained (in case the student re-enrols)
+        but they become unreachable for attendance matching without a student_cache row.
+        """
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q("DELETE FROM student_cache WHERE batch_id=? AND scope_key=?"),
+                (batch_id, scope_key)
+            )
+            count = cur.rowcount if hasattr(cur, "rowcount") else 0
+        if count:
+            logger.info(f"Removed {count} student(s) for completed batch {batch_id} in scope '{scope_key}'.")
+        return count
+
+    def remove_batch_status(self, batch_id: str, scope_key: str) -> None:
+        """Remove the batch_status row once students have been cleaned up."""
+        with self._db() as conn:
+            conn.execute(
+                self._q("DELETE FROM batch_status WHERE batch_id=? AND scope_key=?"),
+                (batch_id, scope_key)
+            )
 
     def _create_daily_caches_table(self, conn):
         """
@@ -420,6 +512,7 @@ class AttendanceQueue:
             self._migrate_photo_url_column(conn)
             self._create_student_cache_table(conn)
             self._create_daily_caches_table(conn)
+            self._create_batch_status_table(conn)
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now().strftime("%d-%b-%Y")
@@ -755,9 +848,10 @@ class AttendanceQueue:
             conn.execute(self._q("DELETE FROM student_cache WHERE scope_key=?"), (scope_key,))
             for s in students:
                 conn.execute(self._q("""
-                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""), True, now))
+                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
+                       True, s.get("batch_id", ""), now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
 
     def save_no_photo_students(self, scope_key: str, students: list) -> None:
@@ -773,10 +867,11 @@ class AttendanceQueue:
         with self._db() as conn:
             for s in students:
                 conn.execute(self._q("""
-                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(student_id, scope_key) DO NOTHING
-                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""), False, now))
+                """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
+                       False, s.get("batch_id", ""), now))
         logger.info(f"Stored {len(students)} no-photo students for scope '{scope_key}'.")
 
     def is_scope_fully_catalogued(self, scope_key: str) -> bool:
