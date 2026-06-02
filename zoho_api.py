@@ -15,7 +15,7 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN,
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_DATA_CENTER,
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
-    ZOHO_BATCHES_REPORT, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
+    ZOHO_BATCHES_REPORT, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
     ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
@@ -163,11 +163,17 @@ class ZohoCreatorAPI:
 
     # ─── Batches ───────────────────────────────────────────────────────────────
 
-    def get_ongoing_batch_ids(self, centers: list, env: str = "") -> list[str]:
+    def get_ongoing_batch_ids(self, centers: list, env: str = "",
+                              batch_names_out: list = None) -> list[str]:
         """
         Return Zoho record IDs of all Ongoing batches that belong to the given centers.
         Fetches all Ongoing batches and filters Python-side against the centers list
         (by record ID or display name).
+
+        batch_names_out: optional list — when provided, the batch's human-readable
+        display identifier (e.g. "PKGJAHMJSS2672409") is appended in parallel with
+        the returned record IDs. These display values are used by the Widget SDK
+        criteria: Batch_ID=="PKGJAHMJSS2672409" (SDK compares display_value, not ID).
         """
         url = f"{self._base_url}/report/{ZOHO_BATCHES_REPORT}"
         criteria = '(Batch_Status=="Ongoing")'
@@ -201,6 +207,12 @@ class ZohoCreatorAPI:
                     bid = rec.get("ID") or rec.get("id")
                     if bid:
                         batch_ids.append(str(bid))
+                        if batch_names_out is not None:
+                            # Extract batch display identifier — the value shown when
+                            # this batch appears as a lookup in the trainees report.
+                            # Defaults to FIELD_BATCH_DISPLAY ("Batch_ID") field value.
+                            bname = str(rec.get(FIELD_BATCH_DISPLAY) or "").strip()
+                            batch_names_out.append(bname)
 
             if len(records) < 200:
                 break

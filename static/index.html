@@ -902,12 +902,13 @@ function triggerPreload(email) {
 }
 
 // ── Student loader ────────────────────────────────────────────────────────────
-// Gets scope context (centres + batch IDs from 24h DB cache) then triggers the
-// server-side preload. The server's scope-catalogue feature means after the
-// first successful scan, subsequent opens use 0 Zoho API calls (served from
-// local DB). SDK-based trainee loading was attempted but Zoho Widget SDK
-// criteria for lookup fields (Batch_ID) returns 0 regardless of syntax —
-// the server preload is the reliable path and already API-efficient.
+// 1. GET /api/get-context → centres + batch_ids (record IDs) + batch_names
+//    (display values like "PKGJAHMJSS2672409") — all from 24h DB cache
+// 2. If batch_names available: fetch trainees from CV_Management via SDK
+//    using display value criteria: Batch_ID=="PKGJAHMJSS2672409"
+//    (Widget SDK compares lookup field against display_value, not record ID)
+// 3. Send to /api/load-students to seed the server cache
+// 4. Fallback: server-side preload if SDK returns 0 or throws
 async function loadStudentsHybrid(email) {
   fetchAndShowCenters(email);  // update email-override bar in parallel
   try {
@@ -917,9 +918,54 @@ async function loadStudentsHybrid(email) {
     ).then(r => r.json());
     console.log('[Loader] context:', ctx);
     _SCOPE_KEY = ctx.scope_key || 'ALL';
+
+    const batchNames = ctx.batch_names || [];
+    if (!batchNames.length) {
+      console.log('[Loader] No batch names available — using server preload');
+      triggerPreload(email);
+      return;
+    }
+
+    // Fetch trainees via SDK using display value criteria
+    if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
+    const batchField = _cfg.fields.student_batch || 'Batch_ID';
+    const CHUNK = 10;
+    const allTrainees = [];
+
+    for (let i = 0; i < batchNames.length; i += CHUNK) {
+      const chunk  = batchNames.slice(i, i + CHUNK);
+      // Use display value equality — SDK compares Batch_ID against display_value
+      const filter = chunk.map(name => batchField + '=="' + name + '"').join(' || ');
+      let page = 1;
+      while (true) {
+        const resp = await ZOHO.CREATOR.DATA.getRecords({
+          app_name: APP_LINK_NAME, report_name: _cfg.reports.students,
+          criteria: '(' + filter + ')', page, page_size: 200,
+        });
+        const records = (resp && resp.data) || [];
+        allTrainees.push(...records);
+        console.log('[Loader] SDK chunk', i/CHUNK+1, 'page', page,
+                    '→', records.length, 'records | criteria:', filter);
+        if (records.length < 200) break;
+        page++;
+      }
+    }
+    console.log('[Loader] SDK fetched', allTrainees.length, 'trainee(s)');
+
+    if (allTrainees.length) {
+      const loadResp = await authFetch('/api/load-students', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
+      }).then(r => r.json());
+      console.log('[Loader] load-students:', loadResp);
+      return;
+    }
+
+    console.warn('[Loader] SDK returned 0 — falling back to server preload');
     triggerPreload(email);
   } catch (e) {
-    console.warn('[Loader] get-context failed — falling back to server preload:', e);
+    console.warn('[Loader] get-context/SDK failed — falling back to server preload:', e);
     triggerPreload(email);
   }
 }

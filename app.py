@@ -44,7 +44,7 @@ from config import (
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
-    FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
+    FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
     FIELD_STUDENT_CENTER,
     ZOHO_USER_MGMT_REPORT, FIELD_USER_MGMT_EMAIL, FIELD_USER_FACE_FEATURE,
 )
@@ -245,7 +245,7 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
                 _preloading_keys.discard(key)
             return
 
-        batch_ids = get_batch_ids_cached(centers, env=env) if centers else None
+        batch_ids, _batch_names = get_batch_ids_cached(centers, env=env) if centers else (None, [])
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
 
@@ -412,35 +412,43 @@ def get_user_centers_cached(email: str, env: str = "") -> list[str]:
     return centers
 
 
-# ─── Ongoing-batch IDs cache — L1: in-memory, L2: PostgreSQL 24h TTL ────────────
+# ─── Ongoing-batch cache — L1: in-memory, L2: PostgreSQL 24h TTL ─────────────────
+# Stores BOTH record IDs (for server-side filtering) and display names
+# (for Widget SDK criteria: Batch_ID=="PKGJAHMJSS2672409").
 _batch_ids_cache: dict[str, tuple[list, float]] = {}
 _batch_ids_lock  = threading.Lock()
 _BATCH_IDS_TTL   = 86400   # 24 hours
 
 
-def get_batch_ids_cached(centers: list, env: str = "") -> list[str]:
+def get_batch_ids_cached(centers: list, env: str = "") -> tuple[list[str], list[str]]:
+    """Returns (batch_ids, batch_names) both cached for 24h."""
     key = _build_scope_key(centers, env)
-    # L1: in-memory
+    # L1: in-memory (stores tuple of [ids, names])
     with _batch_ids_lock:
         if key in _batch_ids_cache:
-            batch_ids, ts = _batch_ids_cache[key]
+            cached_val, ts = _batch_ids_cache[key]
             if time.time() - ts < _BATCH_IDS_TTL:
-                logger.info(f"Batch IDs cache hit for {key}: {len(batch_ids)} batch(es)")
-                return batch_ids
+                ids   = cached_val[0] if isinstance(cached_val[0], list) else cached_val
+                names = cached_val[1] if isinstance(cached_val, tuple) and len(cached_val) > 1 and isinstance(cached_val[1], list) else []
+                logger.info(f"Batch IDs cache hit for {key}: {len(ids)} batch(es)")
+                return ids, names
     # L2: PostgreSQL daily cache
-    db_key = f"batches:{key}"
-    cached = att_queue.get_daily_cache(db_key)
-    if cached is not None:
-        logger.info(f"Batch IDs DB cache hit for {key}: {len(cached)} batch(es)")
+    db_ids   = att_queue.get_daily_cache(f"batches:{key}")
+    db_names = att_queue.get_daily_cache(f"batch_names:{key}")
+    if db_ids is not None:
+        logger.info(f"Batch IDs DB cache hit for {key}: {len(db_ids)} batch(es)")
+        names = db_names or []
         with _batch_ids_lock:
-            _batch_ids_cache[key] = (cached, time.time())
-        return cached
+            _batch_ids_cache[key] = ([db_ids, names], time.time())
+        return db_ids, names
     # Miss: call Zoho API
-    batch_ids = zoho.get_ongoing_batch_ids(centers, env=env)
+    batch_names: list = []
+    batch_ids = zoho.get_ongoing_batch_ids(centers, env=env, batch_names_out=batch_names)
     with _batch_ids_lock:
-        _batch_ids_cache[key] = (batch_ids, time.time())
-    att_queue.set_daily_cache(db_key, batch_ids)
-    return batch_ids
+        _batch_ids_cache[key] = ([batch_ids, batch_names], time.time())
+    att_queue.set_daily_cache(f"batches:{key}",     batch_ids)
+    att_queue.set_daily_cache(f"batch_names:{key}", batch_names)
+    return batch_ids, batch_names
 
 
 # ─── Always-on keepalive (Render free tier) ───────────────────────────────────
@@ -949,18 +957,18 @@ def get_context():
         return jsonify({"centres": [], "batch_ids": [], "scope_key": "ALL"})
 
     try:
-        centres   = get_user_centers_cached(email, env=env)
-        centre_ids = [c for c in centres if c and c.isdigit() or (c and len(c) > 10)]
-        batch_ids  = get_batch_ids_cached(centres, env=env) if centres else []
-        scope_key  = _build_scope_key(centres, env)
+        centres              = get_user_centers_cached(email, env=env)
+        batch_ids, batch_names = get_batch_ids_cached(centres, env=env) if centres else ([], [])
+        scope_key            = _build_scope_key(centres, env)
         return jsonify({
-            "centres":   centres,
-            "batch_ids": batch_ids,
-            "scope_key": scope_key,
+            "centres":     centres,
+            "batch_ids":   batch_ids,
+            "batch_names": batch_names,   # display values e.g. "PKGJAHMJSS2672409" for SDK criteria
+            "scope_key":   scope_key,
         })
     except Exception as e:
         logger.warning(f"get-context failed for {email}: {e}")
-        return jsonify({"centres": [], "batch_ids": [], "scope_key": "ALL", "error": str(e)})
+        return jsonify({"centres": [], "batch_ids": [], "batch_names": [], "scope_key": "ALL", "error": str(e)})
 
 
 # ─── Widget session endpoint ──────────────────────────────────────────────────
