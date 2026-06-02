@@ -30,7 +30,7 @@ ZOHO_APP_NAME      = os.environ.get("ZOHO_APP_NAME", "trrain")
 ZOHO_DATA_CENTER   = os.environ.get("ZOHO_DATA_CENTER", "in")
 
 # Report / form link names
-ZOHO_STUDENT_REPORT   = os.environ.get("ZOHO_STUDENT_REPORT",   "All_Trainees")
+ZOHO_STUDENT_REPORT   = os.environ.get("ZOHO_STUDENT_REPORT",   "CV_Management")
 ZOHO_ATTENDANCE_FORM  = os.environ.get("ZOHO_ATTENDANCE_FORM",  "Face_Attendance")
 ZOHO_ATTENDANCE_REPORT = os.environ.get("ZOHO_ATTENDANCE_REPORT", "All_Face_Attendances")
 

@@ -923,7 +923,7 @@ async function loadStudentsHybrid(email) {
       return;
     }
 
-    // Fetch trainees via SDK (All_Trainees has widget GET access)
+    // Fetch trainees via SDK (CV_Management has widget GET access; All_Trainees returns 403 for widget users)
     if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
     const CHUNK = 10;
     const allTrainees = [];
