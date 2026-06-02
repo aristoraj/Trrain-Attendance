@@ -41,9 +41,10 @@ MODEL_PATH = os.environ.get(
 # Probability that the face is real must meet this threshold to be accepted.
 # Lower = more permissive (fewer false rejects of real users).
 # Higher = stricter (fewer spoofs accepted, but may reject legitimate attempts).
-# Raised from 0.65 to 0.75 — real faces in production score 0.814+, giving
-# a safe 0.064 margin. Stricter threshold catches more printed-photo / screen-replay spoofs.
-LIVENESS_THRESHOLD = float(os.environ.get("LIVENESS_THRESHOLD", "0.75"))
+# 0.65 is the production-validated threshold based on observed real-face scores.
+# Attempted 0.75 caused false rejects (real face scored 0.687 in testing).
+# Override via LIVENESS_THRESHOLD env var if needed for your specific hardware/lighting.
+LIVENESS_THRESHOLD = float(os.environ.get("LIVENESS_THRESHOLD", "0.65"))
 
 # Scale factor: how much to expand the face bbox for context (matches model training).
 _SCALE = 2.7

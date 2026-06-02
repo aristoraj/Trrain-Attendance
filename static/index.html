@@ -883,15 +883,15 @@ async function submitEmailOverride() {
 function fetchAndShowCenters(email) {
   let url = '/api/user/centers?user_email=' + encodeURIComponent(email);
   if (ZOHO_ENV) url += '&zoho_environment=' + encodeURIComponent(ZOHO_ENV);
-  fetch(url)
-    .then(r => r.json())
+  authFetch(url)   // requires session token — /api/user/centers is protected
+    .then(r => r.ok ? r.json() : null)
     .then(data => {
+      if (!data) return;   // 401/error — token not ready yet, skip banner update
       const centers = (data.centers || []).filter(Boolean);
       if (centers.length) hideEmailOverride(); else showEmailOverride(email);
     })
     .catch(err => {
       console.warn('[FaceVerify] Centre lookup failed:', err);
-      showBanner('Could not verify your centre. Check network and try again.', 'warning');
     });
 }
 
