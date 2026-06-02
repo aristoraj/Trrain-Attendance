@@ -925,15 +925,19 @@ async function loadStudentsHybrid(email) {
 
     // Fetch trainees via SDK filtering by ongoing batch IDs.
     // CV_Management has widget access + Batch_ID field visible.
+    // Widget SDK criteria for lookup fields: try field== (direct ID match) first,
+    // then field.ID== as fallback — SDK handles lookup comparison differently from REST API.
     if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
     const batchField = _cfg.fields.student_batch || 'Batch_ID';
     const CHUNK = 10;
     const allTrainees = [];
 
+    // Build filter using direct equality (no .ID suffix) — SDK lookup comparison
+    const buildFilter = (ids) => ids.map(id => batchField + '=="' + id + '"').join(' || ');
+
     for (let i = 0; i < batchIds.length; i += CHUNK) {
       const chunk  = batchIds.slice(i, i + CHUNK);
-      // Try both lookup syntax variants: .ID== (standard) and == (plain value)
-      const filter = chunk.map(id => batchField + '.ID=="' + id + '"').join(' || ');
+      const filter = buildFilter(chunk);
       let page = 1;
       while (true) {
         const resp = await ZOHO.CREATOR.DATA.getRecords({
@@ -942,18 +946,38 @@ async function loadStudentsHybrid(email) {
         });
         const records = (resp && resp.data) || [];
         allTrainees.push(...records);
-        console.log('[Hybrid] batch chunk', i/CHUNK+1, 'page', page, '→', records.length,
+        console.log('[Hybrid] chunk', i/CHUNK+1, 'page', page, '→', records.length,
                     'records | criteria:', filter);
         if (records.length < 200) break;
         page++;
       }
     }
-    console.log('[Hybrid] SDK fetched', allTrainees.length, 'trainee(s) from', _cfg.reports.students,
-                '| batch_ids used:', batchIds);
+
+    // If still 0, try with .ID suffix (REST API style) as second attempt
+    if (!allTrainees.length) {
+      console.warn('[Hybrid] Direct criteria returned 0 — trying .ID== suffix');
+      for (let i = 0; i < batchIds.length; i += CHUNK) {
+        const chunk   = batchIds.slice(i, i + CHUNK);
+        const filter2 = chunk.map(id => batchField + '.ID=="' + id + '"').join(' || ');
+        let page = 1;
+        while (true) {
+          const resp = await ZOHO.CREATOR.DATA.getRecords({
+            app_name: APP_LINK_NAME, report_name: _cfg.reports.students,
+            criteria: '(' + filter2 + ')', page, page_size: 200,
+          });
+          const records = (resp && resp.data) || [];
+          allTrainees.push(...records);
+          console.log('[Hybrid .ID] chunk', i/CHUNK+1, 'page', page, '→', records.length);
+          if (records.length < 200) break;
+          page++;
+        }
+      }
+    }
+
+    console.log('[Hybrid] SDK fetched', allTrainees.length, 'trainee(s) from', _cfg.reports.students);
 
     if (!allTrainees.length) {
-      console.warn('[Hybrid] 0 trainees returned with batch filter. Check that',
-                   batchField, 'field link name is correct in CV_Management report columns.');
+      console.warn('[Hybrid] Both criteria syntaxes returned 0 from CV_Management — falling back to server preload');
       triggerPreload(email);
       return;
     }
