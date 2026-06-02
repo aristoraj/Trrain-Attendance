@@ -226,6 +226,15 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
     """Background worker: load + cache students without blocking an HTTP request."""
     key = _build_scope_key(centers, env)
     try:
+        # Skip Zoho API fetch if in-memory cache is already warm — prevents
+        # wasting 5+ API calls on every widget open when students are loaded from DB.
+        existing = _get_cache(centers, env).get()
+        if existing:
+            logger.info(f"[BG] Cache already warm ({len(existing)} students) — skipping Zoho fetch.")
+            with _preloading_lock:
+                _preloading_keys.discard(key)
+            return
+
         batch_ids = get_batch_ids_cached(centers, env=env) if centers else None
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
