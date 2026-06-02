@@ -826,10 +826,6 @@ function waitForZohoInit(maxMs) {
 
 // ── (loadDataViaSdk removed — replaced by loadStudentsHybrid) ────────────────
 
-// DEAD FUNCTION — kept as a stub so git blame shows the removal history
-function _loadDataViaSdk_deleted() { /* removed */ }
-}
-
 function waitForDataLoaded(maxMs) {
   return new Promise(resolve => {
     if (_dataLoaded) { resolve(); return; }
