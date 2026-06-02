@@ -901,11 +901,13 @@ function triggerPreload(email) {
   authFetch('/api/preload?' + params, { method: 'POST' }).catch(() => {});
 }
 
-// ── Hybrid student loader ─────────────────────────────────────────────────────
-// 1. GET /api/get-context → centres + batch IDs (served from 24h DB cache)
-// 2. If batch IDs available and SDK works: fetch trainees via SDK (0 API calls)
-// 3. Send to /api/load-students to seed the server cache
-// 4. Fallback: trigger server-side preload (existing path)
+// ── Student loader ────────────────────────────────────────────────────────────
+// Gets scope context (centres + batch IDs from 24h DB cache) then triggers the
+// server-side preload. The server's scope-catalogue feature means after the
+// first successful scan, subsequent opens use 0 Zoho API calls (served from
+// local DB). SDK-based trainee loading was attempted but Zoho Widget SDK
+// criteria for lookup fields (Batch_ID) returns 0 regardless of syntax —
+// the server preload is the reliable path and already API-efficient.
 async function loadStudentsHybrid(email) {
   fetchAndShowCenters(email);  // update email-override bar in parallel
   try {
@@ -913,84 +915,11 @@ async function loadStudentsHybrid(email) {
       '/api/get-context?user_email=' + encodeURIComponent(email) +
       '&zoho_environment=' + encodeURIComponent(ZOHO_ENV || '')
     ).then(r => r.json());
-    console.log('[Hybrid] context:', ctx);
+    console.log('[Loader] context:', ctx);
     _SCOPE_KEY = ctx.scope_key || 'ALL';
-
-    const batchIds = ctx.batch_ids || [];
-    if (!batchIds.length) {
-      console.log('[Hybrid] No ongoing batches — using server preload');
-      triggerPreload(email);
-      return;
-    }
-
-    // Fetch trainees via SDK filtering by ongoing batch IDs.
-    // CV_Management has widget access + Batch_ID field visible.
-    // Widget SDK criteria for lookup fields: try field== (direct ID match) first,
-    // then field.ID== as fallback — SDK handles lookup comparison differently from REST API.
-    if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
-    const batchField = _cfg.fields.student_batch || 'Batch_ID';
-    const CHUNK = 10;
-    const allTrainees = [];
-
-    // Build filter using direct equality (no .ID suffix) — SDK lookup comparison
-    const buildFilter = (ids) => ids.map(id => batchField + '=="' + id + '"').join(' || ');
-
-    for (let i = 0; i < batchIds.length; i += CHUNK) {
-      const chunk  = batchIds.slice(i, i + CHUNK);
-      const filter = buildFilter(chunk);
-      let page = 1;
-      while (true) {
-        const resp = await ZOHO.CREATOR.DATA.getRecords({
-          app_name: APP_LINK_NAME, report_name: _cfg.reports.students,
-          criteria: '(' + filter + ')', page, page_size: 200,
-        });
-        const records = (resp && resp.data) || [];
-        allTrainees.push(...records);
-        console.log('[Hybrid] chunk', i/CHUNK+1, 'page', page, '→', records.length,
-                    'records | criteria:', filter);
-        if (records.length < 200) break;
-        page++;
-      }
-    }
-
-    // If still 0, try with .ID suffix (REST API style) as second attempt
-    if (!allTrainees.length) {
-      console.warn('[Hybrid] Direct criteria returned 0 — trying .ID== suffix');
-      for (let i = 0; i < batchIds.length; i += CHUNK) {
-        const chunk   = batchIds.slice(i, i + CHUNK);
-        const filter2 = chunk.map(id => batchField + '.ID=="' + id + '"').join(' || ');
-        let page = 1;
-        while (true) {
-          const resp = await ZOHO.CREATOR.DATA.getRecords({
-            app_name: APP_LINK_NAME, report_name: _cfg.reports.students,
-            criteria: '(' + filter2 + ')', page, page_size: 200,
-          });
-          const records = (resp && resp.data) || [];
-          allTrainees.push(...records);
-          console.log('[Hybrid .ID] chunk', i/CHUNK+1, 'page', page, '→', records.length);
-          if (records.length < 200) break;
-          page++;
-        }
-      }
-    }
-
-    console.log('[Hybrid] SDK fetched', allTrainees.length, 'trainee(s) from', _cfg.reports.students);
-
-    if (!allTrainees.length) {
-      console.warn('[Hybrid] Both criteria syntaxes returned 0 from CV_Management — falling back to server preload');
-      triggerPreload(email);
-      return;
-    }
-
-    const loadResp = await authFetch('/api/load-students', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ records: allTrainees, scope_key: _SCOPE_KEY, zoho_environment: ZOHO_ENV || '' }),
-    }).then(r => r.json());
-    console.log('[Hybrid] load-students:', loadResp);
-    setStatus('active', 'Position your face in the oval');
+    triggerPreload(email);
   } catch (e) {
-    console.warn('[Hybrid] SDK load failed — falling back to server preload:', e);
+    console.warn('[Loader] get-context failed — falling back to server preload:', e);
     triggerPreload(email);
   }
 }
