@@ -95,25 +95,28 @@ class ZohoCreatorAPI:
                 return self._access_token
             return self._refresh_token()
 
-    def _headers(self, env: str = "") -> dict:
+    def _headers(self, env: str = "", include_content_type: bool = True) -> dict:
         token = self._get_token()   # cached — only calls Zoho when token expires
-        headers = {
-            "Authorization": f"Zoho-oauthtoken {token}",
-            "Content-Type":  "application/json",
-        }
+        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+        # Content-Type: application/json is only valid on requests that have a body
+        # (POST, PATCH, PUT). Sending it on GET requests causes Zoho's file-download
+        # endpoints to return JSON metadata instead of raw image bytes.
+        if include_content_type:
+            headers["Content-Type"] = "application/json"
         if env:
             headers["environment"] = env
         return headers
 
     def _request(self, method: str, url: str, env: str = "", **kwargs) -> requests.Response:
         """Authenticated HTTP request with one automatic retry on 401 (token refresh)."""
-        kwargs["headers"] = self._headers(env=env)
+        has_body = method.lower() in ("post", "patch", "put")
+        kwargs["headers"] = self._headers(env=env, include_content_type=has_body)
         resp = getattr(requests, method)(url, **kwargs)
         if resp.status_code == 401:
             logger.warning("401 from Zoho — forcing token refresh and retrying once.")
             self._access_token = None
             self._token_expiry = 0.0
-            kwargs["headers"] = self._headers(env=env)
+            kwargs["headers"] = self._headers(env=env, include_content_type=has_body)
             resp = getattr(requests, method)(url, **kwargs)
         return resp
 
@@ -606,11 +609,50 @@ class ZohoCreatorAPI:
             f"{len(resp.content)} bytes, content-type={content_type}"
         )
         resp.raise_for_status()
-        if len(resp.content) < 1000:
-            logger.warning(f"Suspiciously small photo ({len(resp.content)} bytes) — may be an error page, not an image")
-        encoding, det_score, err = encode_face_from_bytes(resp.content)
+
+        image_bytes = resp.content
+
+        # Zoho Creator file-download endpoints occasionally return JSON metadata
+        # (e.g. {"code":3000,"data":{"url":"..."}}) instead of raw image bytes.
+        # This happens even with correct auth — the caller must follow the inner URL.
+        if "application/json" in content_type or (image_bytes and image_bytes[:1] == b"{"):
+            try:
+                meta = resp.json()
+                data = meta.get("data") or {}
+                # Handle both dict and list shapes Zoho uses for file responses
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+                result = meta.get("result") or {}
+                if isinstance(result, list):
+                    result = result[0] if result else {}
+                file_url = (
+                    data.get("url") or data.get("download_url") or
+                    data.get("file_url") or data.get("link") or
+                    result.get("url") or result.get("download_url") or
+                    meta.get("url") or ""
+                )
+                if file_url:
+                    logger.info(f"Zoho returned JSON download wrapper — following inner URL")
+                    dl = requests.get(file_url, timeout=20)
+                    dl.raise_for_status()
+                    image_bytes = dl.content
+                    logger.info(f"Indirect download: {len(image_bytes)} bytes, content-type={dl.headers.get('Content-Type','unknown')}")
+                else:
+                    logger.warning(f"JSON download response has no recognisable file URL — body: {str(meta)[:300]}")
+            except Exception as json_err:
+                logger.warning(f"Could not parse JSON download response: {json_err} — first 200 bytes: {image_bytes[:200]}")
+
+        if len(image_bytes) < 1000:
+            logger.warning(
+                f"Suspiciously small response ({len(image_bytes)} bytes) — "
+                f"first 200 bytes: {image_bytes[:200]}"
+            )
+
+        encoding, det_score, err = encode_face_from_bytes(image_bytes)
         if err:
             logger.warning(f"encode_face_from_bytes error: {err}")
+            if len(image_bytes) < 4000:
+                logger.warning(f"Raw response body: {image_bytes[:500]}")
         elif encoding is not None:
             logger.info(f"Face encoded successfully (det_score={det_score:.3f})")
         return encoding, det_score, err
