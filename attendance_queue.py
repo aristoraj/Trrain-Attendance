@@ -260,6 +260,36 @@ class AttendanceQueue:
             "ON student_cache(batch_id, scope_key)"
         )
 
+    def _create_webhook_sync_log_table(self, conn):
+        """
+        Tracks every feature-enable / feature-disable webhook call.
+        Used for admin visibility and startup recovery of interrupted syncs.
+        """
+        serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
+        autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS webhook_sync_log (
+                id          {serial} PRIMARY KEY {autoincrement},
+                event       TEXT NOT NULL,
+                email       TEXT NOT NULL,
+                centre_id   TEXT NOT NULL,
+                scope_key   TEXT NOT NULL,
+                env         TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'pending',
+                error_msg   TEXT,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wsl_centre "
+            "ON webhook_sync_log(centre_id, env)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wsl_status "
+            "ON webhook_sync_log(status)"
+        )
+
     def _create_batch_status_table(self, conn):
         """
         Tracks the last-known status, start date, and end date of every batch
@@ -343,6 +373,110 @@ class AttendanceQueue:
                 self._q("DELETE FROM batch_status WHERE batch_id=? AND scope_key=?"),
                 (batch_id, scope_key)
             )
+
+    # ── Webhook sync log ──────────────────────────────────────────────────────
+
+    def log_webhook_sync(self, event: str, email: str, centre_id: str,
+                         scope_key: str, env: str = "") -> int:
+        """Insert a new webhook_sync_log row with status='running'. Returns the row id."""
+        now = datetime.now().isoformat()
+        sql = self._q("""
+            INSERT INTO webhook_sync_log
+                (event, email, centre_id, scope_key, env, status, started_at)
+            VALUES (?, ?, ?, ?, ?, 'running', ?)
+        """)
+        if self._is_postgres:
+            sql += " RETURNING id"
+        with self._db() as conn:
+            cur = conn.execute(sql, (event, email, centre_id, scope_key, env, now))
+            return cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
+
+    def update_webhook_sync_status(self, log_id: int, status: str,
+                                   error_msg: str = None) -> None:
+        """Update status and finished_at on an existing webhook_sync_log row."""
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            conn.execute(
+                self._q(
+                    "UPDATE webhook_sync_log "
+                    "SET status=?, finished_at=?, error_msg=? WHERE id=?"
+                ),
+                (status, now, error_msg, log_id),
+            )
+
+    def get_incomplete_syncs(self) -> list:
+        """
+        Return webhook_sync_log rows still in 'running' or 'deleting' state.
+        Called at startup to re-trigger any sync that was interrupted by a restart.
+        """
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT id, event, email, centre_id, scope_key, env "
+                "FROM webhook_sync_log WHERE status IN ('running', 'deleting') "
+                "ORDER BY started_at ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_webhook_sync_log(self, limit: int = 20) -> list:
+        """Return recent webhook_sync_log entries for the admin panel."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q(
+                    "SELECT id, event, email, centre_id, env, status, "
+                    "error_msg, started_at, finished_at "
+                    "FROM webhook_sync_log ORDER BY id DESC LIMIT ?"
+                ),
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_center_data(self, scope_key: str) -> dict:
+        """
+        Hard-delete all student_cache and batch_status rows for a scope_key.
+        Also removes orphaned face_embeddings (students not present in any
+        other scope's student_cache after this deletion).
+        Returns counts for logging.
+        """
+        with self._db() as conn:
+            # Collect student IDs in this scope before deleting
+            affected_ids = [
+                r["student_id"] for r in conn.execute(
+                    self._q("SELECT DISTINCT student_id FROM student_cache WHERE scope_key=?"),
+                    (scope_key,),
+                ).fetchall()
+            ]
+
+            cur = conn.execute(
+                self._q("DELETE FROM student_cache WHERE scope_key=?"),
+                (scope_key,),
+            )
+            deleted_students = cur.rowcount if hasattr(cur, "rowcount") else len(affected_ids)
+
+            cur = conn.execute(
+                self._q("DELETE FROM batch_status WHERE scope_key=?"),
+                (scope_key,),
+            )
+            deleted_batches = cur.rowcount if hasattr(cur, "rowcount") else 0
+
+            # Remove embeddings for students that no longer appear in ANY scope
+            deleted_embeddings = 0
+            for sid in affected_ids:
+                still_exists = conn.execute(
+                    self._q("SELECT 1 FROM student_cache WHERE student_id=? LIMIT 1"),
+                    (sid,),
+                ).fetchone()
+                if not still_exists:
+                    cur = conn.execute(
+                        self._q("DELETE FROM face_embeddings WHERE student_id=?"),
+                        (sid,),
+                    )
+                    deleted_embeddings += cur.rowcount if hasattr(cur, "rowcount") else 0
+
+        return {
+            "deleted_students":   deleted_students,
+            "deleted_batches":    deleted_batches,
+            "deleted_embeddings": deleted_embeddings,
+        }
 
     def _create_daily_caches_table(self, conn):
         """
@@ -513,6 +647,7 @@ class AttendanceQueue:
             self._create_student_cache_table(conn)
             self._create_daily_caches_table(conn)
             self._create_batch_status_table(conn)
+            self._create_webhook_sync_log_table(conn)
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now().strftime("%d-%b-%Y")

@@ -392,10 +392,103 @@ def get_students_cached(centers: list = None, env: str = "") -> list:
     return None  # truly cold — caller triggers background load from Zoho API
 
 
+# ─── Feature-access webhook background workers ───────────────────────────────
+
+def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str) -> None:
+    """
+    Background thread: fetch all students for the given centers and populate the local DB.
+    Called when admin enables Face Recognition for a user in Zoho Creator.
+    Reuses the existing _load_students_bg() pipeline so no logic is duplicated.
+    centre_ids is a list because Centre_Name is a multi-select lookup in User Management.
+    """
+    scope_key = _build_scope_key(centre_ids, env)
+    try:
+        logger.info(
+            f"[FeatureSync] Starting enable-sync for centres={centre_ids} "
+            f"email={email} env={env or 'production'} scope={scope_key}"
+        )
+        # Invalidate any stale in-memory cache so _load_students_bg() does a
+        # fresh Zoho fetch rather than skipping because the cache appears warm.
+        with _scope_caches_lock:
+            cache = _scope_caches.get(scope_key)
+        if cache:
+            cache.invalidate()
+
+        # Clear the catalogued flag so _load_students_bg() doesn't short-circuit.
+        att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
+
+        # Trigger the full student load + DB save pipeline.
+        _load_students_bg(centers=centre_ids, env=env)
+
+        att_queue.update_webhook_sync_status(log_id, "completed")
+        logger.info(
+            f"[FeatureSync] Enable-sync completed for centres={centre_ids} scope={scope_key}"
+        )
+    except Exception as e:
+        logger.error(f"[FeatureSync] Enable-sync failed for centres={centre_ids}: {e}")
+        att_queue.update_webhook_sync_status(log_id, "failed", error_msg=str(e)[:500])
+
+
+def _delete_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str) -> None:
+    """
+    Background thread: remove all DB data for the given centers and invalidate caches.
+    Called when admin disables Face Recognition for a user in Zoho Creator.
+    centre_ids is a list because Centre_Name is a multi-select lookup in User Management.
+    """
+    scope_key = _build_scope_key(centre_ids, env)
+    try:
+        logger.info(
+            f"[FeatureSync] Starting disable-delete for centres={centre_ids} "
+            f"email={email} env={env or 'production'} scope={scope_key}"
+        )
+        att_queue.update_webhook_sync_status(log_id, "deleting")
+
+        # 1. Evict in-memory FaceCache immediately — blocks attendance from this moment.
+        with _scope_caches_lock:
+            cache = _scope_caches.pop(scope_key, None)
+        if cache:
+            cache.invalidate()
+            logger.info(f"[FeatureSync] In-memory FaceCache evicted for scope={scope_key}")
+
+        # 2. Evict the in-memory feature-access cache so /api/session reflects
+        #    the disable immediately without waiting for the 10-minute TTL.
+        cache_key = f"{env}:{email}"
+        with _feature_cache_lock:
+            _feature_cache.pop(cache_key, None)
+
+        # 3. Delete all DB rows for this scope.
+        counts = att_queue.delete_center_data(scope_key)
+        logger.info(
+            f"[FeatureSync] Deleted for scope={scope_key}: "
+            f"{counts['deleted_students']} students, "
+            f"{counts['deleted_batches']} batches, "
+            f"{counts['deleted_embeddings']} orphaned embeddings"
+        )
+
+        # 4. Clear daily-cache entries so stale centers/batches don't resurface.
+        att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
+        att_queue.clear_daily_cache(key_prefix=f"centres:{env}:{email}")
+        att_queue.clear_daily_cache(key_prefix=f"batches:{scope_key}")
+
+        att_queue.update_webhook_sync_status(log_id, "deleted")
+        logger.info(
+            f"[FeatureSync] Disable-delete completed for centres={centre_ids} scope={scope_key}"
+        )
+    except Exception as e:
+        logger.error(f"[FeatureSync] Disable-delete failed for centres={centre_ids}: {e}")
+        att_queue.update_webhook_sync_status(log_id, "failed", error_msg=str(e)[:500])
+
+
 # ─── Webhook per-student cooldown (prevents PATCH→On Edit→webhook loop) ─────────
 _webhook_cooldowns: dict[str, float] = {}
 _webhook_cooldowns_lock = threading.Lock()
 _WEBHOOK_COOLDOWN = 600   # seconds
+
+# ─── Webhook per-center cooldown (feature-enable/disable sync) ───────────────
+# Key: "{event}:{sorted_centre_ids}:{env}"  Value: unix timestamp of last call
+_center_webhook_cooldowns: dict[str, float] = {}
+_center_webhook_cooldowns_lock = threading.Lock()
+_CENTER_WEBHOOK_COOLDOWN = 180   # seconds — minimum gap between same event for same center
 
 
 # ─── User-centers cache — L1: in-memory (fast), L2: PostgreSQL 24h TTL ──────────
@@ -501,6 +594,52 @@ _keepalive_thread.start()
 
 # Rebuild FaceCaches from local DB in a background thread (non-blocking startup)
 threading.Thread(target=_restore_face_caches_from_db, daemon=True, name="db-restore").start()
+
+
+def _recover_interrupted_syncs() -> None:
+    """
+    On startup, find any webhook_sync_log rows still marked 'running' or 'deleting'
+    from a previous instance that was killed mid-sync, and re-trigger them.
+    Runs once, non-blocking. Failures are logged but never raise.
+    """
+    try:
+        incomplete = att_queue.get_incomplete_syncs()
+        if not incomplete:
+            return
+        logger.warning(
+            f"[FeatureSync] Found {len(incomplete)} incomplete sync(s) from prior run — re-triggering."
+        )
+        for row in incomplete:
+            log_id     = row["id"]
+            event      = row["event"]
+            email      = row["email"]
+            env        = row["env"]
+            # centre_id column stores a comma-separated list of IDs.
+            centre_ids = [c.strip() for c in row["centre_id"].split(",") if c.strip()]
+            # Reset status so the worker updates it correctly on completion.
+            att_queue.update_webhook_sync_status(log_id, "running")
+            logger.info(
+                f"[FeatureSync] Re-triggering {event} for centres={centre_ids} email={email}"
+            )
+            if event == "feature_enabled":
+                threading.Thread(
+                    target=_sync_center_for_webhook,
+                    args=(log_id, email, centre_ids, env),
+                    daemon=True,
+                    name=f"feature-recover-{row['centre_id'][:40]}",
+                ).start()
+            else:
+                threading.Thread(
+                    target=_delete_center_for_webhook,
+                    args=(log_id, email, centre_ids, env),
+                    daemon=True,
+                    name=f"feature-recover-del-{row['centre_id'][:40]}",
+                ).start()
+    except Exception as e:
+        logger.error(f"[FeatureSync] Startup recovery failed: {e}")
+
+
+threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-sync-recovery").start()
 
 def _warmup_face_model():
     try:
@@ -759,6 +898,134 @@ def webhook_student_update():
 
     threading.Thread(target=_background_encode, daemon=True).start()
     return jsonify({"success": True, "message": "Encoding started"}), 200
+
+
+@app.route("/api/webhook/feature-access-changed", methods=["POST"])
+@limiter.limit("10 per minute")
+def webhook_feature_access_changed():
+    """
+    Called by a Zoho Creator Deluge workflow when Face_Recognition_Feature is
+    toggled for a user in the User Management form.
+
+    On ENABLE  → fetches all active batch + student data for the center into the
+                 local DB so the widget loads instantly (no first-open delay).
+    On DISABLE → deletes all center data from the DB and invalidates in-memory
+                 caches so attendance marking stops immediately.
+
+    Deluge snippet (User Management form → On Edit, condition: feature flag changed):
+
+        // Centre_Name is a multi-select lookup — iterate to collect all IDs.
+        if (input.Face_Recognition_Feature != old.Face_Recognition_Feature)
+        {
+            event_name = if(input.Face_Recognition_Feature == true,
+                            "feature_enabled", "feature_disabled");
+
+            centre_id_list = List();
+            for each c in input.Centre_Name
+            {
+                centre_id_list.add(c.ID.toString());
+            }
+
+            body = {
+                "event":            event_name,
+                "email":            input.Zoho_ID.toString(),
+                "centre_ids":       centre_id_list,
+                "zoho_environment": thisapp.environment.linkname
+            };
+            response = invokeurl
+            [
+                url  : "https://<your-app>.onrender.com/api/webhook/feature-access-changed"
+                type : POST
+                body : body.toString()
+                headers: {
+                    "X-Webhook-Secret": "<ADMIN_SECRET>",
+                    "Content-Type": "application/json"
+                }
+            ];
+        }
+
+    Auth: pass ADMIN_SECRET in X-Webhook-Secret request header only.
+    Do NOT use a ?secret= URL param — it appears in Render and Zoho access logs.
+    """
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # ── Parse payload ─────────────────────────────────────────────────────────
+    body  = request.get_json(force=True) or {}
+    event = (body.get("event") or "").strip().lower()
+    email = (body.get("email") or "").strip().lower()
+    env   = _resolve_env(
+        body.get("zoho_environment") or
+        request.headers.get("environment") or ""
+    )
+
+    # Centre_Name is a multi-select lookup — expect a list of string IDs.
+    raw_ids     = body.get("centre_ids") or []
+    centre_ids  = [str(c).strip() for c in raw_ids if str(c).strip()]
+
+    # ── Validate ──────────────────────────────────────────────────────────────
+    if event not in ("feature_enabled", "feature_disabled"):
+        return jsonify({"error": "Invalid event. Must be 'feature_enabled' or 'feature_disabled'"}), 400
+    if not email or "@" not in email:
+        return jsonify({"error": "email is required"}), 400
+    if not centre_ids:
+        # Fallback: resolve IDs from Zoho when Deluge didn't send them.
+        # get_user_centers returns both numeric IDs and display names; keep only IDs.
+        logger.warning(
+            f"[FeatureSync] centre_ids missing in payload for {email} — "
+            "falling back to zoho.get_user_centers(). Update the Deluge snippet."
+        )
+        try:
+            all_centers = zoho.get_user_centers(email, env=env)
+            centre_ids  = [c for c in all_centers if c.strip().isdigit()]
+            if not centre_ids:
+                return jsonify({"error": "Could not resolve any centre IDs for this email"}), 422
+        except Exception as e:
+            logger.error(f"[FeatureSync] centre lookup failed for {email}: {e}")
+            return jsonify({"error": "Could not resolve centres"}), 503
+
+    # ── Per-center cooldown ───────────────────────────────────────────────────
+    # Key is deterministic regardless of the order Deluge sends the IDs.
+    cooldown_key = f"{event}:{','.join(sorted(centre_ids))}:{env}"
+    now = time.time()
+    with _center_webhook_cooldowns_lock:
+        last = _center_webhook_cooldowns.get(cooldown_key, 0)
+        if now - last < _CENTER_WEBHOOK_COOLDOWN:
+            logger.info(
+                f"[FeatureSync] Skipping {event} for centres={centre_ids} — "
+                f"cooldown ({int(now - last)}s < {_CENTER_WEBHOOK_COOLDOWN}s)"
+            )
+            return jsonify({"success": True, "message": "Skipped (cooldown)"}), 200
+        _center_webhook_cooldowns[cooldown_key] = now
+
+    logger.info(
+        f"[FeatureSync] Received {event} for email={email} "
+        f"centres={centre_ids} env={env or 'production'}"
+    )
+
+    # ── Respond immediately — Zoho retries on timeout ─────────────────────────
+    scope_key       = _build_scope_key(centre_ids, env)
+    centre_ids_str  = ",".join(centre_ids)   # stored as TEXT in webhook_sync_log
+    log_id          = att_queue.log_webhook_sync(event, email, centre_ids_str, scope_key, env)
+
+    if event == "feature_enabled":
+        threading.Thread(
+            target=_sync_center_for_webhook,
+            args=(log_id, email, centre_ids, env),
+            daemon=True,
+            name=f"feature-sync-{centre_ids_str[:40]}",
+        ).start()
+        return jsonify({"success": True, "message": "Sync started in background"}), 200
+    else:
+        threading.Thread(
+            target=_delete_center_for_webhook,
+            args=(log_id, email, centre_ids, env),
+            daemon=True,
+            name=f"feature-delete-{centre_ids_str[:40]}",
+        ).start()
+        return jsonify({"success": True, "message": "Deletion started in background"}), 200
 
 
 # ─── Main verify endpoint ─────────────────────────────────────────────────────
@@ -1386,6 +1653,56 @@ def admin_login():
 
 # ─── Admin: queue sync status ─────────────────────────────────────────────────
 
+def _build_webhook_log_html(rows: list) -> str:
+    """Render the webhook_sync_log as an HTML table for /admin/sync-status."""
+    if not rows:
+        return '<p style="color:#8b949e;font-size:13px">No webhook sync events recorded yet.</p>'
+
+    _STATUS_COLORS = {
+        "completed": "#4ade80",
+        "deleted":   "#4ade80",
+        "running":   "#fbbf24",
+        "deleting":  "#fbbf24",
+        "failed":    "#f87171",
+        "pending":   "#8b949e",
+    }
+
+    rows_html = ""
+    for r in rows:
+        color     = _STATUS_COLORS.get(r["status"], "#e6edf3")
+        event_lbl = "✓ Enable" if r["event"] == "feature_enabled" else "✗ Disable"
+        err       = _html.escape((r["error_msg"] or "")[:100])
+        duration  = ""
+        if r.get("started_at") and r.get("finished_at"):
+            try:
+                from datetime import datetime as _dt
+                diff = _dt.fromisoformat(r["finished_at"]) - _dt.fromisoformat(r["started_at"])
+                duration = f"{int(diff.total_seconds())}s"
+            except Exception:
+                pass
+        rows_html += f"""
+        <tr>
+          <td>#{r['id']}</td>
+          <td>{event_lbl}</td>
+          <td style="font-size:12px">{_html.escape(r['email'])}</td>
+          <td style="font-size:12px">{_html.escape(r['centre_id'])}</td>
+          <td style="font-size:12px">{_html.escape(r['env'] or 'production')}</td>
+          <td style="color:{color};font-weight:600">{r['status']}</td>
+          <td style="font-size:11px;color:#8b949e">{duration}</td>
+          <td style="font-size:11px;color:#f87171">{err}</td>
+          <td style="font-size:11px;color:#6b7280">{(r['started_at'] or '')[:19]}</td>
+        </tr>"""
+
+    return f"""
+    <table>
+      <thead><tr>
+        <th>#</th><th>Event</th><th>Email</th><th>Centre ID</th>
+        <th>Env</th><th>Status</th><th>Duration</th><th>Error</th><th>Started</th>
+      </tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>"""
+
+
 @app.route("/admin/sync-status")
 def admin_sync_status():
     """
@@ -1396,7 +1713,8 @@ def admin_sync_status():
     if _auth_err:
         return _auth_err
 
-    summary = att_queue.get_status_summary()
+    summary      = att_queue.get_status_summary()
+    webhook_log  = att_queue.get_webhook_sync_log(limit=20)
 
     failed_rows_html = ""
     for r in summary["failed_records"]:
@@ -1496,6 +1814,9 @@ def admin_sync_status():
     <tbody>{stuck_rows_html}</tbody>
   </table>
   ''' if summary['stuck_pending'] else ''}
+
+  <h3 style="margin-top:32px">Feature-Access Webhook Sync Log (last 20)</h3>
+  {_build_webhook_log_html(webhook_log)}
 
   <p style="margin-top:20px;font-size:13px;">
     <a href="/admin/sync-status" style="color:#60a5fa">↻ Refresh</a>
