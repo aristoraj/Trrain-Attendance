@@ -235,7 +235,7 @@ class ZohoCreatorAPI:
     # ─── Students ──────────────────────────────────────────────────────────────
 
     def get_students(self, centers: list = None, batch_ids: list = None, env: str = "",
-                     no_photo_out: list = None) -> list[dict]:
+                     no_photo_out: list = None, fresh_load: bool = False) -> list[dict]:
         """
         Fetch student records from Zoho Creator, encode face embeddings, and
         return a list of student dicts.
@@ -312,7 +312,7 @@ class ZohoCreatorAPI:
                 else:
                     rec_batch_id = ""
 
-                student = self._process_record(record, env=env)
+                student = self._process_record(record, env=env, fresh_load=fresh_load)
                 if student:
                     student["batch_id"] = rec_batch_id
                     students.append(student)
@@ -379,12 +379,13 @@ class ZohoCreatorAPI:
 
         return students
 
-    def _process_record(self, record: dict, env: str = "") -> dict | None:
+    def _process_record(self, record: dict, env: str = "", fresh_load: bool = False) -> dict | None:
         """
         Build a student dict from a Zoho Creator record.
 
         Priority:
           1. Local DB enrollment embedding  (cache of Creator field — fastest, no API call)
+             Skipped when fresh_load=True (enable-sync) so embeddings always come from Creator.
           2. Creator Face_Embedding field   (source of truth — cached locally on first read)
           3. Photo download + encode        (first time only, before webhook has run)
 
@@ -422,7 +423,10 @@ class ZohoCreatorAPI:
             return encodings
 
         # ── 1. Local DB enrollment cache (instant — no network) ──────────────
-        if self._embedding_cache:
+        # Skipped on fresh_load (enable-sync) so we always read Creator's
+        # Face_Embedding field — guards against stale embeddings when a
+        # student's photo changed between disable and re-enable.
+        if not fresh_load and self._embedding_cache:
             cached = self._embedding_cache.get_local_embeddings(student_id)
             enrollment_local = next((c for c in cached if c["source"] == "enrollment"), None)
             if enrollment_local:

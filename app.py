@@ -231,7 +231,7 @@ def _restore_face_caches_from_db() -> None:
         logger.error(f"Cold start DB restore failed (will load from Zoho on first request): {e}")
 
 
-def _load_students_bg(centers: list = None, env: str = "") -> None:
+def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = False) -> None:
     """Background worker: load + cache students without blocking an HTTP request."""
     key = _build_scope_key(centers, env)
     try:
@@ -279,7 +279,7 @@ def _load_students_bg(centers: list = None, env: str = "") -> None:
 
         no_photo: list = []
         students = zoho.get_students(centers=centers, batch_ids=batch_ids, env=env,
-                                     no_photo_out=no_photo)
+                                     no_photo_out=no_photo, fresh_load=fresh_load)
         if students:
             _get_cache(centers, env).set(students)
             att_queue.save_students_to_db(key, students)
@@ -433,7 +433,10 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
         att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
 
         # Trigger the full student load + DB save pipeline.
-        _load_students_bg(centers=centre_ids, env=env)
+        # fresh_load=True: skip local DB embedding cache so every student's
+        # embedding is read from Creator's Face_Embedding field, not a
+        # potentially stale local copy from before the disable.
+        _load_students_bg(centers=centre_ids, env=env, fresh_load=True)
 
         # Pin the centre list for this user so the widget's verify path builds
         # the same scope key as the one stored by this sync.
