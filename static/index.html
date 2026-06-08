@@ -57,42 +57,6 @@
       font-family: monospace;
     }
 
-    /* ── Email override bar ──────────────────────────────────────────────────── */
-    #email-override-bar {
-      display: none;
-      background: #FFFBEB;
-      border-bottom: 2px solid #FCD34D;
-      padding: 10px 16px;
-      gap: 8px;
-      align-items: flex-start;
-      flex-wrap: wrap;
-      flex-shrink: 0;
-    }
-    #email-override-bar i { color: #D97706; font-size: 16px; flex-shrink: 0; margin-top: 2px; }
-    .eo-text { font-size: 13px; color: #92400E; flex: 1; min-width: 200px; }
-    .eo-inputs { display: flex; gap: 8px; width: 100%; }
-    .eo-inputs input {
-      flex: 1;
-      background: #fff;
-      border: 1px solid #FCD34D;
-      border-radius: 8px;
-      padding: 9px 12px;
-      font-size: 13px;
-      outline: none;
-      min-width: 0;
-    }
-    .eo-inputs button {
-      background: var(--red);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 9px 16px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      min-height: 48px;
-    }
 
     /* ── Camera section ──────────────────────────────────────────────────────── */
     .camera-section {
@@ -499,18 +463,6 @@
 @keyframes fg-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
 </style>
 
-<!-- Email override bar -->
-<div id="email-override-bar">
-  <i class="bi bi-exclamation-triangle"></i>
-  <div class="eo-text">
-    No centres found for <strong id="email-override-current"></strong>. Enter the registered centre email:
-  </div>
-  <div class="eo-inputs">
-    <input id="email-override-input" type="email" placeholder="centre@example.com"
-      onkeydown="if(event.key==='Enter')submitEmailOverride()" />
-    <button onclick="submitEmailOverride()">Load</button>
-  </div>
-</div>
 
 <!-- Camera -->
 <div class="camera-section">
@@ -736,7 +688,7 @@ function tryInitZohoUser() {
     } else {
       console.warn('[FaceVerify] ZOHO SDK not available after 10s');
       _zohoInitDone = true;
-      if (USER_EMAIL) { fetchAndShowCenters(USER_EMAIL); triggerPreload(USER_EMAIL); }
+      if (USER_EMAIL) { triggerPreload(USER_EMAIL); }
     }
     return;
   }
@@ -803,7 +755,7 @@ function tryInitZohoUser() {
       console.warn('[FaceVerify] SDK init failed:', e);
       _showSdkDebug('SDK error: ' + (e && (e.message || String(e))));
       _zohoInitDone = true;
-      if (USER_EMAIL) { fetchAndShowCenters(USER_EMAIL); triggerPreload(USER_EMAIL); }
+      if (USER_EMAIL) { triggerPreload(USER_EMAIL); }
     });
 }
 
@@ -850,50 +802,6 @@ async function postAttendanceSdk(student, dateStr) {
   });
 }
 
-// ── Email override ────────────────────────────────────────────────────────────
-
-function showEmailOverride(forEmail) {
-  const bar = document.getElementById('email-override-bar');
-  const lbl = document.getElementById('email-override-current');
-  if (lbl) lbl.textContent = forEmail || 'your account';
-  if (bar) bar.style.display = 'flex';
-}
-function hideEmailOverride() {
-  const bar = document.getElementById('email-override-bar');
-  if (bar) bar.style.display = 'none';
-}
-async function submitEmailOverride() {
-  const input = document.getElementById('email-override-input');
-  const btn   = input && input.nextElementSibling;
-  const email = (input && input.value.trim()) || '';
-  if (!email || (input && !input.validity.valid)) { showBanner('Please enter a valid email address.', 'warning'); return; }
-  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
-  USER_EMAIL = email;
-  try {
-    fetchAndShowCenters(email);
-    triggerPreload(email);
-    hideEmailOverride();
-  } catch (err) {
-    showBanner('Failed to load students: ' + (err && err.message || String(err)), 'danger');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Load'; }
-  }
-}
-
-function fetchAndShowCenters(email) {
-  let url = '/api/user/centers?user_email=' + encodeURIComponent(email);
-  if (ZOHO_ENV) url += '&zoho_environment=' + encodeURIComponent(ZOHO_ENV);
-  authFetch(url)   // requires session token — /api/user/centers is protected
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (!data) return;   // 401/error — token not ready yet, skip banner update
-      const centers = (data.centers || []).filter(Boolean);
-      if (centers.length) hideEmailOverride(); else showEmailOverride(email);
-    })
-    .catch(err => {
-      console.warn('[FaceVerify] Centre lookup failed:', err);
-    });
-}
 
 function triggerPreload(email) {
   const params = new URLSearchParams({ user_email: email });
@@ -910,7 +818,6 @@ function triggerPreload(email) {
 // 3. Send to /api/load-students to seed the server cache
 // 4. Fallback: server-side preload if SDK returns 0 or throws
 async function loadStudentsHybrid(email) {
-  fetchAndShowCenters(email);  // update email-override bar in parallel
   try {
     const ctx = await authFetch(
       '/api/get-context?user_email=' + encodeURIComponent(email) +
