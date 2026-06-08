@@ -400,30 +400,18 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
     Called when admin enables Face Recognition for a user in Zoho Creator.
     Reuses the existing _load_students_bg() pipeline so no logic is duplicated.
 
-    centre_ids from the webhook payload may be a subset of the user's actual centres
-    (the User Management record can be edited independently). We always resolve the
-    full centre list from Zoho so the scope key matches what is / will be in the DB.
+    Uses centre_ids from the webhook payload directly — those come from the User
+    Management Centre_Name field at save time and are the authoritative source for
+    what this user should have access to.
+    Do NOT resolve via get_user_centers_cached(): that queries the All_Centres report
+    by email and can return more centres than what is selected in User Management,
+    causing stale/unauthorised student data to be loaded.
     """
+    scope_key = _build_scope_key(centre_ids, env)
     try:
-        # Always fetch the full centre list for this user from Zoho (24h cached).
-        # The webhook payload's centre_ids can be a subset if the User Management
-        # record was partially edited, which would produce a mismatched scope key.
-        att_queue.clear_daily_cache(key_prefix=f"centres:{env}:{email}")  # force fresh fetch
-        all_centers = get_user_centers_cached(email, env=env)
-        full_ids = [c for c in all_centers if c.strip().isdigit()]
-        if not full_ids:
-            # Fallback to webhook payload if Zoho returned nothing
-            logger.warning(
-                f"[FeatureSync] Zoho returned no numeric centre IDs for {email} — "
-                "falling back to webhook payload."
-            )
-            full_ids = centre_ids
-
-        scope_key = _build_scope_key(full_ids, env)
         logger.info(
             f"[FeatureSync] Starting enable-sync for email={email} "
-            f"payload_centres={centre_ids} resolved_centres={full_ids} "
-            f"env={env or 'production'} scope={scope_key}"
+            f"centres={centre_ids} env={env or 'production'} scope={scope_key}"
         )
 
         # Invalidate any stale in-memory cache so _load_students_bg() does a
@@ -436,8 +424,8 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
         # Clear the catalogued flag so _load_students_bg() doesn't short-circuit.
         att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
 
-        # Trigger the full student load + DB save pipeline with the complete list.
-        _load_students_bg(centers=full_ids, env=env)
+        # Trigger the full student load + DB save pipeline.
+        _load_students_bg(centers=centre_ids, env=env)
 
         att_queue.update_webhook_sync_status(log_id, "completed")
         logger.info(
