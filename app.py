@@ -169,7 +169,15 @@ def _resolve_env(raw: str | None) -> str:
 
 
 def _build_scope_key(centers: list = None, env: str = "") -> str:
-    base = "C:" + ",".join(sorted(str(c) for c in centers)) if centers else "ALL"
+    # get_user_centers_cached() returns both numeric IDs and display names.
+    # Only use numeric IDs in scope keys so the key is consistent regardless
+    # of the call site — the webhook payload, the widget verify path, and the
+    # background loader all pass different subsets of the same list.
+    if centers:
+        ids = sorted(str(c) for c in centers if str(c).strip().isdigit())
+        base = "C:" + ",".join(ids) if ids else "ALL"
+    else:
+        base = "ALL"
     return f"{env}:{base}" if env else base
 
 
