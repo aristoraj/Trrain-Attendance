@@ -355,6 +355,46 @@
     #btn-finish:hover { background: #1B5E20; }
     #btn-finish { flex-shrink: 0; }
 
+    /* ── Data loading screen ────────────────────────────────────────────────── */
+    #data-loading-screen {
+      position: fixed; inset: 0; z-index: 9998;
+      background: #FBF8F6;
+      display: none;
+      flex-direction: column; align-items: center; justify-content: center;
+      padding: 24px 16px;
+    }
+    #no-batches-screen {
+      position: fixed; inset: 0; z-index: 9998;
+      background: #FBF8F6;
+      display: none;
+      flex-direction: column; align-items: center; justify-content: center;
+      padding: 24px 16px;
+    }
+    .dl-card {
+      background: #fff; border: 1px solid #E5D9CF; border-radius: 16px;
+      padding: 40px 32px; max-width: 380px; width: 100%;
+      text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,.06);
+    }
+    .dl-spinner {
+      width: 52px; height: 52px;
+      border: 4px solid #E5D9CF; border-top-color: var(--red);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+      margin: 0 auto 24px;
+    }
+    .dl-title { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+    .dl-sub   { font-size: 13px; color: var(--muted); line-height: 1.6; }
+    .dl-retry-btn {
+      background: var(--red); color: #fff; border: none;
+      border-radius: 10px; padding: 12px 32px;
+      font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 16px;
+    }
+    .dl-retry-btn:hover { background: var(--red-h); }
+    .dl-icon {
+      width: 76px; height: 76px; background: #FBF8F6; border: 2px solid #E5D9CF;
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 22px; font-size: 34px;
+    }
+
     /* ── Finish modal (bottom sheet) ─────────────────────────────────────────── */
     #finish-modal {
       position: fixed; inset: 0;
@@ -463,6 +503,31 @@
 @keyframes fg-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
 </style>
 
+
+<!-- Data loading screen: blocks camera until trainee data is ready -->
+<div id="data-loading-screen">
+  <div class="dl-card">
+    <div class="dl-spinner"></div>
+    <div class="dl-title">Preparing Attendance Data</div>
+    <div class="dl-sub">Please wait…</div>
+    <div id="dl-retry-area" style="display:none;margin-top:20px">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:4px">Taking longer than expected.</div>
+      <button class="dl-retry-btn" onclick="retryDataLoad()">Retry</button>
+    </div>
+  </div>
+</div>
+
+<!-- No batches screen: shown when no ongoing batches are found for this centre -->
+<div id="no-batches-screen">
+  <div class="dl-card">
+    <div class="dl-icon">📋</div>
+    <div class="dl-title">No Active Trainees</div>
+    <div class="dl-sub">
+      There are no ongoing batches assigned to your centre right now.<br>
+      Please come back when a new batch has started.
+    </div>
+  </div>
+</div>
 
 <!-- Camera -->
 <div class="camera-section">
@@ -747,7 +812,7 @@ function tryInitZohoUser() {
           } catch (e) {
             console.warn('[FaceVerify] Session init failed (allowing through):', e);
           }
-          loadStudentsHybrid(USER_EMAIL);
+          initDataLoadingScreen();
         })();
       }
     })
@@ -807,6 +872,84 @@ function triggerPreload(email) {
   const params = new URLSearchParams({ user_email: email });
   if (ZOHO_ENV) params.set('zoho_environment', ZOHO_ENV);
   authFetch('/api/preload?' + params, { method: 'POST' }).catch(() => {});
+}
+
+// ── Blocking data loading screen ──────────────────────────────────────────────
+// Shows a full-screen overlay that prevents camera access until trainee
+// embeddings are cached. Polls /api/cache/status every 5 s, up to 3 silent
+// retries (~15 s), then surfaces a Retry button.
+
+let _loadingPollTimer = null;
+let _loadingAttempts  = 0;
+const _MAX_DL_RETRIES = 3;
+
+async function initDataLoadingScreen() {
+  const dlScreen  = document.getElementById('data-loading-screen');
+  const retryArea = document.getElementById('dl-retry-area');
+  dlScreen.style.display  = 'flex';
+  retryArea.style.display = 'none';
+  _loadingAttempts = 0;
+
+  // 1. Immediate cache check — if the enable webhook pre-loaded data, go straight
+  //    to camera without waiting for a full poll cycle.
+  try {
+    const st     = await authFetch('/api/cache/status').then(r => r.json());
+    const cached = Object.values(st).reduce((s, v) => s + (v.students_cached || 0), 0);
+    if (cached > 0) { _finishLoading(); return; }
+  } catch (_) {}
+
+  // 2. Context check — are there any ongoing batches at all?
+  //    If not, show the dedicated no-batches screen instead of a spinning wait.
+  try {
+    const params = new URLSearchParams({ user_email: USER_EMAIL });
+    if (ZOHO_ENV) params.set('zoho_environment', ZOHO_ENV);
+    const ctx  = await authFetch('/api/get-context?' + params).then(r => r.json());
+    _SCOPE_KEY = ctx.scope_key || 'ALL';
+    const hasBatches = (ctx.batch_ids   && ctx.batch_ids.length   > 0) ||
+                       (ctx.batch_names && ctx.batch_names.length > 0);
+    if (!hasBatches) {
+      dlScreen.style.display = 'none';
+      document.getElementById('no-batches-screen').style.display = 'flex';
+      return;
+    }
+  } catch (_) {}
+
+  // 3. Kick off the student load and start polling.
+  loadStudentsHybrid(USER_EMAIL);
+  _scheduleLoadingPoll();
+}
+
+function _scheduleLoadingPoll() {
+  clearTimeout(_loadingPollTimer);
+  _loadingPollTimer = setTimeout(_pollCacheReady, 5000);
+}
+
+async function _pollCacheReady() {
+  try {
+    const st     = await authFetch('/api/cache/status').then(r => r.json());
+    const cached = Object.values(st).reduce((s, v) => s + (v.students_cached || 0), 0);
+    if (cached > 0) { _finishLoading(); return; }
+  } catch (_) {}
+
+  _loadingAttempts++;
+  if (_loadingAttempts >= _MAX_DL_RETRIES) {
+    document.getElementById('dl-retry-area').style.display = 'block';
+    return;
+  }
+  _scheduleLoadingPoll();
+}
+
+function _finishLoading() {
+  clearTimeout(_loadingPollTimer);
+  document.getElementById('data-loading-screen').style.display = 'none';
+  startCamera();
+}
+
+function retryDataLoad() {
+  _loadingAttempts = 0;
+  document.getElementById('dl-retry-area').style.display = 'none';
+  triggerPreload(USER_EMAIL);
+  _scheduleLoadingPoll();
 }
 
 // ── Student loader ────────────────────────────────────────────────────────────
@@ -1529,10 +1672,11 @@ function closeFinishModal() {
       'Your browser does not support camera access. Please use Chrome or Edge.';
     return;
   }
-  try {
-    const perm = await navigator.permissions.query({ name: 'camera' });
-    if (perm.state === 'granted') startCamera();
-  } catch (_) { /* wait for Allow Camera button */ }
+  // Camera start is deferred until initDataLoadingScreen confirms data is ready.
+  // This prevents face-scan attempts before trainee embeddings are cached.
+  // If the loading flow is bypassed (no email / feature gate), the user sees
+  // the Allow Camera button inside the camera section when they need it.
+  try { await navigator.permissions.query({ name: 'camera' }); } catch (_) {}
 })();
 </script>
 </body>
