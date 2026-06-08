@@ -1398,7 +1398,7 @@ def create_session():
 # ─── Feature-access check ─────────────────────────────────────────────────────
 _feature_cache: dict[str, tuple[bool, float]] = {}
 _feature_cache_lock = threading.Lock()
-_FEATURE_CACHE_TTL = 600   # seconds
+_FEATURE_CACHE_TTL = 86400   # 24h — webhook evicts on toggle so polling every 10 min is unnecessary
 
 
 def _get_feature_access(email: str, env: str = "") -> bool:
