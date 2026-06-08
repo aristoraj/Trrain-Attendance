@@ -435,6 +435,17 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
         # Trigger the full student load + DB save pipeline.
         _load_students_bg(centers=centre_ids, env=env)
 
+        # Pin the centre list for this user so the widget's verify path builds
+        # the same scope key as the one stored by this sync.
+        # get_user_centers_cached() queries All_Centres by email and can return
+        # more centres than what is in User Management — writing centre_ids here
+        # overrides that stale list for the next 24h.
+        user_cache_key = f"{env}:{email}"
+        with _user_centers_lock:
+            _user_centers_cache[user_cache_key] = (centre_ids, time.time())
+        att_queue.set_daily_cache(f"centres:{env}:{email}", centre_ids)
+        logger.info(f"[FeatureSync] Pinned centre list for {email}: {centre_ids}")
+
         att_queue.update_webhook_sync_status(log_id, "completed")
         logger.info(
             f"[FeatureSync] Enable-sync completed for email={email} scope={scope_key}"
@@ -503,7 +514,11 @@ def _delete_center_for_webhook(log_id: int, email: str, centre_ids: list, env: s
         with _feature_cache_lock:
             _feature_cache.pop(f"{env}:{email}", None)
 
-        # 3. Clear the centre list cache for this user (forces fresh Zoho fetch next time).
+        # 3. Evict in-memory user-centres cache and clear the DB daily_cache entry
+        #    so the next widget open gets a fresh Zoho lookup rather than the
+        #    pinned list written by the enable sync.
+        with _user_centers_lock:
+            _user_centers_cache.pop(f"{env}:{email}", None)
         att_queue.clear_daily_cache(key_prefix=f"centres:{env}:{email}")
 
         att_queue.update_webhook_sync_status(log_id, "deleted")
