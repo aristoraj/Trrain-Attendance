@@ -436,21 +436,17 @@ class AttendanceQueue:
         Also removes orphaned face_embeddings (students not present in any
         other scope's student_cache after this deletion).
         Returns counts for logging.
+
+        Uses set-based SQL rather than a per-student Python loop so the entire
+        operation runs as a short transaction — avoids holding a long SQLite
+        write lock that would block concurrent requests.
         """
         with self._db() as conn:
-            # Collect student IDs in this scope before deleting
-            affected_ids = [
-                r["student_id"] for r in conn.execute(
-                    self._q("SELECT DISTINCT student_id FROM student_cache WHERE scope_key=?"),
-                    (scope_key,),
-                ).fetchall()
-            ]
-
             cur = conn.execute(
                 self._q("DELETE FROM student_cache WHERE scope_key=?"),
                 (scope_key,),
             )
-            deleted_students = cur.rowcount if hasattr(cur, "rowcount") else len(affected_ids)
+            deleted_students = cur.rowcount if hasattr(cur, "rowcount") else 0
 
             cur = conn.execute(
                 self._q("DELETE FROM batch_status WHERE scope_key=?"),
@@ -458,19 +454,13 @@ class AttendanceQueue:
             )
             deleted_batches = cur.rowcount if hasattr(cur, "rowcount") else 0
 
-            # Remove embeddings for students that no longer appear in ANY scope
-            deleted_embeddings = 0
-            for sid in affected_ids:
-                still_exists = conn.execute(
-                    self._q("SELECT 1 FROM student_cache WHERE student_id=? LIMIT 1"),
-                    (sid,),
-                ).fetchone()
-                if not still_exists:
-                    cur = conn.execute(
-                        self._q("DELETE FROM face_embeddings WHERE student_id=?"),
-                        (sid,),
-                    )
-                    deleted_embeddings += cur.rowcount if hasattr(cur, "rowcount") else 0
+            # Remove embeddings for students that no longer appear in ANY scope.
+            # Single subquery — no Python loop, no per-row round-trips.
+            cur = conn.execute(
+                "DELETE FROM face_embeddings WHERE student_id NOT IN "
+                "(SELECT DISTINCT student_id FROM student_cache)"
+            )
+            deleted_embeddings = cur.rowcount if hasattr(cur, "rowcount") else 0
 
         return {
             "deleted_students":   deleted_students,
