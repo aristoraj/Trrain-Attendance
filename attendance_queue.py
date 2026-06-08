@@ -417,6 +417,35 @@ class AttendanceQueue:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_scope_keys_overlapping_centres(self, centre_ids: list, env: str = "") -> list:
+        """
+        Return all scope_keys in student_cache whose centre ID set has ANY
+        overlap with the given centre_ids.
+
+        Needed for the disable webhook: the User Management record may have
+        had centres removed before the webhook fires, so the payload's
+        centre_ids can be a subset of what was originally used to build the
+        scope key in the DB. Scanning by overlap rather than exact match
+        ensures all scopes are found and cleaned up.
+        """
+        target_ids = set(str(c) for c in centre_ids)
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT scope_key FROM student_cache"
+            ).fetchall()
+        matches = []
+        for row in rows:
+            sk = row["scope_key"]
+            # Scope key format: "{env}:C:{id1},{id2},..." or "C:{id1},{id2},..."
+            try:
+                c_part = sk.split(":C:", 1)[1] if ":C:" in sk else sk.split("C:", 1)[1]
+                sk_ids = set(c_part.split(","))
+                if sk_ids & target_ids:   # any overlap → this scope belongs to the user
+                    matches.append(sk)
+            except (IndexError, ValueError):
+                continue
+        return matches
+
     def get_webhook_sync_log(self, limit: int = 20) -> list:
         """Return recent webhook_sync_log entries for the admin panel."""
         with self._db() as conn:

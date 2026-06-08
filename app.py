@@ -399,14 +399,33 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
     Background thread: fetch all students for the given centers and populate the local DB.
     Called when admin enables Face Recognition for a user in Zoho Creator.
     Reuses the existing _load_students_bg() pipeline so no logic is duplicated.
-    centre_ids is a list because Centre_Name is a multi-select lookup in User Management.
+
+    centre_ids from the webhook payload may be a subset of the user's actual centres
+    (the User Management record can be edited independently). We always resolve the
+    full centre list from Zoho so the scope key matches what is / will be in the DB.
     """
-    scope_key = _build_scope_key(centre_ids, env)
     try:
+        # Always fetch the full centre list for this user from Zoho (24h cached).
+        # The webhook payload's centre_ids can be a subset if the User Management
+        # record was partially edited, which would produce a mismatched scope key.
+        att_queue.clear_daily_cache(key_prefix=f"centres:{env}:{email}")  # force fresh fetch
+        all_centers = get_user_centers_cached(email, env=env)
+        full_ids = [c for c in all_centers if c.strip().isdigit()]
+        if not full_ids:
+            # Fallback to webhook payload if Zoho returned nothing
+            logger.warning(
+                f"[FeatureSync] Zoho returned no numeric centre IDs for {email} — "
+                "falling back to webhook payload."
+            )
+            full_ids = centre_ids
+
+        scope_key = _build_scope_key(full_ids, env)
         logger.info(
-            f"[FeatureSync] Starting enable-sync for centres={centre_ids} "
-            f"email={email} env={env or 'production'} scope={scope_key}"
+            f"[FeatureSync] Starting enable-sync for email={email} "
+            f"payload_centres={centre_ids} resolved_centres={full_ids} "
+            f"env={env or 'production'} scope={scope_key}"
         )
+
         # Invalidate any stale in-memory cache so _load_students_bg() does a
         # fresh Zoho fetch rather than skipping because the cache appears warm.
         with _scope_caches_lock:
@@ -417,65 +436,87 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
         # Clear the catalogued flag so _load_students_bg() doesn't short-circuit.
         att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
 
-        # Trigger the full student load + DB save pipeline.
-        _load_students_bg(centers=centre_ids, env=env)
+        # Trigger the full student load + DB save pipeline with the complete list.
+        _load_students_bg(centers=full_ids, env=env)
 
         att_queue.update_webhook_sync_status(log_id, "completed")
         logger.info(
-            f"[FeatureSync] Enable-sync completed for centres={centre_ids} scope={scope_key}"
+            f"[FeatureSync] Enable-sync completed for email={email} scope={scope_key}"
         )
     except Exception as e:
-        logger.error(f"[FeatureSync] Enable-sync failed for centres={centre_ids}: {e}")
+        logger.error(f"[FeatureSync] Enable-sync failed for email={email}: {e}")
         att_queue.update_webhook_sync_status(log_id, "failed", error_msg=str(e)[:500])
 
 
 def _delete_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str) -> None:
     """
-    Background thread: remove all DB data for the given centers and invalidate caches.
+    Background thread: remove all DB data for this user's scopes and invalidate caches.
     Called when admin disables Face Recognition for a user in Zoho Creator.
-    centre_ids is a list because Centre_Name is a multi-select lookup in User Management.
+
+    The webhook payload's centre_ids may be a subset of what is stored in the DB
+    (e.g. admin removed some centres from User Management before disabling).
+    We scan the DB for every scope key that overlaps with ANY of the provided
+    centre IDs and delete all of them, not just the one built from the payload.
     """
-    scope_key = _build_scope_key(centre_ids, env)
     try:
         logger.info(
-            f"[FeatureSync] Starting disable-delete for centres={centre_ids} "
-            f"email={email} env={env or 'production'} scope={scope_key}"
+            f"[FeatureSync] Starting disable-delete for email={email} "
+            f"payload_centres={centre_ids} env={env or 'production'}"
         )
         att_queue.update_webhook_sync_status(log_id, "deleting")
 
-        # 1. Evict in-memory FaceCache immediately — blocks attendance from this moment.
-        with _scope_caches_lock:
-            cache = _scope_caches.pop(scope_key, None)
-        if cache:
-            cache.invalidate()
-            logger.info(f"[FeatureSync] In-memory FaceCache evicted for scope={scope_key}")
+        # 1. Find every scope in the DB that belongs to this user.
+        #    Overlap match: payload may be a partial list after User Management edits.
+        scope_keys = att_queue.get_scope_keys_overlapping_centres(centre_ids, env=env)
+        if not scope_keys:
+            logger.warning(
+                f"[FeatureSync] No matching scopes found in DB for centres={centre_ids}. "
+                "Data may have already been deleted or was never synced."
+            )
+        else:
+            logger.info(f"[FeatureSync] Scopes to delete for email={email}: {scope_keys}")
 
-        # 2. Evict the in-memory feature-access cache so /api/session reflects
-        #    the disable immediately without waiting for the 10-minute TTL.
-        cache_key = f"{env}:{email}"
-        with _feature_cache_lock:
-            _feature_cache.pop(cache_key, None)
+        total_students = total_batches = total_embeddings = 0
 
-        # 3. Delete all DB rows for this scope.
-        counts = att_queue.delete_center_data(scope_key)
+        for scope_key in scope_keys:
+            # Evict in-memory FaceCache immediately — blocks attendance from this moment.
+            with _scope_caches_lock:
+                cache = _scope_caches.pop(scope_key, None)
+            if cache:
+                cache.invalidate()
+                logger.info(f"[FeatureSync] In-memory FaceCache evicted for scope={scope_key}")
+
+            # Delete all DB rows for this scope.
+            counts = att_queue.delete_center_data(scope_key)
+            total_students   += counts["deleted_students"]
+            total_batches    += counts["deleted_batches"]
+            total_embeddings += counts["deleted_embeddings"]
+
+            # Clear daily-cache entries for this scope.
+            att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
+            att_queue.clear_daily_cache(key_prefix=f"batches:{scope_key}")
+
         logger.info(
-            f"[FeatureSync] Deleted for scope={scope_key}: "
-            f"{counts['deleted_students']} students, "
-            f"{counts['deleted_batches']} batches, "
-            f"{counts['deleted_embeddings']} orphaned embeddings"
+            f"[FeatureSync] Deleted across {len(scope_keys)} scope(s) for email={email}: "
+            f"{total_students} students, {total_batches} batches, "
+            f"{total_embeddings} orphaned embeddings"
         )
 
-        # 4. Clear daily-cache entries so stale centers/batches don't resurface.
-        att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
+        # 2. Evict in-memory feature-access cache so /api/session reflects the
+        #    disable immediately without waiting for the 10-minute TTL.
+        with _feature_cache_lock:
+            _feature_cache.pop(f"{env}:{email}", None)
+
+        # 3. Clear the centre list cache for this user (forces fresh Zoho fetch next time).
         att_queue.clear_daily_cache(key_prefix=f"centres:{env}:{email}")
-        att_queue.clear_daily_cache(key_prefix=f"batches:{scope_key}")
 
         att_queue.update_webhook_sync_status(log_id, "deleted")
         logger.info(
-            f"[FeatureSync] Disable-delete completed for centres={centre_ids} scope={scope_key}"
+            f"[FeatureSync] Disable-delete completed for email={email} "
+            f"({len(scope_keys)} scope(s) cleaned)"
         )
     except Exception as e:
-        logger.error(f"[FeatureSync] Disable-delete failed for centres={centre_ids}: {e}")
+        logger.error(f"[FeatureSync] Disable-delete failed for email={email}: {e}")
         att_queue.update_webhook_sync_status(log_id, "failed", error_msg=str(e)[:500])
 
 
