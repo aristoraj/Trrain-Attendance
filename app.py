@@ -422,12 +422,25 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
             f"centres={centre_ids} env={env or 'production'} scope={scope_key}"
         )
 
+        # Evict feature-access cache immediately so the next widget open sees
+        # access=True without waiting for the 24h TTL to expire.
+        with _feature_cache_lock:
+            _feature_cache.pop(f"{env}:{email}", None)
+
         # Invalidate any stale in-memory cache so _load_students_bg() does a
         # fresh Zoho fetch rather than skipping because the cache appears warm.
         with _scope_caches_lock:
             cache = _scope_caches.get(scope_key)
         if cache:
             cache.invalidate()
+
+        # Clear batch IDs cache (in-memory + DB) so _load_students_bg() fetches
+        # the current ongoing batches from Zoho, not a stale list that may include
+        # batches that were completed between the last disable and this re-enable.
+        with _batch_ids_lock:
+            _batch_ids_cache.pop(scope_key, None)
+        att_queue.clear_daily_cache(key_prefix=f"batches:{scope_key}")
+        att_queue.clear_daily_cache(key_prefix=f"batch_names:{scope_key}")
 
         # Clear the catalogued flag so _load_students_bg() doesn't short-circuit.
         att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
