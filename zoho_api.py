@@ -192,6 +192,9 @@ class ZohoCreatorAPI:
                 params={"criteria": criteria, "from": page_start, "limit": 200},
                 timeout=15,
             )
+            if resp.status_code == 404:
+                # Zoho Creator returns 404 when criteria matches zero records — treat as empty
+                break
             resp.raise_for_status()
             records = resp.json().get("data", [])
             if not records:

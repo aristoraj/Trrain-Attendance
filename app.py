@@ -424,8 +424,11 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
 
         # Evict feature-access cache immediately so the next widget open sees
         # access=True without waiting for the 24h TTL to expire.
+        # Evict ALL env variants for this email — the session may cache under
+        # "production:email" while the webhook resolves env as "" or vice-versa.
         with _feature_cache_lock:
-            _feature_cache.pop(f"{env}:{email}", None)
+            for k in [k for k in _feature_cache if k.endswith(f":{email}")]:
+                _feature_cache.pop(k, None)
 
         # Invalidate the in-memory cache so the widget's next verify request
         # triggers a DB restore (avoids serving a stale FaceCache built before
@@ -530,16 +533,20 @@ def _delete_center_for_webhook(log_id: int, email: str, centre_ids: list, env: s
         )
 
         # 2. Evict in-memory feature-access cache so /api/session reflects the
-        #    disable immediately without waiting for the 10-minute TTL.
+        #    disable immediately without waiting for the 24h TTL.
+        #    Evict ALL env variants for this email — same key mismatch risk as enable path.
         with _feature_cache_lock:
-            _feature_cache.pop(f"{env}:{email}", None)
+            for k in [k for k in _feature_cache if k.endswith(f":{email}")]:
+                _feature_cache.pop(k, None)
 
         # 3. Evict in-memory user-centres cache and clear the DB daily_cache entry
         #    so the next widget open gets a fresh Zoho lookup rather than the
         #    pinned list written by the enable sync.
         with _user_centers_lock:
-            _user_centers_cache.pop(f"{env}:{email}", None)
-        att_queue.clear_daily_cache(key_prefix=f"centres:{env}:{email}")
+            for k in [k for k in _user_centers_cache if k.endswith(f":{email}")]:
+                _user_centers_cache.pop(k, None)
+        for _env_v in ("", "production", env):
+            att_queue.clear_daily_cache(key_prefix=f"centres:{_env_v}:{email}")
 
         att_queue.update_webhook_sync_status(log_id, "deleted")
         logger.info(
