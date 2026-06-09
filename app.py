@@ -2449,6 +2449,86 @@ def _reauth_result(success, message, secret, render_updated=False, token_preview
 
 # ─── User centers API ─────────────────────────────────────────────────────────
 
+@app.route("/admin/enroll-local", methods=["POST"])
+@limiter.limit("20 per minute")
+def admin_enroll_local():
+    """
+    Encode a face from a supplied photo and save directly to the local DB.
+    Zero Zoho API calls — use this when the daily quota is exhausted.
+
+    POST JSON:
+      secret         : ADMIN_SECRET value
+      student_id     : Zoho record ID or any test string (e.g. "test_aristo")
+      student_name   : Display name shown after recognition (e.g. "Aristo Raj")
+      student_number : Roll number or "" for testing
+      photo          : base64 image (data URI or raw base64)
+      scope_key      : (optional) — auto-detected from the warmest active cache
+    """
+    data          = request.get_json(force=True) or {}
+    secret        = data.get("secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    student_id     = (data.get("student_id")     or "").strip()
+    student_name   = (data.get("student_name")   or "").strip()
+    student_number = (data.get("student_number") or "").strip()
+    photo_b64      = (data.get("photo")          or "").strip()
+    scope_key_in   = (data.get("scope_key")      or "").strip()
+
+    if not student_id or not student_name or not photo_b64:
+        return jsonify({"error": "student_id, student_name, and photo are required"}), 400
+
+    try:
+        image_array = decode_base64_image(photo_b64)
+    except Exception as e:
+        return jsonify({"error": f"Image decode failed: {e}"}), 400
+
+    embedding, err = encode_face_from_array(image_array)
+    if err or embedding is None:
+        return jsonify({"error": f"No face detected: {err}"}), 422
+
+    embedding_json = embedding_to_json(embedding)
+    att_queue.save_local_embedding(student_id, embedding_json, source="enrollment")
+
+    # Auto-detect scope from active in-memory caches when not supplied
+    scope_key = scope_key_in
+    if not scope_key:
+        with _scope_caches_lock:
+            warm = [(k, c.size) for k, c in _scope_caches.items() if c.size > 0]
+        scope_key = max(warm, key=lambda x: x[1])[0] if warm else ""
+
+    student = {
+        "id":             student_id,
+        "name":           student_name,
+        "student_number": student_number,
+        "encodings":      [embedding],
+    }
+
+    if scope_key:
+        att_queue.upsert_student_in_scope(scope_key, student)
+
+    injected, updated = _inject_or_update_student_in_caches(student)
+
+    # List all active scope keys so the caller can verify
+    with _scope_caches_lock:
+        all_scopes = {k: c.size for k, c in _scope_caches.items()}
+
+    logger.info(
+        f"[EnrollLocal] '{student_name}' ({student_id}) enrolled locally "
+        f"scope='{scope_key}' injected={injected} updated={updated}"
+    )
+    return jsonify({
+        "success":        True,
+        "student_id":     student_id,
+        "student_name":   student_name,
+        "scope_key":      scope_key,
+        "injected_scopes": injected,
+        "updated_scopes":  updated,
+        "active_scopes":   all_scopes,
+        "message":        "Enrolled. No Zoho API calls made — ready for local attendance.",
+    })
+
+
 @app.route("/api/user/centers")
 @require_session
 @limiter.limit("60 per minute")
