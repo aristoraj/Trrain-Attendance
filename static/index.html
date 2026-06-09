@@ -876,19 +876,22 @@ function triggerPreload(email) {
 
 // ── Blocking data loading screen ──────────────────────────────────────────────
 // Shows a full-screen overlay that prevents camera access until trainee
-// embeddings are cached. Polls /api/cache/status every 5 s, up to 3 silent
-// retries (~15 s), then surfaces a Retry button.
+// embeddings are cached. Polls /api/cache/status every 5 s, up to 24 retries
+// (~2 min), then surfaces a Retry button. 2-minute window covers a full
+// first-time photo-download cycle (~90 s for a 66-student batch).
 
-let _loadingPollTimer = null;
-let _loadingAttempts  = 0;
-const _MAX_DL_RETRIES = 3;
+let _loadingPollTimer  = null;
+let _loadingAttempts   = 0;
+let _loadingStartTime  = 0;
+const _MAX_DL_RETRIES  = 24;   // 24 × 5s = 2 minutes
 
 async function initDataLoadingScreen() {
   const dlScreen  = document.getElementById('data-loading-screen');
   const retryArea = document.getElementById('dl-retry-area');
   dlScreen.style.display  = 'flex';
   retryArea.style.display = 'none';
-  _loadingAttempts = 0;
+  _loadingAttempts  = 0;
+  _loadingStartTime = Date.now();
 
   // 1. Immediate cache check — if the enable webhook pre-loaded data, go straight
   //    to camera without waiting for a full poll cycle.
@@ -932,6 +935,10 @@ async function _pollCacheReady() {
   } catch (_) {}
 
   _loadingAttempts++;
+  const elapsed = Math.round((Date.now() - _loadingStartTime) / 1000);
+  const dlSub = document.querySelector('#data-loading-screen .dl-sub');
+  if (dlSub) dlSub.textContent = `Loading trainee data… (${elapsed}s)`;
+
   if (_loadingAttempts >= _MAX_DL_RETRIES) {
     document.getElementById('dl-retry-area').style.display = 'block';
     return;
@@ -946,7 +953,10 @@ function _finishLoading() {
 }
 
 function retryDataLoad() {
-  _loadingAttempts = 0;
+  _loadingAttempts  = 0;
+  _loadingStartTime = Date.now();
+  const dlSub = document.querySelector('#data-loading-screen .dl-sub');
+  if (dlSub) dlSub.textContent = 'Please wait…';
   document.getElementById('dl-retry-area').style.display = 'none';
   triggerPreload(USER_EMAIL);
   _scheduleLoadingPoll();
