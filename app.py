@@ -273,7 +273,21 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
         # screen. Without this, a Render restart leaves the cache empty forever and
         # the "Preparing Attendance Data" screen never dismisses.
         if att_queue.is_scope_fully_catalogued(key) and not removed_batches:
-            db_students = att_queue.load_students_from_db(key)
+            raw = att_queue.load_students_from_db(key)
+            db_students = None
+            if raw:
+                decoded = []
+                for s in raw:
+                    encodings = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+                    encodings = [e for e in encodings if e is not None]
+                    if encodings:
+                        decoded.append({
+                            "id":             s["id"],
+                            "name":           s["name"],
+                            "student_number": s["student_number"],
+                            "encodings":      encodings,
+                        })
+                db_students = decoded if decoded else None
             if db_students:
                 _get_cache(centers, env).set(db_students)
                 logger.info(
