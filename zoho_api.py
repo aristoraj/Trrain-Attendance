@@ -263,27 +263,37 @@ class ZohoCreatorAPI:
         else:
             scope_label = "all students"
 
-        # Server-side criteria: scope the Zoho query so we never do a full table scan.
-        # Priority: batch IDs (most specific) → centre IDs (fallback when no ongoing
-        # batches found) → nothing (only when neither is available).
-        # Zoho Creator v2 lookup fields use numeric record IDs without quotes;
-        # multiple values joined with || (no IN operator in Creator v2 API).
+        # Server-side criteria: scope the Zoho query — never do a full table scan.
+        #
+        # Path A — batch IDs known (from All_Batches): filter by explicit record IDs.
+        #   (Batch_ID==id1)||(Batch_ID==id2)
+        #   Most specific; Zoho returns only students in those exact batches.
+        #
+        # Path B — batch IDs empty/unknown but centres available: use Zoho Creator v2
+        #   joined-field syntax to filter ongoing-batch students for the centre(s)
+        #   directly on CV_Management, without a separate All_Batches call.
+        #   (Centre_Name==centerId)&&(Batch_ID.Batch_Status=="Ongoing")
+        #   Multiple centres: ((Centre_Name==id1)||(Centre_Name==id2))&&(...)
+        #
+        # Zoho Creator v2: lookup field criteria use the numeric record ID without
+        # quotes; multiple values use || (no IN operator); dot notation accesses
+        # related-form fields through lookup fields.
         server_criteria = None
         if batch_ids:
             parts = [f"({FIELD_STUDENT_BATCH}=={bid})" for bid in batch_ids if bid]
             if parts:
                 server_criteria = "||".join(parts)
         elif centers:
-            # No ongoing batches — scope by centre so we don't pull ~1000 records
-            # for the whole app. Numeric IDs only; display names are not valid in
-            # lookup criteria for Creator v2.
             cids = [c for c in centers if str(c).strip().isdigit()]
             if cids:
-                parts = [f"({FIELD_STUDENT_CENTER}=={cid})" for cid in cids]
-                server_criteria = "||".join(parts)
+                centre_clause = "||".join(f"({FIELD_STUDENT_CENTER}=={cid})" for cid in cids)
+                if len(cids) > 1:
+                    centre_clause = f"({centre_clause})"
+                batch_status_clause = f'({FIELD_STUDENT_BATCH}.{FIELD_BATCH_STATUS}=="Ongoing")'
+                server_criteria = f"{centre_clause}&&{batch_status_clause}"
 
-        criteria_label = (f"server criteria for {len(batch_ids)} batch(es)" if batch_ids
-                          else (f"centre criteria for {len(centers)} centre(s)" if server_criteria
+        criteria_label = (f"batch criteria for {len(batch_ids)} batch(es)" if batch_ids
+                          else (f"centre+ongoing criteria for {len(centers)} centre(s)" if server_criteria
                                 else "full scan"))
         logger.info(f"Fetching students from Zoho Creator ({scope_label}, {criteria_label})...")
 
