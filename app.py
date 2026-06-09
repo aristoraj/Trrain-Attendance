@@ -448,14 +448,15 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
         att_queue.clear_daily_cache(key_prefix=f"batches:{scope_key}")
         att_queue.clear_daily_cache(key_prefix=f"batch_names:{scope_key}")
 
-        # Trigger the student load pipeline.
-        # fresh_load=False (default): use local DB embeddings when present.
-        # This avoids re-downloading every photo and re-PATCHing Face_Embedding
-        # on each enable, which was the primary source of Zoho API quota exhaustion
-        # (~92 calls/enable → ~2 calls/enable on re-enables).
-        # Photo changes while disabled are handled by per-student On Edit webhooks
-        # which update the local DB in real time, so local embeddings stay current.
-        # New students with no local DB entry still fall through to photo download.
+        # Clear the catalogued flag so _load_students_bg() always runs the Zoho
+        # fetch on enable — even if this scope was catalogued from a prior cycle.
+        # Without this, _load_students_bg() silently bails at the catalogued check
+        # (line: "Scope catalogued, no batch changes — skipping Zoho fetch") and
+        # students are only loaded when the widget is first opened instead.
+        # Note: fresh_load stays False — local DB embeddings are reused so we only
+        # download photos for genuinely new students (~2 API calls vs ~92 before).
+        att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
+
         _load_students_bg(centers=centre_ids, env=env)
 
         # Pin the centre list for this user so the widget's verify path builds
