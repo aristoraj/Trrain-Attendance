@@ -263,27 +263,38 @@ class ZohoCreatorAPI:
         else:
             scope_label = "all students"
 
-        # Server-side criteria: filter by batch IDs so Zoho returns only the
-        # relevant students instead of all ~1000 records across 5 pages.
-        # Zoho Creator v2 lookup fields require the numeric record ID without quotes.
-        # Multiple values use the || operator (no IN operator in Creator API).
+        # Server-side criteria: scope the Zoho query so we never do a full table scan.
+        # Priority: batch IDs (most specific) → centre IDs (fallback when no ongoing
+        # batches found) → nothing (only when neither is available).
+        # Zoho Creator v2 lookup fields use numeric record IDs without quotes;
+        # multiple values joined with || (no IN operator in Creator v2 API).
         server_criteria = None
         if batch_ids:
             parts = [f"({FIELD_STUDENT_BATCH}=={bid})" for bid in batch_ids if bid]
             if parts:
                 server_criteria = "||".join(parts)
+        elif centers:
+            # No ongoing batches — scope by centre so we don't pull ~1000 records
+            # for the whole app. Numeric IDs only; display names are not valid in
+            # lookup criteria for Creator v2.
+            cids = [c for c in centers if str(c).strip().isdigit()]
+            if cids:
+                parts = [f"({FIELD_STUDENT_CENTER}=={cid})" for cid in cids]
+                server_criteria = "||".join(parts)
 
-        logger.info(
-            f"Fetching students from Zoho Creator ({scope_label}"
-            + (f", server criteria for {len(batch_ids)} batch(es)" if server_criteria else ", full scan")
-            + ")..."
-        )
+        criteria_label = (f"server criteria for {len(batch_ids)} batch(es)" if batch_ids
+                          else (f"centre criteria for {len(centers)} centre(s)" if server_criteria
+                                else "full scan"))
+        logger.info(f"Fetching students from Zoho Creator ({scope_label}, {criteria_label})...")
 
         while True:
             params: dict = {"from": page_start, "limit": page_size}
             if server_criteria:
                 params["criteria"] = server_criteria
             resp = self._request("get", url, env=env, params=params, timeout=30)
+            if resp.status_code == 404:
+                # Zoho Creator returns 404 when criteria matches zero records — treat as empty
+                break
             resp.raise_for_status()
             records = resp.json().get("data", [])
 
@@ -305,12 +316,13 @@ class ZohoCreatorAPI:
                     if b_id not in batch_id_set and b_name not in batch_id_set:
                         continue
 
-                elif batch_ids is not None:
-                    # batch_ids was provided but is empty — no ongoing batches for this centre.
-                    # Do NOT fall through to centre filter; that would load completed-batch students.
+                elif batch_ids is not None and not center_set:
+                    # batch_ids was provided but is empty, and no centre context to fall back to.
+                    # Nothing to match — skip.
                     continue
 
-                # Layer 3 — Python-side centre fallback (only when batch_ids was never provided)
+                # Layer 3 — Python-side centre filter: active when batch_ids was never provided,
+                # OR when batch_ids=[] but centre criteria was used as the server-side scope.
                 elif center_set:
                     center_field = record.get(FIELD_STUDENT_CENTER)
                     if isinstance(center_field, dict):
