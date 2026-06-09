@@ -260,10 +260,26 @@ class ZohoCreatorAPI:
         else:
             scope_label = "all students"
 
-        logger.info(f"Fetching students from Zoho Creator ({scope_label})...")
+        # Server-side criteria: filter by batch IDs so Zoho returns only the
+        # relevant students instead of all ~1000 records across 5 pages.
+        # Zoho Creator v2 lookup fields require the numeric record ID without quotes.
+        # Multiple values use the || operator (no IN operator in Creator API).
+        server_criteria = None
+        if batch_ids:
+            parts = [f"({FIELD_STUDENT_BATCH}=={bid})" for bid in batch_ids if bid]
+            if parts:
+                server_criteria = "||".join(parts)
+
+        logger.info(
+            f"Fetching students from Zoho Creator ({scope_label}"
+            + (f", server criteria for {len(batch_ids)} batch(es)" if server_criteria else ", full scan")
+            + ")..."
+        )
 
         while True:
             params: dict = {"from": page_start, "limit": page_size}
+            if server_criteria:
+                params["criteria"] = server_criteria
             resp = self._request("get", url, env=env, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])
@@ -272,7 +288,8 @@ class ZohoCreatorAPI:
                 break
 
             for record in records:
-                # Layer 2 — Python-side batch ID match (lookup dict .ID or .display_value)
+                # Python-side batch ID match — safety net when server criteria is active;
+                # primary filter when batch_ids is empty or server criteria is absent.
                 if batch_id_set:
                     batch_field = record.get(FIELD_STUDENT_BATCH)
                     if isinstance(batch_field, dict):
@@ -506,11 +523,11 @@ class ZohoCreatorAPI:
                 )
             except Exception as e:
                 logger.warning(f"Could not save local embedding for '{name}': {e}")
-
-        try:
-            self.save_embedding(student_id, encoding, env=env)
-        except Exception as e:
-            logger.warning(f"Could not save Creator embedding for '{name}': {e} (non-fatal)")
+        # Creator Face_Embedding PATCH intentionally omitted here.
+        # Writing back triggered On Edit webhooks for every preload encode,
+        # multiplying API calls (preload PATCH → webhook → re-encode → PATCH...).
+        # Local DB is the source of truth; encode_and_save_to_creator() handles
+        # webhook-triggered encodes (genuine photo uploads) separately.
 
         return {
             "id":             student_id,
@@ -552,13 +569,16 @@ class ZohoCreatorAPI:
         photo_url: str = "",
     ) -> tuple[bool, str]:
         """
-        Download a student's photo, encode the face, and write the embedding to
-        the Face_Embedding field in Zoho Creator. Also updates the local DB cache
-        and clears stale verified_N captures so the new identity is live immediately.
+        Download a student's photo, encode the face, and save the embedding to
+        the local DB. Also clears stale verified_N captures so the new identity
+        is live immediately.
 
-        Called by the webhook (no photo_url — fetches via list API which returns real
-        image URLs unlike single-record GET) and by the bulk-encode loop (photo_url
-        already extracted from the paginated list fetch, no extra API call needed).
+        The Creator Face_Embedding PATCH is intentionally omitted — writing back
+        triggered On Edit webhooks that caused cascading re-encodes and doubled
+        API call counts. Local DB is the sole source of truth for embeddings.
+
+        Called by the webhook (no photo_url — constructs v2.1 download URL) and
+        by the bulk-encode admin loop (photo_url already extracted from list fetch).
 
         Returns (success, message).
         """
@@ -580,7 +600,6 @@ class ZohoCreatorAPI:
         if err or encoding is None:
             return False, f"No face detected: {err}"
 
-        # ── 1. Local DB first — attendance works even if Creator write fails ─────
         if self._embedding_cache:
             embedding_json = embedding_to_json(encoding)
             try:
@@ -589,21 +608,10 @@ class ZohoCreatorAPI:
                 )
                 self._embedding_cache.clear_verified_embeddings(student_id)
             except Exception as e:
-                logger.warning(f"Local cache update failed for {student_id}: {e} (non-fatal)")
+                logger.warning(f"Local DB update failed for {student_id}: {e} (non-fatal)")
 
-        # ── 2. Creator Face_Embedding write — best-effort, don't block on failure
-        # Creator PATCH can time out (large payload) or be rejected by form
-        # validations. Local DB is already updated above so attendance will work.
-        try:
-            self.save_embedding(student_id, encoding, env=env)
-            logger.info(f"Student {student_id}: encoded and saved to Creator+DB (det_score={det_score:.3f})")
-            return True, f"Encoded successfully (det_score={det_score:.2f})"
-        except Exception as e:
-            logger.warning(
-                f"Creator Face_Embedding write failed for {student_id}: {e} — "
-                "embedding saved to local DB, attendance will work."
-            )
-            return True, f"Encoded and saved to local DB (Creator write failed: {e})"
+        logger.info(f"Student {student_id}: encoded and saved to local DB (det_score={det_score:.3f})")
+        return True, f"Encoded successfully (det_score={det_score:.2f})"
 
     def _download_and_encode(self, url: str, env: str = ""):
         resp = self._request("get", url, env=env, timeout=20)
