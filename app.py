@@ -816,6 +816,8 @@ def preload_students():
     except Exception as e:
         logger.warning(f"Preload: centre lookup failed for {user_email}: {e}")
         return jsonify({"triggered": False, "message": "Centre lookup failed"})
+    if not centers:
+        return jsonify({"triggered": False, "message": "No centres assigned to this account"})
     cache = _get_cache(centers=centers, env=env)
     if cache.get() is not None:
         return jsonify({"triggered": False, "message": "Cache already warm"})
@@ -1234,6 +1236,11 @@ def verify():
                     }), 503
                 if fetched:
                     centers = fetched
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error":   "No centres assigned to your account. Contact your administrator.",
+                    }), 403
             students = get_students_cached(centers=centers, env=env)
             if students is None:
                 key = _build_scope_key(centers, env)
@@ -1398,41 +1405,21 @@ def create_session():
     if not email or "@" not in email:
         return jsonify({"error": "Invalid email"}), 400
 
-    # ── Verify email is a known user in our system ─────────────────────────────
-    # Check centres cache first (fast, no API call if cached).
-    # Falls through to All_Users lookup if centres are empty (admin users may
-    # have no centres but should still get a token).
-    user_known = False
+    # ── Verify email is a known centre user ───────────────────────────────────
+    # Only users with at least one centre can use this module — there are no
+    # students to match against otherwise. Users without centres (e.g. org admins)
+    # get a session with has_access=False so the widget shows "not available"
+    # cleanly without triggering any further Zoho API calls or BG loads.
+    centres = []
     try:
         centres = get_user_centers_cached(email, env=env)
-        user_known = bool(centres)
     except Exception:
         pass
 
-    if not user_known:
-        # Check All_Users report (uses 24h DB cache — usually no API call)
-        cache_key = f"{env}:{email}"
-        with _feature_cache_lock:
-            cached = _feature_cache.get(cache_key)
-        if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
-            user_known = True   # was in system at last check
-        else:
-            try:
-                url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
-                criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}")'
-                resp     = zoho._request("get", url, env=env,
-                                         params={"criteria": criteria, "limit": 1}, timeout=10)
-                resp_j   = resp.json()
-                if resp_j.get("code") == 4000:
-                    user_known = True   # quota limit — fail open so users aren't locked out
-                else:
-                    user_known = bool(resp_j.get("data"))
-            except Exception:
-                user_known = True   # fail open on network error
-
-    if not user_known:
-        logger.warning(f"Session refused for unknown user: {email}")
-        return jsonify({"error": "User not found. Please open the widget from Zoho Creator."}), 403
+    if not centres:
+        logger.info(f"Session issued for {email} (env={env or 'production'}, access=False — no centres assigned)")
+        token = _issue_session_token(email, env)
+        return jsonify({"session_token": token, "has_access": False, "expires_in": _SESSION_TTL})
 
     # ── Check feature-access flag (reuse cached result if available) ───────────
     has_access = _get_feature_access(email, env)
