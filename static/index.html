@@ -1123,12 +1123,25 @@ async function startCamera() {
     videoEl.srcObject = stream;
     await videoEl.play();
     state.cameraReady = true;
+    // Reset perm-screen text in case a previous error changed it
+    permScreen.querySelector('p').textContent = 'Camera access is required for face verification';
     setStatus('active', 'Camera ready — initialising face detection…');
     resetInactivityTimer();
     initFaceMesh();
   } catch (err) {
     permScreen.style.display = 'flex';
-    setStatus('error', 'Camera error: ' + err.message);
+    const isDenied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+    const isUnavailable = err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError';
+    let msg;
+    if (isDenied) {
+      msg = 'Camera permission denied. Open your phone Settings → Apps → Zoho Creator (or your browser) → Permissions → allow Camera, then tap Allow Camera again.';
+    } else if (isUnavailable) {
+      msg = 'No camera found on this device. Please use a device with a front camera.';
+    } else {
+      msg = 'Camera error: ' + err.message + '. Please close other camera apps and try again.';
+    }
+    permScreen.querySelector('p').textContent = msg;
+    setStatus('error', 'Camera access denied — see instructions above');
   }
 }
 
