@@ -268,11 +268,26 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
                 logger.info(f"[BG] Removed {removed} student(s) from scope '{key}' for batch {rbid}.")
 
         # ── Skip Zoho fetch if scope is catalogued AND no batches changed ────────
+        # Cache is cold here (warm case returned above). Restore from local DB so
+        # the widget's /api/cache/status poll finds students and clears the loading
+        # screen. Without this, a Render restart leaves the cache empty forever and
+        # the "Preparing Attendance Data" screen never dismisses.
         if att_queue.is_scope_fully_catalogued(key) and not removed_batches:
-            logger.info(f"[BG] Scope '{key}' catalogued, no batch changes — skipping Zoho fetch.")
-            with _preloading_lock:
-                _preloading_keys.discard(key)
-            return
+            db_students = att_queue.load_students_from_db(key)
+            if db_students:
+                _get_cache(centers, env).set(db_students)
+                logger.info(
+                    f"[BG] Scope '{key}' catalogued — restored {len(db_students)} students "
+                    "from local DB (no Zoho fetch needed)."
+                )
+            else:
+                logger.info(f"[BG] Scope '{key}' catalogued but DB empty — Zoho fetch will run.")
+                # Fall through to full Zoho load below
+                pass
+            if db_students:
+                with _preloading_lock:
+                    _preloading_keys.discard(key)
+                return
 
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
