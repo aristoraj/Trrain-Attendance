@@ -427,29 +427,33 @@ def _sync_center_for_webhook(log_id: int, email: str, centre_ids: list, env: str
         with _feature_cache_lock:
             _feature_cache.pop(f"{env}:{email}", None)
 
-        # Invalidate any stale in-memory cache so _load_students_bg() does a
-        # fresh Zoho fetch rather than skipping because the cache appears warm.
+        # Invalidate the in-memory cache so the widget's next verify request
+        # triggers a DB restore (avoids serving a stale FaceCache built before
+        # the enable).  We do NOT clear the local DB or the catalogued flag here —
+        # those remain valid so _load_students_bg() can skip the Zoho page scan
+        # when nothing has changed since the last enable.
         with _scope_caches_lock:
             cache = _scope_caches.get(scope_key)
         if cache:
             cache.invalidate()
 
         # Clear batch IDs cache (in-memory + DB) so _load_students_bg() fetches
-        # the current ongoing batches from Zoho, not a stale list that may include
-        # batches that were completed between the last disable and this re-enable.
+        # the current ongoing batches from Zoho and can detect completed batches
+        # or newly-started ones since the last enable.
         with _batch_ids_lock:
             _batch_ids_cache.pop(scope_key, None)
         att_queue.clear_daily_cache(key_prefix=f"batches:{scope_key}")
         att_queue.clear_daily_cache(key_prefix=f"batch_names:{scope_key}")
 
-        # Clear the catalogued flag so _load_students_bg() doesn't short-circuit.
-        att_queue.clear_daily_cache(key_prefix=f"catalogued:{scope_key}")
-
-        # Trigger the full student load + DB save pipeline.
-        # fresh_load=True: skip local DB embedding cache so every student's
-        # embedding is read from Creator's Face_Embedding field, not a
-        # potentially stale local copy from before the disable.
-        _load_students_bg(centers=centre_ids, env=env, fresh_load=True)
+        # Trigger the student load pipeline.
+        # fresh_load=False (default): use local DB embeddings when present.
+        # This avoids re-downloading every photo and re-PATCHing Face_Embedding
+        # on each enable, which was the primary source of Zoho API quota exhaustion
+        # (~92 calls/enable → ~2 calls/enable on re-enables).
+        # Photo changes while disabled are handled by per-student On Edit webhooks
+        # which update the local DB in real time, so local embeddings stay current.
+        # New students with no local DB entry still fall through to photo download.
+        _load_students_bg(centers=centre_ids, env=env)
 
         # Pin the centre list for this user so the widget's verify path builds
         # the same scope key as the one stored by this sync.
