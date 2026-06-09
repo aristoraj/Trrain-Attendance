@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -c "\
 from insightface.app import FaceAnalysis; \
 app = FaceAnalysis(name='buffalo_l', root='/app/.insightface', providers=['CPUExecutionProvider']); \
-app.prepare(ctx_id=0, det_size=(640, 640)); \
+app.prepare(ctx_id=0, det_size=(320, 320)); \
 print('InsightFace buffalo_l model ready.')"
 
 # ── Download MiniFASNet anti-spoofing model ───────────────────────────────────
@@ -88,8 +88,9 @@ USER appuser
 
 EXPOSE 5000
 
-# --preload: master loads buffalo_l once before forking; workers inherit via CoW.
-# Workers=2 on free/512MB tier (upgrade to Render Standard 2GB for workers=4).
-# Memory budget: 350MB model (shared) + 2×80MB worker heaps + ~80MB OS/Flask ≈ 590MB.
-# On Render Standard (2GB): bump GUNICORN_WORKERS env var to 4.
-CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers ${GUNICORN_WORKERS:-2} --timeout 120 --preload --log-level info"]
+# --workers 1 --threads 4: single process loads buffalo_l once (~500MB shared);
+# 4 threads handle concurrent centres via Python's GIL release during I/O
+# (Zoho API calls, DB writes). InsightFace inference serialises on
+# _face_inference_lock (~200ms/request) — imperceptible at this scale.
+# 2 workers would duplicate the model in RAM (CoW breaks on first inference → OOM).
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers ${GUNICORN_WORKERS:-1} --threads ${GUNICORN_THREADS:-4} --timeout 120 --preload --log-level info"]

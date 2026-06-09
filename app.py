@@ -721,13 +721,15 @@ def request_too_large(e):
 
 @app.route("/api/health")
 def health():
-    total_cached = sum(c.size for c in _scope_caches.values())
+    with _scope_caches_lock:
+        total_cached = sum(c.size for c in _scope_caches.values())
+        scopes = list(_scope_caches.keys())
     queue_status = att_queue.get_status_summary()
     return jsonify({
         "status":           "ok",
         "version":          "3.0.0",
         "total_cached":     total_cached,
-        "scopes":           list(_scope_caches.keys()),
+        "scopes":           scopes,
         "keepalive_active": bool(SELF_URL),
         "queue": {
             "pending": queue_status["pending"],
@@ -744,7 +746,9 @@ def cache_status():
     status = {}
     with _scope_encoding_lock:
         enc_snapshot = dict(_scope_encoding)
-    for key, cache in _scope_caches.items():
+    with _scope_caches_lock:
+        caches_snapshot = dict(_scope_caches)
+    for key, cache in caches_snapshot.items():
         enc = enc_snapshot.get(key, {})
         status[key] = {
             "students_cached": cache.size,

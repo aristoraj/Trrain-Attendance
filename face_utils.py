@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 # ── InsightFace model singleton (loaded once per process) ──────────────────────
 _face_app = None
-_face_app_lock = threading.Lock()
+_face_app_lock       = threading.Lock()
+_face_inference_lock = threading.Lock()  # serialises app.get() — ONNX session state is not thread-safe
 
 
 def _get_face_app():
@@ -51,8 +52,9 @@ def _get_face_app():
                     root="/app/.insightface",
                     providers=["CPUExecutionProvider"],
                 )
-                # 640×640 detection grid: catches faces at distance and odd angles
-                app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
+                # 320×320 detection grid: lower memory per inference, still accurate
+                # for close-up phone selfies. Was 640×640 but caused OOM on 2GB instances.
+                app.prepare(ctx_id=0, det_size=(320, 320), det_thresh=0.3)
                 _face_app = app
                 logger.info("InsightFace buffalo_l model loaded successfully.")
     return _face_app
@@ -116,7 +118,8 @@ def _encode_largest_face(image_array: np.ndarray):
     Selects the largest detected face in the frame.
     """
     app = _get_face_app()
-    faces = app.get(image_array)
+    with _face_inference_lock:
+        faces = app.get(image_array)
 
     if not faces:
         return None, None, None, "No face detected in the image."
