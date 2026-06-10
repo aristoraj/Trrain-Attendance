@@ -44,12 +44,6 @@ class ZohoCreatorAPI:
             owner=ZOHO_ACCOUNT_OWNER,
             app=ZOHO_APP_NAME,
         )
-        # v2.1 data API base — used for file field downloads
-        # URL pattern: {_download_base_url}/report/{report}/{record_id}/{field}/download
-        self._download_base_url = (
-            f"https://creator.zoho.{ZOHO_DATA_CENTER}/creator/v2.1/data"
-            f"/{ZOHO_ACCOUNT_OWNER}/{ZOHO_APP_NAME}"
-        )
         self._token_url = self.TOKEN_URL_TEMPLATE.format(dc=ZOHO_DATA_CENTER)
 
     # ─── Auth ──────────────────────────────────────────────────────────────────
@@ -702,20 +696,28 @@ class ZohoCreatorAPI:
         triggered On Edit webhooks that caused cascading re-encodes and doubled
         API call counts. Local DB is the sole source of truth for embeddings.
 
-        Called by the webhook (no photo_url — constructs v2.1 download URL) and
+        Called by the webhook (no photo_url — fetches record to resolve URL) and
         by the bulk-encode admin loop (photo_url already extracted from list fetch).
 
         Returns (success, message).
         """
         if not photo_url:
             # No photo URL supplied (called from webhook — no record in hand).
-            # Use the Zoho Creator v2.1 data API file-download endpoint.
-            # Format: /creator/v2.1/data/{owner}/{app}/report/{report}/{id}/{field}/download
-            photo_url = (
-                f"{self._download_base_url}/report/{ZOHO_STUDENT_REPORT}"
-                f"/{student_id}/{FIELD_STUDENT_PHOTO}/download"
-            )
-            logger.info(f"Constructing v2.1 download URL for student {student_id}")
+            # Fetch the student record via the v2 API to get the real photo URL
+            # (which includes the required ?filepath= parameter). The v2.1
+            # endpoint (/creator/v2.1/data/.../download) returns 404 in
+            # production when no filepath param is present.
+            rec_url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_id}"
+            try:
+                rec_resp = self._request("get", rec_url, env=env, timeout=15)
+                rec_resp.raise_for_status()
+                record = rec_resp.json().get("data") or {}
+            except Exception as e:
+                return False, f"Could not fetch student record: {e}"
+            photo_url = self._extract_photo_url(record, student_id, student_id)
+            if not photo_url:
+                return False, "No photo uploaded for this student"
+            logger.info(f"Fetched photo URL for student {student_id} via record lookup")
 
         try:
             encoding, det_score, err = self._download_and_encode(photo_url, env=env)
