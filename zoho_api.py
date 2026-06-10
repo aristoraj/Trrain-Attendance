@@ -181,10 +181,11 @@ class ZohoCreatorAPI:
         criteria: Batch_ID=="PKGJAHMJSS2672409" (SDK compares display_value, not ID).
         """
         url = f"{self._base_url}/report/{ZOHO_BATCHES_REPORT}"
-        criteria = '(Batch_Status=="Ongoing")'
+        criteria = f'({FIELD_BATCH_STATUS}=="Ongoing")'
         center_set = set(centers)
         batch_ids: list[str] = []
         page_start = 1
+        status_criteria_failed = False  # track if the "Ongoing" criteria got 404 on page 1
 
         while True:
             resp = self._request(
@@ -193,7 +194,25 @@ class ZohoCreatorAPI:
                 timeout=15,
             )
             if resp.status_code == 404:
-                # Zoho Creator returns 404 when criteria matches zero records — treat as empty
+                if page_start == 1:
+                    # Log the response body so we can distinguish "no records" (code 3100)
+                    # from "invalid field name / report not found" (other codes).
+                    # Both return HTTP 404 in Zoho Creator v2.
+                    status_criteria_failed = True
+                    try:
+                        body = resp.json()
+                        code = body.get("code")
+                        msg  = body.get("message", "")
+                        logger.warning(
+                            f"All_Batches criteria '({FIELD_BATCH_STATUS}==\"Ongoing\")' returned 404 "
+                            f"(code={code}, msg='{msg}', env={env or 'production'}) — "
+                            f"will retry without status criteria and filter Python-side"
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"All_Batches criteria '({FIELD_BATCH_STATUS}==\"Ongoing\")' returned 404 "
+                            f"(env={env or 'production'}) — will retry without status criteria"
+                        )
                 break
             resp.raise_for_status()
             records = resp.json().get("data", [])
@@ -231,6 +250,75 @@ class ZohoCreatorAPI:
             if len(records) < 200:
                 break
             page_start += 200
+
+        # Fallback: if the "Ongoing" criteria 404'd, fetch all batches without any status
+        # criteria and filter Python-side (case-insensitive). This handles production
+        # environments where the stored Batch_Status value differs from the criteria string
+        # (e.g., different capitalisation, spacing, or the field link name differs between
+        # the development and production deployments of the Zoho Creator app).
+        if status_criteria_failed and not batch_ids:
+            logger.info(
+                f"Retrying All_Batches without status criteria, filtering Python-side "
+                f"for status='ongoing' (env={env or 'production'})"
+            )
+            page_start = 1
+            while True:
+                resp = self._request(
+                    "get", url, env=env,
+                    params={"from": page_start, "limit": 200},
+                    timeout=15,
+                )
+                if resp.status_code == 404:
+                    try:
+                        body = resp.json()
+                        logger.warning(
+                            f"All_Batches no-criteria fallback also returned 404 "
+                            f"(code={body.get('code')}, env={env or 'production'}) — "
+                            f"report may be inaccessible or has no records at all"
+                        )
+                    except Exception:
+                        pass
+                    break
+                resp.raise_for_status()
+                records = resp.json().get("data", [])
+                if not records:
+                    break
+
+                for rec in records:
+                    status = str(rec.get(FIELD_BATCH_STATUS) or "").strip().lower()
+                    if status != "ongoing":
+                        continue
+                    center_field = rec.get(FIELD_BATCH_CENTER)
+                    if isinstance(center_field, dict):
+                        c_id   = str(center_field.get("ID") or "")
+                        c_name = str(center_field.get("display_value") or "")
+                    elif isinstance(center_field, str):
+                        c_id   = ""
+                        c_name = center_field.strip()
+                    else:
+                        c_id = c_name = ""
+
+                    if c_id in center_set or c_name in center_set:
+                        bid = rec.get("ID") or rec.get("id")
+                        if bid:
+                            bid = str(bid)
+                            if bid not in batch_ids:
+                                batch_ids.append(bid)
+                                bname = str(rec.get(FIELD_BATCH_DISPLAY) or "").strip()
+                                if batch_names_out is not None:
+                                    batch_names_out.append(bname)
+                                if batch_info_out is not None:
+                                    batch_info_out.append({
+                                        "id":         bid,
+                                        "name":       bname,
+                                        "status":     str(rec.get(FIELD_BATCH_STATUS) or ""),
+                                        "start_date": str(rec.get(FIELD_BATCH_START_DATE) or ""),
+                                        "end_date":   str(rec.get(FIELD_BATCH_END_DATE) or ""),
+                                    })
+
+                if len(records) < 200:
+                    break
+                page_start += 200
 
         logger.info(f"Found {len(batch_ids)} ongoing batch(es) for centers {centers}")
         return batch_ids
@@ -278,7 +366,8 @@ class ZohoCreatorAPI:
         # Zoho Creator v2: lookup field criteria use the numeric record ID without
         # quotes; multiple values use || (no IN operator); dot notation accesses
         # related-form fields through lookup fields.
-        server_criteria = None
+        server_criteria  = None
+        fallback_criteria = None   # centre-only: used if centre+ongoing returns 404
         if batch_ids:
             parts = [f"({FIELD_STUDENT_BATCH}=={bid})" for bid in batch_ids if bid]
             if parts:
@@ -290,7 +379,8 @@ class ZohoCreatorAPI:
                 if len(cids) > 1:
                     centre_clause = f"({centre_clause})"
                 batch_status_clause = f'({FIELD_STUDENT_BATCH}.{FIELD_BATCH_STATUS}=="Ongoing")'
-                server_criteria = f"{centre_clause}&&{batch_status_clause}"
+                server_criteria  = f"{centre_clause}&&{batch_status_clause}"
+                fallback_criteria = centre_clause   # no batch-status filter
 
         criteria_label = (f"batch criteria for {len(batch_ids)} batch(es)" if batch_ids
                           else (f"centre+ongoing criteria for {len(centers)} centre(s)" if server_criteria
@@ -303,7 +393,17 @@ class ZohoCreatorAPI:
                 params["criteria"] = server_criteria
             resp = self._request("get", url, env=env, params=params, timeout=30)
             if resp.status_code == 404:
-                # Zoho Creator returns 404 when criteria matches zero records — treat as empty
+                if page_start == 1 and fallback_criteria:
+                    # centre+ongoing joined-field criteria failed — retry with just
+                    # centre criteria (no batch-status filter). Handles production
+                    # environments where Batch_ID.Batch_Status traversal returns 404.
+                    logger.warning(
+                        f"Centre+ongoing criteria returned 404 — retrying with "
+                        f"centre-only criteria (env={env or 'production'})"
+                    )
+                    server_criteria  = fallback_criteria
+                    fallback_criteria = None
+                    continue
                 break
             resp.raise_for_status()
             records = resp.json().get("data", [])
