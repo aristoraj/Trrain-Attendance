@@ -703,21 +703,26 @@ class ZohoCreatorAPI:
         """
         if not photo_url:
             # No photo URL supplied (called from webhook — no record in hand).
-            # Fetch the student record via the v2 API to get the real photo URL
-            # (which includes the required ?filepath= parameter). The v2.1
-            # endpoint (/creator/v2.1/data/.../download) returns 404 in
-            # production when no filepath param is present.
-            rec_url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}/{student_id}"
+            # Use the list endpoint with ID criteria so the photo field is
+            # returned in the same expanded format (with ?filepath=) as during
+            # normal student loading. The single-record GET endpoint returns
+            # file fields without the download URL.
+            rec_url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
             try:
-                rec_resp = self._request("get", rec_url, env=env, timeout=15)
+                rec_resp = self._request(
+                    "get", rec_url, env=env,
+                    params={"criteria": f"(ID=={student_id})", "limit": 1},
+                    timeout=15,
+                )
                 rec_resp.raise_for_status()
-                record = rec_resp.json().get("data") or {}
+                records = rec_resp.json().get("data", [])
+                record = records[0] if records else {}
             except Exception as e:
                 return False, f"Could not fetch student record: {e}"
             photo_url = self._extract_photo_url(record, student_id, student_id)
             if not photo_url:
                 return False, "No photo uploaded for this student"
-            logger.info(f"Fetched photo URL for student {student_id} via record lookup")
+            logger.info(f"Fetched photo URL for student {student_id} via list lookup")
 
         try:
             encoding, det_score, err = self._download_and_encode(photo_url, env=env)
