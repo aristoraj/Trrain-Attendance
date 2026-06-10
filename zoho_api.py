@@ -366,8 +366,9 @@ class ZohoCreatorAPI:
         # Zoho Creator v2: lookup field criteria use the numeric record ID without
         # quotes; multiple values use || (no IN operator); dot notation accesses
         # related-form fields through lookup fields.
-        server_criteria  = None
-        fallback_criteria = None   # centre-only: used if centre+ongoing returns 404
+        server_criteria   = None
+        fallback_criteria = None   # centre-only: tried if centre+ongoing returns 404
+        allow_full_scan   = False  # last resort: no criteria, filter Python-side by centre
         if batch_ids:
             parts = [f"({FIELD_STUDENT_BATCH}=={bid})" for bid in batch_ids if bid]
             if parts:
@@ -379,8 +380,9 @@ class ZohoCreatorAPI:
                 if len(cids) > 1:
                     centre_clause = f"({centre_clause})"
                 batch_status_clause = f'({FIELD_STUDENT_BATCH}.{FIELD_BATCH_STATUS}=="Ongoing")'
-                server_criteria  = f"{centre_clause}&&{batch_status_clause}"
+                server_criteria   = f"{centre_clause}&&{batch_status_clause}"
                 fallback_criteria = centre_clause   # no batch-status filter
+                allow_full_scan   = True            # permit full scan if production rejects all criteria
 
         criteria_label = (f"batch criteria for {len(batch_ids)} batch(es)" if batch_ids
                           else (f"centre+ongoing criteria for {len(centers)} centre(s)" if server_criteria
@@ -404,6 +406,26 @@ class ZohoCreatorAPI:
                     server_criteria  = fallback_criteria
                     fallback_criteria = None
                     continue
+                if page_start == 1 and allow_full_scan:
+                    # centre-only criteria also returned 404 — check error code.
+                    # Code 2930 (UPLOAD_RULE_NOT_CONFIGURED) means the production
+                    # Zoho Creator app doesn't have API criteria access enabled for
+                    # this report. Fall back to a no-criteria full scan and filter
+                    # by centre Python-side. Code 3100 ("no records") is a real
+                    # empty result — don't scan the full table in that case.
+                    try:
+                        err_code = resp.json().get("code")
+                    except Exception:
+                        err_code = None
+                    if err_code != 3100:
+                        logger.warning(
+                            f"Centre criteria returned 404 (code={err_code}, "
+                            f"env={env or 'production'}) — falling back to full scan "
+                            f"with Python-side centre filter"
+                        )
+                        server_criteria = None
+                        allow_full_scan = False
+                        continue
                 break
             resp.raise_for_status()
             records = resp.json().get("data", [])
