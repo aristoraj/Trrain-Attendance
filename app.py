@@ -178,7 +178,7 @@ def _build_scope_key(centers: list = None, env: str = "") -> str:
         base = "C:" + ",".join(ids) if ids else "ALL"
     else:
         base = "ALL"
-    return f"{env}:{base}" if env else base
+    return f"{env}:{base}" if env and env != "production" else base
 
 
 def _get_cache(centers: list = None, env: str = "") -> FaceCache:
