@@ -90,9 +90,6 @@ class AttendanceQueue:
         # In-memory fast-path dedup {date_str: set_of_student_ids}
         self._global_marked: dict[str, set] = {}
 
-        # Live-capture store {student_id: jpeg_bytes} — populated by store_capture(),
-        # drained (popped) by _drain() when posting attendance to Zoho.
-        self._capture_store: dict = {}
 
         if self._is_postgres:
             logger.info("AttendanceQueue: using PostgreSQL (DATABASE_URL set).")
@@ -647,6 +644,14 @@ class AttendanceQueue:
                 except Exception:
                     conn.execute("ROLLBACK TO SAVEPOINT add_dsid_col")
                     conn.execute("RELEASE SAVEPOINT add_dsid_col")
+                try:
+                    conn.execute("SAVEPOINT add_jpeg_col")
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN jpeg_bytes BYTEA")
+                    conn.execute("RELEASE SAVEPOINT add_jpeg_col")
+                    logger.info("attendance_queue: added jpeg_bytes column.")
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT add_jpeg_col")
+                    conn.execute("RELEASE SAVEPOINT add_jpeg_col")
             else:
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
@@ -656,6 +661,11 @@ class AttendanceQueue:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN device_session_id TEXT NOT NULL DEFAULT ''")
                 except Exception:
                     pass
+                try:
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN jpeg_bytes BLOB")
+                    logger.info("attendance_queue: added jpeg_bytes column.")
+                except Exception:
+                    pass  # Column already exists
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_status_retry "
                 "ON attendance_queue(status, next_retry_at)"
@@ -725,17 +735,16 @@ class AttendanceQueue:
             self._mark_in_memory(student_id, date_str)
         logger.info(f"SDK attendance marked for {student_name} ({date_str})")
 
-    def store_capture(self, student_id: str, jpeg_bytes: bytes) -> None:
-        """Store a live-capture JPEG to be attached to this student's next attendance POST."""
-        if jpeg_bytes:
-            self._capture_store[student_id] = jpeg_bytes
-
     def enqueue_if_not_marked(self, student_id: str, student_name: str,
                               date_str: str, environment: str = "",
-                              device_session_id: str = "") -> tuple:
+                              device_session_id: str = "",
+                              jpeg_bytes: bytes = None) -> tuple:
         """
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
+
+        jpeg_bytes is stored in the DB row so any worker's drain can read
+        it when posting to Zoho — avoids cross-process memory sharing issues.
 
         Holding self._lock while marking in-memory blocks any concurrent
         in-process request from passing the dedup check before this one
@@ -770,15 +779,15 @@ class AttendanceQueue:
             INSERT INTO attendance_queue
                 (student_id, student_name, date_str,
                  status, attempts, created_at, updated_at, next_retry_at,
-                 environment, device_session_id)
-            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?)
+                 environment, device_session_id, jpeg_bytes)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
         with self._db() as conn:
             cur = conn.execute(sql, (
                 student_id, student_name, date_str, now, now, now,
-                environment, device_session_id,
+                environment, device_session_id, jpeg_bytes,
             ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
@@ -1246,7 +1255,7 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT id, student_id, student_name, date_str, attempts, environment "
+                    "SELECT id, student_id, student_name, date_str, attempts, environment, jpeg_bytes "
                     "FROM attendance_queue "
                     "WHERE status='PENDING' AND next_retry_at <= ? "
                     "ORDER BY created_at ASC LIMIT 10"
@@ -1271,13 +1280,14 @@ class AttendanceQueue:
             student_id  = row["student_id"]
             attempts    = row["attempts"]
             environment = row["environment"]
+            jpeg_bytes  = row["jpeg_bytes"]  # bytes or None
             try:
                 result = self._zoho.post_attendance(
                     student_id=student_id,
                     student_name=name,
                     verification_type="face_blink_verified",
                     env=environment,
-                    jpeg_bytes=self._capture_store.pop(student_id, None),
+                    jpeg_bytes=jpeg_bytes,
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)
