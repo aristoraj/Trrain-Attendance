@@ -920,7 +920,8 @@ class ZohoCreatorAPI:
                     zoho_code = result.get("code")
                     if zoho_code is not None and zoho_code != 3000:
                         raise RuntimeError(f"Zoho error {zoho_code}: {result.get('message', '')}")
-                    logger.info(f"Attendance + photo posted for {student_name}")
+                    rec_id = result.get("data", {}).get("ID", "unknown")
+                    logger.info(f"Attendance + photo posted for {student_name} — Zoho record ID: {rec_id}")
                     return {"success": True, "data": result}
                 except Exception as photo_err:
                     logger.warning(
@@ -940,7 +941,8 @@ class ZohoCreatorAPI:
                 logger.error(f"Zoho error code={zoho_code}: {result.get('message', '')}")
                 return {"success": False, "error": f"Zoho error {zoho_code}: {result.get('message', '')}"}
 
-            logger.info(f"Attendance posted for {student_name} (ID: {student_id})")
+            rec_id = result.get("data", {}).get("ID", "unknown")
+            logger.info(f"Attendance posted for {student_name} — Zoho record ID: {rec_id}")
             return {"success": True, "data": result}
 
         except requests.HTTPError as e:
