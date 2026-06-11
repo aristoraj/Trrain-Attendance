@@ -901,7 +901,7 @@ class ZohoCreatorAPI:
                 # _get_headers with include_content_type=False omits
                 # Content-Type so requests can set it with the multipart boundary.
                 import json as _json
-                headers = self._get_headers(env=env, include_content_type=False)
+                headers = self._headers(env=env, include_content_type=False)
                 files = {
                     "data": (None, _json.dumps({"data": data_payload}), "application/json"),
                     FIELD_ATT_CAPTURE: ("capture.jpg", jpeg_bytes, "image/jpeg"),
