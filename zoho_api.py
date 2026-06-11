@@ -21,7 +21,7 @@ from config import (
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ATT_CAPTURE,
+    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
 
@@ -877,7 +877,6 @@ class ZohoCreatorAPI:
         student_name:      str,
         verification_type: str = "face_blink_verified",
         env:               str = "",
-        jpeg_bytes:        bytes = None,
     ) -> dict:
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
@@ -902,10 +901,6 @@ class ZohoCreatorAPI:
 
             rec_id = result.get("data", {}).get("ID", "unknown")
             logger.info(f"Attendance posted for {student_name} — Zoho record ID: {rec_id}")
-
-            if jpeg_bytes and env == "development" and rec_id != "unknown":
-                self._upload_capture_photo(rec_id, jpeg_bytes, student_name, env)
-
             return {"success": True, "data": result}
 
         except requests.HTTPError as e:
@@ -914,30 +909,6 @@ class ZohoCreatorAPI:
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             return {"success": False, "error": str(e)}
-
-    def _upload_capture_photo(
-        self, record_id: str, jpeg_bytes: bytes, student_name: str, env: str
-    ) -> None:
-        """Upload live capture JPEG to an existing attendance record. Best-effort."""
-        upload_url = (
-            f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
-            f"/{record_id}/{FIELD_ATT_CAPTURE}/upload"
-        )
-        try:
-            headers = self._headers(env=env, include_content_type=False)
-            files = {"file": ("capture.jpg", jpeg_bytes, "image/jpeg")}
-            resp = requests.post(upload_url, headers=headers, files=files, timeout=20)
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("code") == 3000:
-                logger.info(f"Live capture uploaded for {student_name} (record {record_id})")
-            else:
-                logger.warning(
-                    f"Live capture upload unexpected response "
-                    f"code={result.get('code')}: {result.get('message', '')}"
-                )
-        except Exception as e:
-            logger.warning(f"Live capture upload failed for {student_name} (record {record_id}): {e}")
 
     # ─── Utility ───────────────────────────────────────────────────────────────
 

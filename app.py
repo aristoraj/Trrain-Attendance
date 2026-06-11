@@ -19,7 +19,6 @@ import functools
 import hashlib
 import hmac as _hmac
 import html as _html
-import io
 import json as _json
 import logging
 import os
@@ -27,8 +26,6 @@ import threading
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
-from PIL import Image as _PIL_Image
 
 _IST = ZoneInfo("Asia/Kolkata")
 
@@ -162,11 +159,6 @@ _scope_encoding_lock = threading.Lock()
 # Track keys that are currently being loaded in a background thread
 _preloading_keys: set[str] = set()
 _preloading_lock  = threading.Lock()
-
-# Live-capture store: {student_id: (jpeg_bytes, unix_timestamp)}
-# Populated at /api/verify match time; consumed by /api/post-attendance.
-_pending_captures: dict = {}
-_captures_lock    = threading.Lock()
 
 
 def _resolve_env(raw: str | None) -> str:
@@ -1307,21 +1299,6 @@ def verify():
             daemon=True,
         ).start()
 
-        # Store full-frame JPEG for audit trail — attached to the Zoho attendance
-        # record by post_attendance().  Best-effort: never blocks the response.
-        try:
-            _buf = io.BytesIO()
-            _PIL_Image.fromarray(image_array).save(_buf, format="JPEG", quality=85)
-            with _captures_lock:
-                # Evict stale entries (>5 min) to prevent unbounded growth
-                _now = time.time()
-                stale = [k for k, (_, ts) in _pending_captures.items() if _now - ts > 300]
-                for k in stale:
-                    del _pending_captures[k]
-                _pending_captures[best_match["id"]] = (_buf.getvalue(), _now)
-        except Exception as _cap_err:
-            logger.warning(f"Live capture encode failed (photo will be skipped): {_cap_err}")
-
         # Return match result only — attendance posting is handled by the
         # frontend via SDK (addRecord on Face_Attendance form) with
         # /api/post-attendance as fallback.
@@ -1366,19 +1343,12 @@ def post_attendance():
 
     today_str = datetime.now(_IST).strftime("%d-%b-%Y")
 
-    # Pop live capture stored at verify time — passed into the DB row so any
-    # worker's drain can read it without cross-process memory sharing.
-    with _captures_lock:
-        _entry = _pending_captures.pop(student_id, None)
-    _jpeg = _entry[0] if _entry else None
-
     queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
         student_id=student_id,
         student_name=student_name,
         date_str=today_str,
         environment=env,
         device_session_id=device_session_id,
-        jpeg_bytes=_jpeg,
     )
     if is_duplicate:
         return jsonify({
