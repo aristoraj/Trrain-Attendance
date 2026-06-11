@@ -879,14 +879,6 @@ class ZohoCreatorAPI:
         env:               str = "",
         jpeg_bytes:        bytes = None,
     ) -> dict:
-        """Post a new attendance record to Zoho Creator.
-
-        Always creates the record via plain JSON POST.
-        For development env only: if jpeg_bytes is provided, uploads the live
-        capture photo to the created record as a separate API call (best-effort).
-        Zoho Creator silently drops files sent during record creation — the
-        two-step create-then-upload pattern is required.
-        """
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
 
@@ -897,34 +889,6 @@ class ZohoCreatorAPI:
         }
 
         try:
-            if jpeg_bytes and env == "development":
-                # Single-call attempt: data as plain form field + file as multipart part.
-                import json as _json
-                headers = self._headers(env=env, include_content_type=False)
-                logger.info(f"Posting attendance + capture photo — {student_name}")
-                try:
-                    resp = requests.post(
-                        url,
-                        headers=headers,
-                        data={"data": _json.dumps({"data": data_payload})},
-                        files={FIELD_ATT_CAPTURE: ("capture.jpg", jpeg_bytes, "image/jpeg")},
-                        timeout=20,
-                    )
-                    resp.raise_for_status()
-                    result = resp.json()
-                    zoho_code = result.get("code")
-                    if zoho_code is not None and zoho_code != 3000:
-                        raise RuntimeError(f"Zoho error {zoho_code}: {result.get('message', '')}")
-                    rec_id = result.get("data", {}).get("ID", "unknown")
-                    logger.info(f"Attendance + photo posted for {student_name} — Zoho record ID: {rec_id}")
-                    return {"success": True, "data": result}
-                except Exception as photo_err:
-                    logger.warning(
-                        f"Single-call multipart failed ({photo_err}) "
-                        f"— falling back to plain JSON for {student_name}"
-                    )
-                    # Fall through to plain JSON POST so attendance always succeeds
-
             payload = {"data": data_payload}
             logger.info(f"Posting attendance — {student_name}")
             resp = self._request("post", url, env=env, json=payload, timeout=15)
@@ -938,6 +902,10 @@ class ZohoCreatorAPI:
 
             rec_id = result.get("data", {}).get("ID", "unknown")
             logger.info(f"Attendance posted for {student_name} — Zoho record ID: {rec_id}")
+
+            if jpeg_bytes and env == "development" and rec_id != "unknown":
+                self._upload_capture_photo(rec_id, jpeg_bytes, student_name, env)
+
             return {"success": True, "data": result}
 
         except requests.HTTPError as e:
