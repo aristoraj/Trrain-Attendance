@@ -1319,6 +1319,7 @@ def verify():
                 for k in stale:
                     del _pending_captures[k]
                 _pending_captures[best_match["id"]] = (_buf.getvalue(), _now)
+            logger.info(f"Live capture stored for {best_match['id']} ({len(_buf.getvalue())} bytes)")
         except Exception as _cap_err:
             logger.warning(f"Live capture encode failed (photo will be skipped): {_cap_err}")
 
@@ -1370,6 +1371,7 @@ def post_attendance():
     with _captures_lock:
         _entry = _pending_captures.pop(student_id, None)
     _jpeg = _entry[0] if _entry else None
+    logger.info(f"Capture lookup: id={student_id!r} found={_jpeg is not None} store_size={len(_pending_captures)}")
     if _jpeg:
         att_queue.store_capture(student_id, _jpeg)
 
