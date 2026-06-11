@@ -897,6 +897,38 @@ class ZohoCreatorAPI:
         }
 
         try:
+            # Development + photo: single multipart POST mixing a text form-field
+            # for `data` (JSON) and a file part for the capture image.
+            # This is the correct format — using files= for both parts caused
+            # Zoho to silently drop the file because it expected `data` as a
+            # plain text field, not a file part.
+            # Production (or no photo): plain JSON POST — field doesn't exist there.
+            if jpeg_bytes and env == "development":
+                import json as _json
+                headers = self._headers(env=env, include_content_type=False)
+                logger.info(f"Posting attendance + capture photo — {student_name}")
+                try:
+                    resp = requests.post(
+                        url,
+                        headers=headers,
+                        data={"data": _json.dumps({"data": data_payload})},
+                        files={FIELD_ATT_CAPTURE: ("capture.jpg", jpeg_bytes, "image/jpeg")},
+                        timeout=20,
+                    )
+                    resp.raise_for_status()
+                    result = resp.json()
+                    zoho_code = result.get("code")
+                    if zoho_code is not None and zoho_code != 3000:
+                        raise RuntimeError(f"Zoho error {zoho_code}: {result.get('message', '')}")
+                    logger.info(f"Attendance + photo posted for {student_name}")
+                    return {"success": True, "data": result}
+                except Exception as photo_err:
+                    logger.warning(
+                        f"Multipart post failed ({photo_err}) "
+                        f"— falling back to plain JSON for {student_name}"
+                    )
+                    # Fall through to plain JSON POST so attendance always succeeds
+
             payload = {"data": data_payload}
             logger.info(f"Posting attendance — {student_name}")
             resp = self._request("post", url, env=env, json=payload, timeout=15)
@@ -909,14 +941,6 @@ class ZohoCreatorAPI:
                 return {"success": False, "error": f"Zoho error {zoho_code}: {result.get('message', '')}"}
 
             logger.info(f"Attendance posted for {student_name} (ID: {student_id})")
-
-            # Upload live capture photo — development env only, best-effort.
-            # Production form does not have the Live_Captured_Image field.
-            if jpeg_bytes and env == "development":
-                record_id = result.get("data", {}).get("ID")
-                if record_id:
-                    self._upload_capture_photo(record_id, jpeg_bytes, student_name, env)
-
             return {"success": True, "data": result}
 
         except requests.HTTPError as e:
@@ -925,30 +949,6 @@ class ZohoCreatorAPI:
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             return {"success": False, "error": str(e)}
-
-    def _upload_capture_photo(
-        self, record_id: str, jpeg_bytes: bytes, student_name: str, env: str
-    ) -> None:
-        """Upload live capture JPEG to an existing attendance record. Best-effort."""
-        upload_url = (
-            f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
-            f"/{record_id}/{FIELD_ATT_CAPTURE}/upload"
-        )
-        try:
-            headers = self._headers(env=env, include_content_type=False)
-            files = {"file": ("capture.jpg", jpeg_bytes, "image/jpeg")}
-            resp = requests.post(upload_url, headers=headers, files=files, timeout=20)
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("code") == 3000:
-                logger.info(f"Live capture uploaded for {student_name} (record {record_id})")
-            else:
-                logger.warning(
-                    f"Live capture upload unexpected response "
-                    f"code={result.get('code')}: {result.get('message', '')}"
-                )
-        except Exception as e:
-            logger.warning(f"Live capture upload failed for {student_name} (record {record_id}): {e}")
 
     # ─── Utility ───────────────────────────────────────────────────────────────
 
