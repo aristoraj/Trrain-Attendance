@@ -21,7 +21,7 @@ from config import (
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
+    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ATT_CAPTURE,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
 
@@ -877,8 +877,15 @@ class ZohoCreatorAPI:
         student_name:      str,
         verification_type: str = "face_blink_verified",
         env:               str = "",
+        jpeg_bytes:        bytes = None,
     ) -> dict:
-        """Post a new attendance record to Zoho Creator."""
+        """Post a new attendance record to Zoho Creator.
+
+        If jpeg_bytes is provided, sends as multipart/form-data so the live
+        capture photo is attached to the attendance record in one API call.
+        Falls back to plain JSON POST if the multipart attempt fails, ensuring
+        attendance is always recorded even if photo upload fails.
+        """
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
 
@@ -888,10 +895,36 @@ class ZohoCreatorAPI:
             FIELD_ATT_STATUS:  "Present",
         }
 
-        payload = {"data": data_payload}
-        logger.info(f"Posting attendance — {student_name} | payload: {payload}")
-
         try:
+            if jpeg_bytes:
+                # Multipart POST: data field (JSON) + live capture photo.
+                # _get_headers with include_content_type=False omits
+                # Content-Type so requests can set it with the multipart boundary.
+                import json as _json
+                headers = self._get_headers(env=env, include_content_type=False)
+                files = {
+                    "data": (None, _json.dumps({"data": data_payload}), "application/json"),
+                    FIELD_ATT_CAPTURE: ("capture.jpg", jpeg_bytes, "image/jpeg"),
+                }
+                logger.info(f"Posting attendance + capture photo — {student_name}")
+                try:
+                    resp = requests.post(url, headers=headers, files=files, timeout=20)
+                    resp.raise_for_status()
+                    result = resp.json()
+                    zoho_code = result.get("code")
+                    if zoho_code is not None and zoho_code != 3000:
+                        raise RuntimeError(f"Zoho error {zoho_code}: {result.get('message', '')}")
+                    logger.info(f"Attendance + photo posted for {student_name}")
+                    return {"success": True, "data": result}
+                except Exception as photo_err:
+                    logger.warning(
+                        f"Multipart attendance failed ({photo_err}) "
+                        f"— retrying without photo for {student_name}"
+                    )
+                    # Fall through to plain JSON POST below
+
+            payload = {"data": data_payload}
+            logger.info(f"Posting attendance — {student_name}")
             resp = self._request("post", url, env=env, json=payload, timeout=15)
             logger.info(f"Zoho response HTTP {resp.status_code}: {resp.text[:500]}")
             resp.raise_for_status()

@@ -45,9 +45,10 @@ FIELD_STUDENT_PHOTO     = os.environ.get("FIELD_STUDENT_PHOTO",     "Upload_Phot
 FIELD_STUDENT_EMBEDDING = os.environ.get("FIELD_STUDENT_EMBEDDING", "Face_Embedding")
 
 # ─── Attendance form field names ──────────────────────────────────────────────
-FIELD_ATT_STUDENT = os.environ.get("FIELD_ATT_STUDENT", "Trainee")   # lookup
-FIELD_ATT_DATE    = os.environ.get("FIELD_ATT_DATE",    "Date_field")
-FIELD_ATT_STATUS  = os.environ.get("FIELD_ATT_STATUS",  "Attendance")   # dropdown
+FIELD_ATT_STUDENT  = os.environ.get("FIELD_ATT_STUDENT",  "Trainee")      # lookup
+FIELD_ATT_DATE     = os.environ.get("FIELD_ATT_DATE",     "Date_field")
+FIELD_ATT_STATUS   = os.environ.get("FIELD_ATT_STATUS",   "Attendance")    # dropdown
+FIELD_ATT_CAPTURE  = os.environ.get("FIELD_ATT_CAPTURE",  "Live_Captured_Image")  # file upload
 
 # ─── Zoho Creator Environment ────────────────────────────────────────────────
 # Overridden per-request by envUrlFragment from the Widget SDK.

@@ -90,6 +90,10 @@ class AttendanceQueue:
         # In-memory fast-path dedup {date_str: set_of_student_ids}
         self._global_marked: dict[str, set] = {}
 
+        # Live-capture store {student_id: jpeg_bytes} — populated by store_capture(),
+        # drained (popped) by _drain() when posting attendance to Zoho.
+        self._capture_store: dict = {}
+
         if self._is_postgres:
             logger.info("AttendanceQueue: using PostgreSQL (DATABASE_URL set).")
         else:
@@ -721,6 +725,11 @@ class AttendanceQueue:
             self._mark_in_memory(student_id, date_str)
         logger.info(f"SDK attendance marked for {student_name} ({date_str})")
 
+    def store_capture(self, student_id: str, jpeg_bytes: bytes) -> None:
+        """Store a live-capture JPEG to be attached to this student's next attendance POST."""
+        if jpeg_bytes:
+            self._capture_store[student_id] = jpeg_bytes
+
     def enqueue_if_not_marked(self, student_id: str, student_name: str,
                               date_str: str, environment: str = "",
                               device_session_id: str = "") -> tuple:
@@ -1268,6 +1277,7 @@ class AttendanceQueue:
                     student_name=name,
                     verification_type="face_blink_verified",
                     env=environment,
+                    jpeg_bytes=self._capture_store.pop(student_id, None),
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)
