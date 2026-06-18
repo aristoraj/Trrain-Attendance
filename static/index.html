@@ -1650,6 +1650,31 @@ async function postAttendanceHybrid(verifyData) {
 
 async function doCheckout(verifyData) {
   const student = verifyData.student;
+
+  // Use SDK to find today's attendance record ID — SDK has proper env access, server OAuth does not
+  let zohoRecordId = '';
+  if (typeof ZOHO !== 'undefined' && ZOHO.CREATOR && ZOHO.CREATOR.DATA) {
+    try {
+      if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
+      const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
+      const recResp = await ZOHO.CREATOR.DATA.getRecords({
+        app_name:    APP_LINK_NAME,
+        report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
+        criteria:    '(' + _cfg.fields.att_student + '.ID=="' + student.id + '"&&' +
+                     _cfg.fields.att_date + '=="' + today + '")',
+        page: 1, page_size: 1,
+      });
+      if (recResp && recResp.data && recResp.data.length > 0) {
+        zohoRecordId = String(recResp.data[0].ID || '');
+        console.log('[Checkout] SDK found record ID:', zohoRecordId);
+      } else {
+        console.warn('[Checkout] SDK found no attendance record for today');
+      }
+    } catch (e) {
+      console.warn('[Checkout] SDK record lookup failed (non-fatal):', e);
+    }
+  }
+
   const resp = await authFetch('/api/checkout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1657,6 +1682,7 @@ async function doCheckout(verifyData) {
       student_id:       student.id,
       student_name:     student.name,
       zoho_environment: ZOHO_ENV || '',
+      zoho_record_id:   zohoRecordId,
     }),
   });
   const data = await resp.json();

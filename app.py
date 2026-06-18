@@ -1435,15 +1435,16 @@ def checkout():
 
     Enforces a 5-minute minimum gap since check-in.
     """
-    data         = request.get_json(force=True) or {}
-    student_id   = (data.get("student_id")   or "").strip()
-    student_name = (data.get("student_name") or "").strip()
-    env          = _resolve_env(data.get("zoho_environment"))
+    data           = request.get_json(force=True) or {}
+    student_id     = (data.get("student_id")     or "").strip()
+    student_name   = (data.get("student_name")   or "").strip()
+    env            = _resolve_env(data.get("zoho_environment"))
+    req_zoho_id    = (data.get("zoho_record_id") or "").strip()   # SDK-resolved record ID
 
     if not student_id or not student_name:
         return jsonify({"success": False, "error": "student_id and student_name required"}), 400
 
-    logger.info(f"[Checkout] request received — student={student_name}, raw_env='{data.get('zoho_environment')}', resolved_env='{env}'")
+    logger.info(f"[Checkout] request received — student={student_name}, env='{env}', sdk_zoho_id='{req_zoho_id}'")
 
     today_str    = datetime.now(_IST).strftime("%d-%b-%Y")
     checkin_info = att_queue.get_checkin_status(student_id, today_str)
@@ -1475,11 +1476,10 @@ def checkout():
             "error":             f"Please wait {remaining} more minute(s) before checking out.",
         })
 
-    # Use stored Zoho record ID (set when attendance was posted) — avoids report READ permission issue
-    zoho_rec_id = checkin_info.get("zoho_record_id", "")
+    # Priority: 1) SDK-resolved ID from request  2) stored ID from checkin_state  3) server-side search (may 401 in dev)
+    zoho_rec_id = req_zoho_id or checkin_info.get("zoho_record_id", "")
     if not zoho_rec_id:
-        # Fallback: search the report (may fail in development environment due to OAuth scope)
-        logger.info(f"Checkout: no stored zoho_record_id for {student_name}, falling back to find_attendance_record")
+        logger.info(f"Checkout: no SDK/stored zoho_record_id for {student_name}, falling back to find_attendance_record")
         zoho_rec_id = zoho.find_attendance_record(student_id, today_str, env)
     if not zoho_rec_id:
         logger.warning(f"Checkout: no Zoho record found for {student_name} on {today_str}")
@@ -1487,7 +1487,7 @@ def checkout():
             "success": False,
             "error":   "Attendance record not yet synced to Zoho. Please try again in a moment.",
         })
-    logger.info(f"Checkout: using zoho_rec_id={zoho_rec_id} for {student_name}")
+    logger.info(f"Checkout: using zoho_rec_id={zoho_rec_id} for {student_name} (source: {'sdk_request' if req_zoho_id else 'stored' if checkin_info.get('zoho_record_id') else 'search'})")
 
     # PATCH Check_Out time + Auto_Checkout = No
     checkout_time = datetime.now(_IST).strftime("%H:%M")
