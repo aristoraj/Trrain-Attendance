@@ -1408,8 +1408,9 @@ def post_attendance():
 @limiter.limit("120 per minute")
 def record_checkin_api():
     """
-    Lightweight endpoint called after SDK addRecord succeeds on the frontend.
-    Records check-in state locally so /api/checkout can reference it later.
+    Called after SDK addRecord succeeds on the frontend.
+    Records check-in state locally and uploads the live capture photo taken
+    during /api/verify to the newly created Zoho attendance record.
     No-op if already recorded (idempotent).
     """
     data           = request.get_json(force=True) or {}
@@ -1420,6 +1421,22 @@ def record_checkin_api():
     today_str      = datetime.now(_IST).strftime("%d-%b-%Y")
     if student_id:
         att_queue.record_checkin(student_id, student_name, today_str, env, zoho_record_id)
+
+    # Upload live capture photo (best-effort, non-blocking)
+    if student_id and zoho_record_id:
+        with _captures_lock:
+            _entry = _pending_captures.pop(student_id, None)
+        _jpeg = _entry[0] if _entry else None
+        if _jpeg:
+            threading.Thread(
+                target=zoho._upload_capture_photo,
+                args=(zoho_record_id, _jpeg, student_name, env),
+                daemon=True,
+            ).start()
+            logger.info(f"Check-in photo upload queued for {student_name} (record {zoho_record_id})")
+        else:
+            logger.warning(f"Check-in photo not available for {student_name} (capture may have expired)")
+
     return jsonify({"success": True})
 
 
@@ -1431,7 +1448,8 @@ def record_checkin_api():
 def checkout():
     """
     Check-out: find today's Zoho attendance record, PATCH Check_Out time +
-    Auto_Checkout=No, upload live capture photo, mark checked out locally.
+    Auto_Checkout=No, mark checked out locally.
+    Live capture photo is uploaded at check-in time via /api/record-checkin.
 
     Enforces a 5-minute minimum gap since check-in.
     """
@@ -1495,15 +1513,6 @@ def checkout():
     if not result.get("success"):
         logger.error(f"Checkout PATCH failed for {student_name}: {result.get('error')}")
         return jsonify({"success": False, "error": result.get("error", "Checkout failed")}), 500
-
-    # Upload live capture photo (best-effort — never blocks checkout)
-    with _captures_lock:
-        _entry = _pending_captures.pop(student_id, None)
-    _jpeg = _entry[0] if _entry else None
-    if _jpeg:
-        zoho._upload_capture_photo(zoho_rec_id, _jpeg, student_name, env)
-    else:
-        logger.warning(f"Checkout photo not available for {student_name} (capture may have expired)")
 
     # Mark checked out in local state
     att_queue.record_checkout(student_id, today_str)
