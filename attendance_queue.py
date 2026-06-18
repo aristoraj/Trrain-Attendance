@@ -973,9 +973,17 @@ class AttendanceQueue:
                     self._q("DELETE FROM attendance_queue WHERE date_str=? AND student_id=?"),
                     (today, student_id),
                 )
+                conn.execute(
+                    self._q("DELETE FROM checkin_state WHERE date_str=? AND student_id=?"),
+                    (today, student_id),
+                )
             else:
                 cur = conn.execute(
                     self._q("DELETE FROM attendance_queue WHERE date_str=?"),
+                    (today,),
+                )
+                conn.execute(
+                    self._q("DELETE FROM checkin_state WHERE date_str=?"),
                     (today,),
                 )
             count = cur.rowcount
