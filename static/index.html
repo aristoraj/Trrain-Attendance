@@ -106,25 +106,33 @@
       position: absolute;
       bottom: 12%; left: 50%;
       transform: translateX(-50%);
-      background: rgba(0,0,0,0.68);
+      background: rgba(0,0,0,0.72);
       backdrop-filter: blur(4px);
       border-radius: 20px;
-      padding: 8px 16px;
+      padding: 10px 18px;
       display: none;
       align-items: center;
       gap: 10px;
       white-space: nowrap;
+      z-index: 20;
     }
     .cam-blink-overlay.show { display: flex; }
     .blink-dot {
-      width: 14px; height: 14px;
+      width: 16px; height: 16px;
       border-radius: 50%;
       background: rgba(255,255,255,0.25);
-      border: 2px solid rgba(255,255,255,0.5);
+      border: 2px solid rgba(255,255,255,0.6);
       display: inline-block;
       transition: background 0.2s, border-color 0.2s;
+      flex-shrink: 0;
     }
     .blink-dot.filled { background: #22C55E; border-color: #22C55E; }
+    .blink-overlay-label {
+      font-size: 13px;
+      color: #fff;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+    }
     .ear-wrap { display: flex; flex-direction: column; gap: 3px; }
     .ear-text  { font-size: 10px; color: #aaa; }
     .ear-bar   { height: 4px; width: 60px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden; }
@@ -546,10 +554,9 @@
     <!-- Blink dot overlay -->
     <div class="cam-blink-overlay" id="blink-overlay">
       <span class="blink-dot" id="blink-dot-1"></span>
-      <span class="blink-dot" id="blink-dot-2"></span>
-      <div class="ear-wrap">
-        <div class="ear-text">Eye: <span id="ear-val">—</span></div>
-        <div class="ear-bar"><div class="ear-fill" id="ear-fill"></div></div>
+      <span class="blink-overlay-label">Blink once</span>
+      <div style="display:none">
+        <span id="ear-val"></span><div id="ear-fill"></div>
       </div>
     </div>
 
@@ -1032,11 +1039,11 @@ async function loadStudentsHybrid(email) {
 
 // ── Face recognition config ───────────────────────────────────────────────────
 
-const BLINKS_REQUIRED       = 2;
-const EAR_CLOSE_THRESH      = 0.20;
-const EAR_OPEN_THRESH       = 0.25;
+const BLINKS_REQUIRED       = 1;
+const EAR_CLOSE_THRESH      = 0.22;
+const EAR_OPEN_THRESH       = 0.27;
 const EAR_SMOOTH_ALPHA      = 0.3;
-const CLOSED_FRAMES_NEEDED  = 2;    // consecutive frames eye must stay closed
+const CLOSED_FRAMES_NEEDED  = 1;    // single frame below threshold counts as closed
 const FACE_LOST_GRACE       = 8;    // consecutive no-face frames before resetting step 1
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
@@ -1159,8 +1166,8 @@ function initFaceMesh() {
   mesh.setOptions({
     maxNumFaces:            1,
     refineLandmarks:        true,
-    minDetectionConfidence: 0.7,
-    minTrackingConfidence:  0.6,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence:  0.5,
   });
   mesh.onResults(results => {
     if (faceMeshInstance !== mesh) return;
@@ -1245,7 +1252,7 @@ function onFaceMeshResults(results) {
         state.eyeWasClosed = true;
       }
       setFrameClass('liveness');
-      setStatus('blink', 'Blink detected…');
+      setStatus('blink', 'Eyes closing — open them back up…');
     } else if (avgEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
       state.eyeWasClosed = false;
       state.closedFrames = 0;
