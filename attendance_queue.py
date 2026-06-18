@@ -20,6 +20,9 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 logger = logging.getLogger(__name__)
 
@@ -802,7 +805,7 @@ class AttendanceQueue:
             self._create_checkin_state_table(conn)
 
     def _rebuild_dedup_from_db(self):
-        today = datetime.now().strftime("%d-%b-%Y")
+        today = datetime.now(_IST).strftime("%d-%b-%Y")
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
@@ -1007,7 +1010,7 @@ class AttendanceQueue:
         Pass student_id to clear a single student; omit to clear everyone for today.
         Used for testing only — does NOT affect Zoho Creator (delete there separately).
         """
-        today = datetime.now().strftime("%d-%b-%Y")
+        today = datetime.now(_IST).strftime("%d-%b-%Y")
         with self._db() as conn:
             if student_id:
                 cur = conn.execute(
