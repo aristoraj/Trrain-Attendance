@@ -133,6 +133,27 @@
       font-weight: 500;
       letter-spacing: 0.01em;
     }
+    .smile-icon-anim {
+      position: relative;
+      width: 22px; height: 22px;
+      flex-shrink: 0;
+    }
+    .smile-icon-anim i {
+      position: absolute;
+      top: 0; left: 0;
+      font-size: 22px;
+      color: #fff;
+    }
+    @keyframes face-fade {
+      0%, 35%  { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+    @keyframes smile-fade {
+      0%, 35%  { opacity: 0; }
+      50%, 100% { opacity: 1; }
+    }
+    .smile-icon-neutral { animation: face-fade  2s ease-in-out infinite; }
+    .smile-icon-smile   { animation: smile-fade 2s ease-in-out infinite; }
     .ear-wrap { display: flex; flex-direction: column; gap: 3px; }
     .ear-text  { font-size: 10px; color: #aaa; }
     .ear-bar   { height: 4px; width: 60px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden; }
@@ -558,6 +579,15 @@
       <div style="display:none">
         <span id="ear-val"></span><div id="ear-fill"></div>
       </div>
+    </div>
+
+    <!-- Smile overlay (fallback) -->
+    <div class="cam-blink-overlay" id="smile-overlay">
+      <div class="smile-icon-anim">
+        <i class="bi bi-emoji-neutral smile-icon-neutral"></i>
+        <i class="bi bi-emoji-smile-fill smile-icon-smile"></i>
+      </div>
+      <span class="blink-overlay-label">Smile for the camera</span>
     </div>
 
     <!-- Inactivity overlay -->
@@ -1045,6 +1075,9 @@ const EAR_OPEN_THRESH       = 0.27;
 const EAR_SMOOTH_ALPHA      = 0.3;
 const CLOSED_FRAMES_NEEDED  = 1;    // single frame below threshold counts as closed
 const FACE_LOST_GRACE       = 8;    // consecutive no-face frames before resetting step 1
+const LIVENESS_SWITCH_MS    = 15000; // ms before switching blink ↔ smile
+const SMILE_RATIO_THRESH    = 3.0;   // mouth width/height ratio to confirm smile
+const SMILE_FRAMES_NEEDED   = 3;     // consecutive frames above ratio to confirm
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 
@@ -1062,10 +1095,14 @@ let state = {
   verifying:      false,
   done:           false,
   faceLostFrames: 0,
+  livenessMode:   'blink',  // 'blink' | 'smile'
+  smileFrames:    0,
+  captureAction:  '',       // 'Blink' | 'Smile' — set on success, ready for Action_field
 };
 
 let videoEl, canvasEl, ctx, faceMeshInstance, cameraInstance;
-let _currentStream = null;
+let _currentStream  = null;
+let _livenessTimer  = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
@@ -1074,6 +1111,7 @@ const statusDot    = document.getElementById('status-dot');
 const statusText   = document.getElementById('status-text');
 const faceFrame    = document.getElementById('face-frame');
 const blinkOverlay = document.getElementById('blink-overlay');
+const smileOverlay = document.getElementById('smile-overlay');
 const earVal       = document.getElementById('ear-val');
 const earFill      = document.getElementById('ear-fill');
 const spinnerEl    = document.getElementById('spinner');
@@ -1205,17 +1243,21 @@ function onFaceMeshResults(results) {
     // flickering resets from single missed frames (common on mobile).
     if (state.faceDetected && state.faceLostFrames >= FACE_LOST_GRACE) {
       state.faceDetected = false;
+      clearTimeout(_livenessTimer);
       if (!state.blinkVerified) {
         state.step1Done    = false;
         state.blinkCount   = 0;
         state.closedFrames = 0;
         state.eyeWasClosed = false;
+        state.smileFrames  = 0;
+        state.livenessMode = 'blink';
         document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
         activateStep(1);
       }
       setStatus('dot', 'Position your face in the oval');
       setFrameClass('');
       blinkOverlay.classList.remove('show');
+      smileOverlay.classList.remove('show');
     }
     state.closedFrames = 0;
     state.eyeWasClosed = false;
@@ -1227,10 +1269,13 @@ function onFaceMeshResults(results) {
   if (!state.faceDetected && !state.step1Done) {
     state.faceDetected = true;
     state.step1Done    = true;
+    state.livenessMode = 'blink';
     setStatus('active', 'Face detected — blink to verify liveness');
     setFrameClass('detected');
     activateStep(2);
     blinkOverlay.classList.add('show');
+    smileOverlay.classList.remove('show');
+    startLivenessTimer();
     resetInactivityTimer();
   }
 
@@ -1246,33 +1291,87 @@ function onFaceMeshResults(results) {
   earFill.style.background = avgEAR < EAR_CLOSE_THRESH ? '#EAB308' : '#22C55E';
 
   if (!state.blinkVerified) {
-    if (avgEAR < EAR_CLOSE_THRESH) {
-      state.closedFrames++;
-      if (state.closedFrames >= CLOSED_FRAMES_NEEDED) {
-        state.eyeWasClosed = true;
+    if (state.livenessMode === 'blink') {
+      if (avgEAR < EAR_CLOSE_THRESH) {
+        state.closedFrames++;
+        if (state.closedFrames >= CLOSED_FRAMES_NEEDED) {
+          state.eyeWasClosed = true;
+        }
+        setFrameClass('liveness');
+        setStatus('blink', 'Eyes closing — open them back up…');
+      } else if (avgEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
+        state.eyeWasClosed = false;
+        state.closedFrames = 0;
+        state.blinkCount++;
+        const dot = document.getElementById('blink-dot-' + state.blinkCount);
+        if (dot) dot.classList.add('filled');
+        if (state.blinkCount >= BLINKS_REQUIRED) {
+          clearTimeout(_livenessTimer);
+          state.blinkVerified = true;
+          state.captureAction = 'Blink';
+          setStatus('ok', 'Liveness confirmed — capturing…');
+          setFrameClass('verified');
+          activateStep(3);
+          captureAndVerify();
+        } else {
+          const rem = BLINKS_REQUIRED - state.blinkCount;
+          setStatus('blink', `Good! ${rem} more blink${rem > 1 ? 's' : ''}…`);
+        }
+      } else if (avgEAR > EAR_OPEN_THRESH) {
+        state.closedFrames = 0;
       }
-      setFrameClass('liveness');
-      setStatus('blink', 'Eyes closing — open them back up…');
-    } else if (avgEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
-      state.eyeWasClosed = false;
-      state.closedFrames = 0;
-      state.blinkCount++;
-      const dot = document.getElementById('blink-dot-' + state.blinkCount);
-      if (dot) dot.classList.add('filled');
-      if (state.blinkCount >= BLINKS_REQUIRED) {
-        state.blinkVerified = true;
-        setStatus('ok', 'Liveness confirmed — capturing…');
-        setFrameClass('verified');
-        activateStep(3);
-        captureAndVerify();
+    } else {
+      const smileRatio = computeSmileRatio(landmarks, w, h);
+      if (smileRatio > SMILE_RATIO_THRESH) {
+        state.smileFrames++;
+        setFrameClass('liveness');
+        setStatus('blink', 'Keep smiling…');
+        if (state.smileFrames >= SMILE_FRAMES_NEEDED) {
+          clearTimeout(_livenessTimer);
+          state.blinkVerified = true;
+          state.captureAction = 'Smile';
+          setStatus('ok', 'Liveness confirmed — capturing…');
+          setFrameClass('verified');
+          activateStep(3);
+          captureAndVerify();
+        }
       } else {
-        const rem = BLINKS_REQUIRED - state.blinkCount;
-        setStatus('blink', `Good! ${rem} more blink${rem > 1 ? 's' : ''}…`);
+        state.smileFrames = 0;
       }
-    } else if (avgEAR > EAR_OPEN_THRESH) {
-      state.closedFrames = 0;
     }
   }
+}
+
+// ── Liveness mode cycling ─────────────────────────────────────────────────────
+
+function startLivenessTimer() {
+  clearTimeout(_livenessTimer);
+  _livenessTimer = setTimeout(() => {
+    if (state.blinkVerified || state.done || state.verifying) return;
+    state.livenessMode = state.livenessMode === 'blink' ? 'smile' : 'blink';
+    state.smileFrames  = 0;
+    state.closedFrames = 0;
+    state.eyeWasClosed = false;
+    showLivenessMode(state.livenessMode);
+    startLivenessTimer();
+  }, LIVENESS_SWITCH_MS);
+}
+
+function showLivenessMode(mode) {
+  if (mode === 'blink') {
+    blinkOverlay.classList.add('show');
+    smileOverlay.classList.remove('show');
+    setStatus('active', 'Blink to verify liveness');
+  } else {
+    blinkOverlay.classList.remove('show');
+    smileOverlay.classList.add('show');
+    setStatus('active', 'Smile for the camera');
+  }
+}
+
+function computeSmileRatio(landmarks, w, h) {
+  const pt = i => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
+  return dist(pt(61), pt(291)) / Math.max(dist(pt(13), pt(14)), 1);
 }
 
 // ── EAR & mesh drawing ────────────────────────────────────────────────────────
@@ -1559,6 +1658,7 @@ function showSpinner(on) {
 // ── Reset ─────────────────────────────────────────────────────────────────────
 
 function resetForRetry() {
+  clearTimeout(_livenessTimer);
   setTimeout(() => {
     state.verifying      = false;
     state.faceDetected   = false;
@@ -1569,8 +1669,12 @@ function resetForRetry() {
     state.eyeWasClosed   = false;
     state.smoothedEAR    = 0.3;
     state.faceLostFrames = 0;
+    state.livenessMode   = 'blink';
+    state.smileFrames    = 0;
+    state.captureAction  = '';
     document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
     blinkOverlay.classList.remove('show');
+    smileOverlay.classList.remove('show');
     hideBanner();
     setStatus('active', 'Position your face in the oval');
     setFrameClass('');
@@ -1580,13 +1684,16 @@ function resetForRetry() {
 }
 
 function _fullReset() {
+  clearTimeout(_livenessTimer);
   state = {
     cameraReady: false, faceDetected: false, step1Done: false,
     blinkCount: 0, closedFrames: 0, eyeWasClosed: false, smoothedEAR: 0.3,
     blinkVerified: false, verifying: false, done: false, faceLostFrames: 0,
+    livenessMode: 'blink', smileFrames: 0, captureAction: '',
   };
   document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
   blinkOverlay.classList.remove('show');
+  smileOverlay.classList.remove('show');
   hideBanner();
   setFrameClass('');
   activateStep(0);
