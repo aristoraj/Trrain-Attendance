@@ -897,7 +897,7 @@ class ZohoCreatorAPI:
 
         try:
             payload = {"data": data_payload}
-            logger.info(f"Posting attendance — {student_name}")
+            logger.info(f"Posting attendance — {student_name} | payload fields: {list(data_payload.keys())} | values: Check_In={data_payload.get(FIELD_CHECK_IN, 'NOT SET')}, Action={data_payload.get(FIELD_ACTION, 'NOT SET')}")
             resp = self._request("post", url, env=env, json=payload, timeout=15)
             resp.raise_for_status()
 

@@ -43,7 +43,7 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT,
     ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ACTION,
+    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ACTION, FIELD_CHECK_IN,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
     FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
@@ -1365,11 +1365,13 @@ def post_attendance():
     env               = _resolve_env(data.get("zoho_environment"))
     device_session_id = (data.get("device_session_id") or "").strip()
     action_field      = (data.get("action") or "").strip()
+    now_ist           = datetime.now(_IST)
+    checkin_time      = now_ist.strftime("%H:%M")
 
     if not student_id or not student_name:
         return jsonify({"success": False, "error": "student_id and student_name required"}), 400
 
-    today_str = datetime.now(_IST).strftime("%d-%b-%Y")
+    today_str = now_ist.strftime("%d-%b-%Y")
 
     queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
         student_id=student_id,
@@ -1378,6 +1380,7 @@ def post_attendance():
         environment=env,
         device_session_id=device_session_id,
         action_field=action_field,
+        checkin_time=checkin_time,
     )
     if is_duplicate:
         return jsonify({
@@ -1651,6 +1654,7 @@ def api_config():
             "att_date":          FIELD_ATT_DATE,
             "att_status":        FIELD_ATT_STATUS,
             "att_action":        FIELD_ACTION,
+            "att_check_in":      FIELD_CHECK_IN,
             "centre_email":      FIELD_CENTRE_LOGIN_EMAIL,
             "centre_name":       FIELD_CENTRE_NAME,
             "user_email":        FIELD_USER_MGMT_EMAIL,

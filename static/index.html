@@ -1589,7 +1589,11 @@ async function postAttendanceHybrid(verifyData) {
       record[_cfg.fields.att_student] = student.id;
       record[_cfg.fields.att_date]    = today;
       record[_cfg.fields.att_status]  = 'Present';
+      const _now = new Date();
+      const _hhmm = _now.getHours().toString().padStart(2,'0') + ':' + _now.getMinutes().toString().padStart(2,'0');
+      record[_cfg.fields.att_check_in || 'Check_In'] = _hhmm;
       if (state.captureAction) record[_cfg.fields.att_action || 'Action_field'] = state.captureAction;
+      console.log('[Attendance] SDK record fields:', JSON.stringify(record));
       await ZOHO.CREATOR.DATA.addRecord({
         app_name: APP_LINK_NAME, form_name: _cfg.reports.attendance_form, data: record,
       });

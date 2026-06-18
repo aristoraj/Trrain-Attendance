@@ -731,6 +731,13 @@ class AttendanceQueue:
                 except Exception:
                     conn.execute("ROLLBACK TO SAVEPOINT add_action_col")
                     conn.execute("RELEASE SAVEPOINT add_action_col")
+                try:
+                    conn.execute("SAVEPOINT add_checkin_time_col")
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN checkin_time TEXT NOT NULL DEFAULT ''")
+                    conn.execute("RELEASE SAVEPOINT add_checkin_time_col")
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT add_checkin_time_col")
+                    conn.execute("RELEASE SAVEPOINT add_checkin_time_col")
             else:
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
@@ -742,6 +749,10 @@ class AttendanceQueue:
                     pass
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN action_field TEXT NOT NULL DEFAULT ''")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN checkin_time TEXT NOT NULL DEFAULT ''")
                 except Exception:
                     pass
             conn.execute(
@@ -817,7 +828,8 @@ class AttendanceQueue:
     def enqueue_if_not_marked(self, student_id: str, student_name: str,
                               date_str: str, environment: str = "",
                               device_session_id: str = "",
-                              action_field: str = "") -> tuple:
+                              action_field: str = "",
+                              checkin_time: str = "") -> tuple:
         """
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
@@ -855,15 +867,15 @@ class AttendanceQueue:
             INSERT INTO attendance_queue
                 (student_id, student_name, date_str,
                  status, attempts, created_at, updated_at, next_retry_at,
-                 environment, device_session_id, action_field)
-            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?)
+                 environment, device_session_id, action_field, checkin_time)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
         with self._db() as conn:
             cur = conn.execute(sql, (
                 student_id, student_name, date_str, now, now, now,
-                environment, device_session_id, action_field,
+                environment, device_session_id, action_field, checkin_time,
             ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
@@ -1339,7 +1351,7 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT id, student_id, student_name, date_str, attempts, environment, action_field "
+                    "SELECT id, student_id, student_name, date_str, attempts, environment, action_field, checkin_time "
                     "FROM attendance_queue "
                     "WHERE status='PENDING' AND next_retry_at <= ? "
                     "ORDER BY created_at ASC LIMIT 10"
@@ -1364,7 +1376,8 @@ class AttendanceQueue:
             student_id   = row["student_id"]
             attempts     = row["attempts"]
             environment  = row["environment"]
-            action_field = row["action_field"] if "action_field" in row.keys() else ""
+            action_field = row["action_field"]  if "action_field"  in row.keys() else ""
+            checkin_time = row["checkin_time"]  if "checkin_time"  in row.keys() else ""
             try:
                 result = self._zoho.post_attendance(
                     student_id=student_id,
@@ -1372,6 +1385,7 @@ class AttendanceQueue:
                     verification_type="face_blink_verified",
                     env=environment,
                     action_field=action_field,
+                    checkin_time=checkin_time,
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)
