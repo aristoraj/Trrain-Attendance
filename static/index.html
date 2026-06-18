@@ -1076,7 +1076,7 @@ const EAR_SMOOTH_ALPHA      = 0.3;
 const CLOSED_FRAMES_NEEDED  = 1;    // single frame below threshold counts as closed
 const FACE_LOST_GRACE       = 8;    // consecutive no-face frames before resetting step 1
 const LIVENESS_SWITCH_MS    = 15000; // ms before switching blink ↔ smile
-const SMILE_RATIO_THRESH    = 1.8;   // combined smile metric threshold (see computeSmileRatio)
+const SMILE_RATIO_THRESH    = 1.0;   // combined smile metric threshold (see computeSmileRatio)
 const SMILE_FRAMES_NEEDED   = 5;     // consecutive frames above ratio to confirm
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
@@ -1130,7 +1130,10 @@ function resetInactivityTimer() {
 function _pauseForInactivity() {
   if (cameraInstance) { try { cameraInstance.stop(); } catch (_) {} }
   if (_currentStream) { _currentStream.getTracks().forEach(t => t.stop()); _currentStream = null; }
+  clearTimeout(_livenessTimer);
   state.cameraReady = false;
+  document.getElementById('blink-overlay').classList.remove('show');
+  document.getElementById('smile-overlay').classList.remove('show');
   document.getElementById('inactive-overlay').classList.add('show');
   setStatus('dot', 'Camera paused');
 }
