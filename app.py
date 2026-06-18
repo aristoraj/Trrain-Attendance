@@ -19,6 +19,7 @@ import functools
 import hashlib
 import hmac as _hmac
 import html as _html
+import io
 import json as _json
 import logging
 import os
@@ -42,7 +43,7 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT,
     ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
+    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ACTION,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
     FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
@@ -159,6 +160,12 @@ _scope_encoding_lock = threading.Lock()
 # Track keys that are currently being loaded in a background thread
 _preloading_keys: set[str] = set()
 _preloading_lock  = threading.Lock()
+
+# Stores the last live-captured JPEG per student for checkout photo upload.
+# Populated by /api/verify after a successful face match.
+# Keyed by student_id → (jpeg_bytes, unix_timestamp). Evicted after 5 minutes.
+_pending_captures: dict = {}
+_captures_lock    = threading.Lock()
 
 
 def _resolve_env(raw: str | None) -> str:
@@ -1299,12 +1306,30 @@ def verify():
             daemon=True,
         ).start()
 
+        # Store JPEG frame for checkout photo upload (best-effort, non-blocking)
+        try:
+            from PIL import Image as _PIL_Image
+            _buf = io.BytesIO()
+            _PIL_Image.fromarray(image_array).save(_buf, format="JPEG", quality=85)
+            with _captures_lock:
+                _now_ts = time.time()
+                stale   = [k for k, (_, ts) in _pending_captures.items() if _now_ts - ts > 300]
+                for k in stale:
+                    del _pending_captures[k]
+                _pending_captures[best_match["id"]] = (_buf.getvalue(), _now_ts)
+        except Exception as _cap_err:
+            logger.warning(f"Checkout photo capture skipped: {_cap_err}")
+
+        # Check-in/out status so frontend can route correctly
+        _today_str      = datetime.now(_IST).strftime("%d-%b-%Y")
+        _checkin_info   = att_queue.get_checkin_status(best_match["id"], _today_str)
+
         # Return match result only — attendance posting is handled by the
         # frontend via SDK (addRecord on Face_Attendance form) with
         # /api/post-attendance as fallback.
         return jsonify({
-            "success":    True,
-            "matched":    True,
+            "success":        True,
+            "matched":        True,
             "student": {
                 "id":          best_match["id"],
                 "name":        best_match["name"],
@@ -1312,6 +1337,8 @@ def verify():
             },
             "confidence":     confidence,
             "liveness_score": round(liveness_score, 3),
+            "checkin_status": _checkin_info["status"],
+            "checkin_at":     _checkin_info.get("checkin_at"),
         })
 
     except Exception as e:
@@ -1337,6 +1364,7 @@ def post_attendance():
     student_name      = (data.get("student_name") or "").strip()
     env               = _resolve_env(data.get("zoho_environment"))
     device_session_id = (data.get("device_session_id") or "").strip()
+    action_field      = (data.get("action") or "").strip()
 
     if not student_id or not student_name:
         return jsonify({"success": False, "error": "student_id and student_name required"}), 400
@@ -1349,6 +1377,7 @@ def post_attendance():
         date_str=today_str,
         environment=env,
         device_session_id=device_session_id,
+        action_field=action_field,
     )
     if is_duplicate:
         return jsonify({
@@ -1357,12 +1386,123 @@ def post_attendance():
             "message":   f"{student_name} is already marked present today.",
         })
 
+    # Record check-in state (non-breaking — idempotent, fails silently if already recorded)
+    att_queue.record_checkin(student_id, student_name, today_str, env)
+
     logger.info(f"Attendance queued for {student_name} via server fallback (queue #{queue_id})")
     return jsonify({
         "success":   True,
         "duplicate": False,
         "queue_id":  queue_id,
         "message":   f"Welcome, {student_name}! Attendance marked successfully.",
+    })
+
+
+# ─── Check-in state recording (SDK path) ─────────────────────────────────────
+
+@app.route("/api/record-checkin", methods=["POST"])
+@require_session
+@limiter.limit("120 per minute")
+def record_checkin_api():
+    """
+    Lightweight endpoint called after SDK addRecord succeeds on the frontend.
+    Records check-in state locally so /api/checkout can reference it later.
+    No-op if already recorded (idempotent).
+    """
+    data         = request.get_json(force=True) or {}
+    student_id   = (data.get("student_id")   or "").strip()
+    student_name = (data.get("student_name") or "").strip()
+    env          = _resolve_env(data.get("zoho_environment"))
+    today_str    = datetime.now(_IST).strftime("%d-%b-%Y")
+    if student_id:
+        att_queue.record_checkin(student_id, student_name, today_str, env)
+    return jsonify({"success": True})
+
+
+# ─── Check-out endpoint ───────────────────────────────────────────────────────
+
+@app.route("/api/checkout", methods=["POST"])
+@require_session
+@limiter.limit("30 per minute")
+def checkout():
+    """
+    Check-out: find today's Zoho attendance record, PATCH Check_Out time +
+    Auto_Checkout=No, upload live capture photo, mark checked out locally.
+
+    Enforces a 5-minute minimum gap since check-in.
+    """
+    data         = request.get_json(force=True) or {}
+    student_id   = (data.get("student_id")   or "").strip()
+    student_name = (data.get("student_name") or "").strip()
+    env          = _resolve_env(data.get("zoho_environment"))
+
+    if not student_id or not student_name:
+        return jsonify({"success": False, "error": "student_id and student_name required"}), 400
+
+    today_str    = datetime.now(_IST).strftime("%d-%b-%Y")
+    checkin_info = att_queue.get_checkin_status(student_id, today_str)
+
+    if checkin_info["status"] == "none":
+        return jsonify({"success": False, "error": "No check-in found for today. Please check in first."}), 400
+
+    if checkin_info["status"] == "checked_out":
+        return jsonify({
+            "success":   True,
+            "duplicate": True,
+            "message":   f"{student_name} has already checked out today.",
+        })
+
+    # Enforce 5-minute minimum between check-in and check-out
+    try:
+        checkin_at  = datetime.fromisoformat(checkin_info["checkin_at"])
+        now_local   = datetime.now()
+        elapsed_min = (now_local - checkin_at).total_seconds() / 60
+    except Exception:
+        elapsed_min = 999   # parse failure → allow checkout
+
+    if elapsed_min < 5:
+        remaining = max(1, int(5 - elapsed_min) + 1)
+        return jsonify({
+            "success":           False,
+            "too_early":         True,
+            "remaining_minutes": remaining,
+            "error":             f"Please wait {remaining} more minute(s) before checking out.",
+        })
+
+    # Find today's Zoho record to PATCH
+    zoho_rec_id = zoho.find_attendance_record(student_id, today_str, env)
+    if not zoho_rec_id:
+        logger.warning(f"Checkout: no Zoho record found for {student_name} on {today_str}")
+        return jsonify({
+            "success": False,
+            "error":   "Attendance record not yet synced to Zoho. Please try again in a moment.",
+        })
+
+    # PATCH Check_Out time + Auto_Checkout = No
+    checkout_time = datetime.now(_IST).strftime("%H:%M")
+    result        = zoho.patch_checkout(zoho_rec_id, checkout_time, env)
+    if not result.get("success"):
+        logger.error(f"Checkout PATCH failed for {student_name}: {result.get('error')}")
+        return jsonify({"success": False, "error": result.get("error", "Checkout failed")}), 500
+
+    # Upload live capture photo (best-effort — never blocks checkout)
+    with _captures_lock:
+        _entry = _pending_captures.pop(student_id, None)
+    _jpeg = _entry[0] if _entry else None
+    if _jpeg:
+        zoho._upload_capture_photo(zoho_rec_id, _jpeg, student_name, env)
+    else:
+        logger.warning(f"Checkout photo not available for {student_name} (capture may have expired)")
+
+    # Mark checked out in local state
+    att_queue.record_checkout(student_id, today_str)
+
+    logger.info(f"Checked out: {student_name} at {checkout_time} (Zoho record {zoho_rec_id})")
+    return jsonify({
+        "success":      True,
+        "action":       "checkout",
+        "message":      f"Checked out successfully, {student_name}!",
+        "student_name": student_name,
     })
 
 
@@ -1510,6 +1650,7 @@ def api_config():
             "att_student":       FIELD_ATT_STUDENT,
             "att_date":          FIELD_ATT_DATE,
             "att_status":        FIELD_ATT_STATUS,
+            "att_action":        FIELD_ACTION,
             "centre_email":      FIELD_CENTRE_LOGIN_EMAIL,
             "centre_name":       FIELD_CENTRE_NAME,
             "user_email":        FIELD_USER_MGMT_EMAIL,

@@ -45,9 +45,14 @@ FIELD_STUDENT_PHOTO     = os.environ.get("FIELD_STUDENT_PHOTO",     "Upload_Phot
 FIELD_STUDENT_EMBEDDING = os.environ.get("FIELD_STUDENT_EMBEDDING", "Face_Embedding")
 
 # ─── Attendance form field names ──────────────────────────────────────────────
-FIELD_ATT_STUDENT  = os.environ.get("FIELD_ATT_STUDENT",  "Trainee")      # lookup
-FIELD_ATT_DATE     = os.environ.get("FIELD_ATT_DATE",     "Date_field")
-FIELD_ATT_STATUS   = os.environ.get("FIELD_ATT_STATUS",   "Attendance")    # dropdown
+FIELD_ATT_STUDENT    = os.environ.get("FIELD_ATT_STUDENT",    "Trainee")           # lookup
+FIELD_ATT_DATE       = os.environ.get("FIELD_ATT_DATE",       "Date_field")
+FIELD_ATT_STATUS     = os.environ.get("FIELD_ATT_STATUS",     "Attendance")        # dropdown
+FIELD_CHECK_IN       = os.environ.get("FIELD_CHECK_IN",       "Check_In")          # time field
+FIELD_CHECK_OUT      = os.environ.get("FIELD_CHECK_OUT",      "Check_Out")         # time field
+FIELD_AUTO_CHECKOUT  = os.environ.get("FIELD_AUTO_CHECKOUT",  "Auto_Checkout")     # dropdown: Yes/No
+FIELD_ATT_CAPTURE    = os.environ.get("FIELD_ATT_CAPTURE",    "Live_Captured_Image") # file upload
+FIELD_ACTION         = os.environ.get("FIELD_ACTION",         "Action_field")      # Blink / Smile
 
 # ─── Zoho Creator Environment ────────────────────────────────────────────────
 # Overridden per-request by envUrlFragment from the Widget SDK.

@@ -22,6 +22,8 @@ from config import (
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
+    FIELD_CHECK_IN, FIELD_CHECK_OUT, FIELD_AUTO_CHECKOUT, FIELD_ATT_CAPTURE,
+    FIELD_ACTION,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
 
@@ -877,6 +879,8 @@ class ZohoCreatorAPI:
         student_name:      str,
         verification_type: str = "face_blink_verified",
         env:               str = "",
+        checkin_time:      str = None,   # "HH:MM" — stored in Check_In field when provided
+        action_field:      str = "",     # "Blink" | "Smile" — stored in Action_field
     ) -> dict:
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
@@ -886,6 +890,10 @@ class ZohoCreatorAPI:
             FIELD_ATT_DATE:    now.strftime("%d-%b-%Y"),
             FIELD_ATT_STATUS:  "Present",
         }
+        if checkin_time:
+            data_payload[FIELD_CHECK_IN] = checkin_time
+        if action_field:
+            data_payload[FIELD_ACTION] = action_field
 
         try:
             payload = {"data": data_payload}
@@ -909,6 +917,81 @@ class ZohoCreatorAPI:
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             return {"success": False, "error": str(e)}
+
+    # ─── Check-in / Check-out ─────────────────────────────────────────────────
+
+    def find_attendance_record(self, student_id: str, date_str: str, env: str = "") -> str:
+        """
+        Search the attendance report for today's record for a student.
+        Returns the Zoho Creator record ID string, or None if not found.
+        Called at check-out time to get the record ID to PATCH.
+        """
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
+        criteria = (
+            f'({FIELD_ATT_STUDENT}.ID=="{student_id}"'
+            f'&&{FIELD_ATT_DATE}=="{date_str}")'
+        )
+        try:
+            resp = self._request(
+                "get", url, env=env,
+                params={"criteria": criteria, "fields": "ID", "page_size": 1},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            records = resp.json().get("data", [])
+            if records:
+                return str(records[0].get("ID", ""))
+            return None
+        except Exception as e:
+            logger.warning(f"find_attendance_record failed for {student_id}: {e}")
+            return None
+
+    def patch_checkout(self, zoho_rec_id: str, checkout_time: str, env: str = "") -> dict:
+        """
+        PATCH an existing Face_Attendance record with Check_Out time and Auto_Checkout=No.
+        checkout_time must be formatted as "HH:MM".
+        """
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
+        data_payload = {
+            FIELD_CHECK_OUT:     checkout_time,
+            FIELD_AUTO_CHECKOUT: "No",
+        }
+        try:
+            resp = self._request("patch", url, env=env, json={"data": data_payload}, timeout=15)
+            resp.raise_for_status()
+            result = resp.json()
+            zoho_code = result.get("code")
+            if zoho_code is not None and zoho_code != 3000:
+                return {"success": False, "error": f"Zoho error {zoho_code}: {result.get('message', '')}"}
+            logger.info(f"Checkout PATCH successful — record {zoho_rec_id}")
+            return {"success": True, "data": result}
+        except requests.HTTPError as e:
+            return {"success": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:300]}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _upload_capture_photo(self, record_id: str, jpeg_bytes: bytes,
+                               student_name: str, env: str = "") -> None:
+        """
+        Upload live capture JPEG to an existing attendance record. Best-effort — never raises.
+        Two-step required: plain JSON POST creates the record, this call attaches the photo.
+        """
+        upload_url = (
+            f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
+            f"/{record_id}/{FIELD_ATT_CAPTURE}/upload"
+        )
+        try:
+            headers = self._headers(env=env, include_content_type=False)
+            files   = {"file": ("capture.jpg", jpeg_bytes, "image/jpeg")}
+            resp    = requests.post(upload_url, headers=headers, files=files, timeout=20)
+            resp.raise_for_status()
+            result  = resp.json()
+            if result.get("code") == 3000:
+                logger.info(f"Live capture uploaded for {student_name} (record {record_id})")
+            else:
+                logger.warning(f"Live capture upload unexpected code={result.get('code')} for {student_name}")
+        except Exception as e:
+            logger.warning(f"Live capture upload failed for {student_name} ({record_id}): {e}")
 
     # ─── Utility ───────────────────────────────────────────────────────────────
 

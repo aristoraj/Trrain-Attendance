@@ -291,6 +291,86 @@ class AttendanceQueue:
             "ON webhook_sync_log(status)"
         )
 
+    def _create_checkin_state_table(self, conn):
+        """
+        Tracks per-student per-day check-in/check-out state.
+        Purely additive — existing attendance_queue flow is unchanged.
+        """
+        serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
+        autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS checkin_state (
+                id             {serial} PRIMARY KEY {autoincrement},
+                student_id     TEXT NOT NULL,
+                date_str       TEXT NOT NULL,
+                checkin_at     TEXT NOT NULL,
+                is_checked_out INTEGER NOT NULL DEFAULT 0,
+                checkout_at    TEXT,
+                environment    TEXT NOT NULL DEFAULT '',
+                UNIQUE(student_id, date_str)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cs_student_date "
+            "ON checkin_state(student_id, date_str)"
+        )
+
+    def get_checkin_status(self, student_id: str, date_str: str) -> dict:
+        """
+        Returns check-in state for a student on a given date.
+        Return dict: {status: 'none'|'checked_in'|'checked_out', checkin_at?, checkout_at?}
+        """
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT * FROM checkin_state WHERE student_id=? AND date_str=?"),
+                (student_id, date_str),
+            ).fetchone()
+        if not row:
+            return {"status": "none"}
+        if row["is_checked_out"]:
+            return {
+                "status":     "checked_out",
+                "checkin_at":  row["checkin_at"],
+                "checkout_at": row["checkout_at"],
+            }
+        return {"status": "checked_in", "checkin_at": row["checkin_at"]}
+
+    def record_checkin(self, student_id: str, student_name: str,
+                       date_str: str, environment: str = "") -> bool:
+        """
+        Records a check-in. Returns True if inserted, False if already exists.
+        Called from both the SDK path (/api/record-checkin) and server fallback (/api/post-attendance).
+        """
+        now = datetime.now().isoformat()
+        try:
+            with self._db() as conn:
+                conn.execute(
+                    self._q("""
+                        INSERT INTO checkin_state (student_id, date_str, checkin_at, environment)
+                        VALUES (?, ?, ?, ?)
+                    """),
+                    (student_id, date_str, now, environment),
+                )
+            logger.info(f"Check-in recorded: {student_id} on {date_str}")
+            return True
+        except Exception:
+            return False  # UNIQUE constraint = already recorded (idempotent)
+
+    def record_checkout(self, student_id: str, date_str: str) -> bool:
+        """
+        Marks the student as checked out. Returns True if updated, False if already checked out.
+        """
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q("""
+                    UPDATE checkin_state SET is_checked_out=1, checkout_at=?
+                    WHERE student_id=? AND date_str=? AND is_checked_out=0
+                """),
+                (now, student_id, date_str),
+            )
+        return cur.rowcount > 0
+
     def _create_batch_status_table(self, conn):
         """
         Tracks the last-known status, start date, and end date of every batch
@@ -644,6 +724,13 @@ class AttendanceQueue:
                 except Exception:
                     conn.execute("ROLLBACK TO SAVEPOINT add_dsid_col")
                     conn.execute("RELEASE SAVEPOINT add_dsid_col")
+                try:
+                    conn.execute("SAVEPOINT add_action_col")
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN action_field TEXT NOT NULL DEFAULT ''")
+                    conn.execute("RELEASE SAVEPOINT add_action_col")
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT add_action_col")
+                    conn.execute("RELEASE SAVEPOINT add_action_col")
             else:
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
@@ -651,6 +738,10 @@ class AttendanceQueue:
                     pass  # Column already exists
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN device_session_id TEXT NOT NULL DEFAULT ''")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN action_field TEXT NOT NULL DEFAULT ''")
                 except Exception:
                     pass
             conn.execute(
@@ -668,6 +759,7 @@ class AttendanceQueue:
             self._create_daily_caches_table(conn)
             self._create_batch_status_table(conn)
             self._create_webhook_sync_log_table(conn)
+            self._create_checkin_state_table(conn)
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now().strftime("%d-%b-%Y")
@@ -724,7 +816,8 @@ class AttendanceQueue:
 
     def enqueue_if_not_marked(self, student_id: str, student_name: str,
                               date_str: str, environment: str = "",
-                              device_session_id: str = "") -> tuple:
+                              device_session_id: str = "",
+                              action_field: str = "") -> tuple:
         """
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
@@ -762,15 +855,15 @@ class AttendanceQueue:
             INSERT INTO attendance_queue
                 (student_id, student_name, date_str,
                  status, attempts, created_at, updated_at, next_retry_at,
-                 environment, device_session_id)
-            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?)
+                 environment, device_session_id, action_field)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
         with self._db() as conn:
             cur = conn.execute(sql, (
                 student_id, student_name, date_str, now, now, now,
-                environment, device_session_id,
+                environment, device_session_id, action_field,
             ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
@@ -1238,7 +1331,7 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT id, student_id, student_name, date_str, attempts, environment "
+                    "SELECT id, student_id, student_name, date_str, attempts, environment, action_field "
                     "FROM attendance_queue "
                     "WHERE status='PENDING' AND next_retry_at <= ? "
                     "ORDER BY created_at ASC LIMIT 10"
@@ -1259,16 +1352,18 @@ class AttendanceQueue:
             if cur.rowcount == 0:
                 continue
 
-            name        = row["student_name"]
-            student_id  = row["student_id"]
-            attempts    = row["attempts"]
-            environment = row["environment"]
+            name         = row["student_name"]
+            student_id   = row["student_id"]
+            attempts     = row["attempts"]
+            environment  = row["environment"]
+            action_field = row["action_field"] if "action_field" in row.keys() else ""
             try:
                 result = self._zoho.post_attendance(
                     student_id=student_id,
                     student_name=name,
                     verification_type="face_blink_verified",
                     env=environment,
+                    action_field=action_field,
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)
