@@ -1560,7 +1560,7 @@ async function captureAndVerify(cachedImage = null) {
 async function postAttendanceHybrid(verifyData) {
   const student  = verifyData.student;
   const today    = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
-  if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
+  if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
 
   let isDuplicate = false;
   let postedViaSDK = false;
@@ -1568,7 +1568,7 @@ async function postAttendanceHybrid(verifyData) {
   // Step 1: SDK duplicate check
   try {
     const dupResp = await ZOHO.CREATOR.DATA.getRecords({
-      app_name: APP_LINK_NAME, report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
+      app_name: APP_LINK_NAME || (_cfg && _cfg.app_name), report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
       criteria: '(' + _cfg.fields.att_student + '.ID=="' + student.id + '" && ' +
                 _cfg.fields.att_date + '=="' + today + '")',
       page: 1, page_size: 1,
@@ -1598,7 +1598,7 @@ async function postAttendanceHybrid(verifyData) {
       if (state.captureAction) record[_cfg.fields.att_action || 'Action_field'] = state.captureAction;
       console.log('[Attendance] SDK record fields:', JSON.stringify(record));
       const sdkResult = await ZOHO.CREATOR.DATA.addRecord({
-        app_name: APP_LINK_NAME, form_name: _cfg.reports.attendance_form, data: record,
+        app_name: APP_LINK_NAME || (_cfg && _cfg.app_name), form_name: _cfg.reports.attendance_form, data: record,
       });
       postedViaSDK = true;
       const _zohoRecId = (sdkResult && sdkResult.data && sdkResult.data.ID) ? String(sdkResult.data.ID) : '';
@@ -1658,10 +1658,10 @@ async function doCheckout(verifyData) {
   let zohoRecordId = '';
   if (typeof ZOHO !== 'undefined' && ZOHO.CREATOR && ZOHO.CREATOR.DATA) {
     try {
-      if (!_cfg) _cfg = await fetch('/api/config').then(r => r.json());
+      if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
       const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
       const recResp = await ZOHO.CREATOR.DATA.getRecords({
-        app_name:    APP_LINK_NAME,
+        app_name:    APP_LINK_NAME || (_cfg && _cfg.app_name),
         report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
         criteria:    '(' + _cfg.fields.att_student + '.ID=="' + student.id + '"&&' +
                      _cfg.fields.att_date + '=="' + today + '")',
