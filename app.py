@@ -1442,6 +1442,8 @@ def checkout():
     if not student_id or not student_name:
         return jsonify({"success": False, "error": "student_id and student_name required"}), 400
 
+    logger.info(f"[Checkout] request received — student={student_name}, raw_env='{data.get('zoho_environment')}', resolved_env='{env}'")
+
     today_str    = datetime.now(_IST).strftime("%d-%b-%Y")
     checkin_info = att_queue.get_checkin_status(student_id, today_str)
 

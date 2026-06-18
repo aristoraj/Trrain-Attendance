@@ -101,6 +101,9 @@ class ZohoCreatorAPI:
             headers["Content-Type"] = "application/json"
         if env == "development":
             headers["environment"] = env
+            logger.info(f"[Zoho] env header set: environment=development")
+        else:
+            logger.info(f"[Zoho] env header NOT set (env='{env}')")
         return headers
 
     def _request(self, method: str, url: str, env: str = "", **kwargs) -> requests.Response:
@@ -931,6 +934,7 @@ class ZohoCreatorAPI:
             f'({FIELD_ATT_STUDENT}.ID=="{student_id}"'
             f'&&{FIELD_ATT_DATE}=="{date_str}")'
         )
+        logger.info(f"[Checkout] find_attendance_record: env='{env}', date='{date_str}', student='{student_id}'")
         try:
             resp = self._request(
                 "get", url, env=env,
