@@ -1594,12 +1594,13 @@ async function postAttendanceHybrid(verifyData) {
       record[_cfg.fields.att_check_in || 'Check_In'] = _hhmm;
       if (state.captureAction) record[_cfg.fields.att_action || 'Action_field'] = state.captureAction;
       console.log('[Attendance] SDK record fields:', JSON.stringify(record));
-      await ZOHO.CREATOR.DATA.addRecord({
+      const sdkResult = await ZOHO.CREATOR.DATA.addRecord({
         app_name: APP_LINK_NAME, form_name: _cfg.reports.attendance_form, data: record,
       });
       postedViaSDK = true;
-      console.log('[Attendance] Posted via SDK');
-      // Best-effort: tell backend so checkin_state is updated for checkout routing
+      const _zohoRecId = (sdkResult && sdkResult.data && sdkResult.data.ID) ? String(sdkResult.data.ID) : '';
+      console.log('[Attendance] Posted via SDK — zoho_record_id:', _zohoRecId);
+      // Best-effort: tell backend so checkin_state is updated (with Zoho record ID) for checkout routing
       try {
         await authFetch('/api/record-checkin', {
           method: 'POST',
@@ -1608,6 +1609,7 @@ async function postAttendanceHybrid(verifyData) {
             student_id:       student.id,
             student_name:     student.name,
             zoho_environment: ZOHO_ENV || '',
+            zoho_record_id:   _zohoRecId,
           }),
         });
       } catch (e2) {

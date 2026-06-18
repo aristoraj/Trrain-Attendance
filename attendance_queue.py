@@ -307,9 +307,24 @@ class AttendanceQueue:
                 is_checked_out INTEGER NOT NULL DEFAULT 0,
                 checkout_at    TEXT,
                 environment    TEXT NOT NULL DEFAULT '',
+                zoho_record_id TEXT NOT NULL DEFAULT '',
                 UNIQUE(student_id, date_str)
             )
         """)
+        # Migration: add zoho_record_id to existing tables
+        if self._is_postgres:
+            try:
+                conn.execute("SAVEPOINT add_cs_zoho_id")
+                conn.execute("ALTER TABLE checkin_state ADD COLUMN zoho_record_id TEXT NOT NULL DEFAULT ''")
+                conn.execute("RELEASE SAVEPOINT add_cs_zoho_id")
+            except Exception:
+                conn.execute("ROLLBACK TO SAVEPOINT add_cs_zoho_id")
+                conn.execute("RELEASE SAVEPOINT add_cs_zoho_id")
+        else:
+            try:
+                conn.execute("ALTER TABLE checkin_state ADD COLUMN zoho_record_id TEXT NOT NULL DEFAULT ''")
+            except Exception:
+                pass
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_cs_student_date "
             "ON checkin_state(student_id, date_str)"
@@ -327,16 +342,19 @@ class AttendanceQueue:
             ).fetchone()
         if not row:
             return {"status": "none"}
+        zoho_record_id = row["zoho_record_id"] if "zoho_record_id" in row.keys() else ""
         if row["is_checked_out"]:
             return {
-                "status":     "checked_out",
-                "checkin_at":  row["checkin_at"],
-                "checkout_at": row["checkout_at"],
+                "status":        "checked_out",
+                "checkin_at":    row["checkin_at"],
+                "checkout_at":   row["checkout_at"],
+                "zoho_record_id": zoho_record_id,
             }
-        return {"status": "checked_in", "checkin_at": row["checkin_at"]}
+        return {"status": "checked_in", "checkin_at": row["checkin_at"], "zoho_record_id": zoho_record_id}
 
     def record_checkin(self, student_id: str, student_name: str,
-                       date_str: str, environment: str = "") -> bool:
+                       date_str: str, environment: str = "",
+                       zoho_record_id: str = "") -> bool:
         """
         Records a check-in. Returns True if inserted, False if already exists.
         Called from both the SDK path (/api/record-checkin) and server fallback (/api/post-attendance).
@@ -346,15 +364,26 @@ class AttendanceQueue:
             with self._db() as conn:
                 conn.execute(
                     self._q("""
-                        INSERT INTO checkin_state (student_id, date_str, checkin_at, environment)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO checkin_state (student_id, date_str, checkin_at, environment, zoho_record_id)
+                        VALUES (?, ?, ?, ?, ?)
                     """),
-                    (student_id, date_str, now, environment),
+                    (student_id, date_str, now, environment, zoho_record_id),
                 )
-            logger.info(f"Check-in recorded: {student_id} on {date_str}")
+            logger.info(f"Check-in recorded: {student_id} on {date_str} zoho_id='{zoho_record_id}'")
             return True
         except Exception:
             return False  # UNIQUE constraint = already recorded (idempotent)
+
+    def update_zoho_record_id(self, student_id: str, date_str: str, zoho_record_id: str) -> None:
+        """Store the Zoho Creator record ID in checkin_state after server-side queue posts attendance."""
+        if not zoho_record_id or zoho_record_id == "unknown":
+            return
+        with self._db() as conn:
+            conn.execute(
+                self._q("UPDATE checkin_state SET zoho_record_id=? WHERE student_id=? AND date_str=?"),
+                (zoho_record_id, student_id, date_str),
+            )
+        logger.info(f"Stored Zoho record ID {zoho_record_id} for {student_id} on {date_str}")
 
     def record_checkout(self, student_id: str, date_str: str) -> bool:
         """
@@ -1389,7 +1418,10 @@ class AttendanceQueue:
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)
-                    logger.info(f"Queue: synced {name} → Zoho (#{rec_id})")
+                    zoho_id = result.get("data", {}).get("data", {}).get("ID", "")
+                    if zoho_id:
+                        self.update_zoho_record_id(student_id, row["date_str"], zoho_id)
+                    logger.info(f"Queue: synced {name} → Zoho (#{rec_id}) zoho_id='{zoho_id}'")
                 else:
                     self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))
             except Exception as e:

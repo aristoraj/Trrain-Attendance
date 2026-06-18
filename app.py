@@ -1412,13 +1412,14 @@ def record_checkin_api():
     Records check-in state locally so /api/checkout can reference it later.
     No-op if already recorded (idempotent).
     """
-    data         = request.get_json(force=True) or {}
-    student_id   = (data.get("student_id")   or "").strip()
-    student_name = (data.get("student_name") or "").strip()
-    env          = _resolve_env(data.get("zoho_environment"))
-    today_str    = datetime.now(_IST).strftime("%d-%b-%Y")
+    data           = request.get_json(force=True) or {}
+    student_id     = (data.get("student_id")     or "").strip()
+    student_name   = (data.get("student_name")   or "").strip()
+    zoho_record_id = (data.get("zoho_record_id") or "").strip()
+    env            = _resolve_env(data.get("zoho_environment"))
+    today_str      = datetime.now(_IST).strftime("%d-%b-%Y")
     if student_id:
-        att_queue.record_checkin(student_id, student_name, today_str, env)
+        att_queue.record_checkin(student_id, student_name, today_str, env, zoho_record_id)
     return jsonify({"success": True})
 
 
@@ -1474,14 +1475,19 @@ def checkout():
             "error":             f"Please wait {remaining} more minute(s) before checking out.",
         })
 
-    # Find today's Zoho record to PATCH
-    zoho_rec_id = zoho.find_attendance_record(student_id, today_str, env)
+    # Use stored Zoho record ID (set when attendance was posted) — avoids report READ permission issue
+    zoho_rec_id = checkin_info.get("zoho_record_id", "")
+    if not zoho_rec_id:
+        # Fallback: search the report (may fail in development environment due to OAuth scope)
+        logger.info(f"Checkout: no stored zoho_record_id for {student_name}, falling back to find_attendance_record")
+        zoho_rec_id = zoho.find_attendance_record(student_id, today_str, env)
     if not zoho_rec_id:
         logger.warning(f"Checkout: no Zoho record found for {student_name} on {today_str}")
         return jsonify({
             "success": False,
             "error":   "Attendance record not yet synced to Zoho. Please try again in a moment.",
         })
+    logger.info(f"Checkout: using zoho_rec_id={zoho_rec_id} for {student_name}")
 
     # PATCH Check_Out time + Auto_Checkout = No
     checkout_time = datetime.now(_IST).strftime("%H:%M")
