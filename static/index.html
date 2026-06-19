@@ -1614,6 +1614,7 @@ async function postAttendanceHybrid(verifyData, captureImageData = null) {
         app_name: APP_LINK_NAME || (_cfg && _cfg.app_name), form_name: _cfg.reports.attendance_form, data: record,
       });
       postedViaSDK = true;
+      console.log('[SDK addRecord] raw response:', JSON.stringify(sdkResult));
       const _zohoRecId = (sdkResult && sdkResult.data && sdkResult.data.ID) ? String(sdkResult.data.ID) : '';
       console.log('[Attendance] Posted via SDK — zoho_record_id:', _zohoRecId);
       // Best-effort: tell backend so checkin_state is updated (with Zoho record ID) for checkout routing

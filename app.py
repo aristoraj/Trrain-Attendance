@@ -774,7 +774,10 @@ threading.Thread(target=_warmup_face_model, daemon=True, name="face-warmup").sta
 
 @app.route("/")
 def index():
-    return send_from_directory("static", "index.html")
+    resp = make_response(send_from_directory("static", "index.html"))
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 @app.errorhandler(413)
