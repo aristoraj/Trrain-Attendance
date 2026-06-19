@@ -960,6 +960,10 @@ class ZohoCreatorAPI:
             FIELD_CHECK_OUT:     checkout_time,
             FIELD_AUTO_CHECKOUT: "No",
         }
+        logger.info(
+            f"Checkout PATCH — record_id={zoho_rec_id} | "
+            f"payload: {FIELD_CHECK_OUT}={checkout_time}, {FIELD_AUTO_CHECKOUT}=No | env='{env}'"
+        )
         try:
             resp = self._request("patch", url, env=env, json={"data": data_payload}, timeout=15)
             resp.raise_for_status()
@@ -983,6 +987,10 @@ class ZohoCreatorAPI:
         upload_url = (
             f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
             f"/{record_id}/{FIELD_ATT_CAPTURE}/upload"
+        )
+        logger.info(
+            f"Live capture upload starting — record_id={record_id} | "
+            f"student={student_name} | size={len(jpeg_bytes)}B | env='{env}'"
         )
         try:
             headers = self._headers(env=env, include_content_type=False)

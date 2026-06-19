@@ -1414,6 +1414,11 @@ class AttendanceQueue:
             environment  = row["environment"]
             action_field = row["action_field"]  if "action_field"  in row.keys() else ""
             checkin_time = row["checkin_time"]  if "checkin_time"  in row.keys() else ""
+            logger.info(
+                f"Queue #{rec_id}: posting {name} | "
+                f"checkin_time='{checkin_time or 'NOT SET'}' | "
+                f"action='{action_field or 'NOT SET'}' | env='{environment}'"
+            )
             try:
                 result = self._zoho.post_attendance(
                     student_id=student_id,
