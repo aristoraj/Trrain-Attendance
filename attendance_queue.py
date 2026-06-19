@@ -93,9 +93,6 @@ class AttendanceQueue:
         # In-memory fast-path dedup {date_str: set_of_student_ids}
         self._global_marked: dict[str, set] = {}
 
-        # Optional callback fired after worker posts a record and gets zoho_id.
-        # Signature: on_record_posted(student_id, student_name, zoho_id, env)
-        self.on_record_posted = None
 
 
         if self._is_postgres:
@@ -774,6 +771,13 @@ class AttendanceQueue:
                 except Exception:
                     conn.execute("ROLLBACK TO SAVEPOINT add_checkin_time_col")
                     conn.execute("RELEASE SAVEPOINT add_checkin_time_col")
+                try:
+                    conn.execute("SAVEPOINT add_capture_jpeg_col")
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN capture_jpeg BYTEA")
+                    conn.execute("RELEASE SAVEPOINT add_capture_jpeg_col")
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT add_capture_jpeg_col")
+                    conn.execute("RELEASE SAVEPOINT add_capture_jpeg_col")
             else:
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
@@ -789,6 +793,10 @@ class AttendanceQueue:
                     pass
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN checkin_time TEXT NOT NULL DEFAULT ''")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE attendance_queue ADD COLUMN capture_jpeg BLOB")
                 except Exception:
                     pass
             conn.execute(
@@ -865,7 +873,8 @@ class AttendanceQueue:
                               date_str: str, environment: str = "",
                               device_session_id: str = "",
                               action_field: str = "",
-                              checkin_time: str = "") -> tuple:
+                              checkin_time: str = "",
+                              capture_jpeg: bytes = None) -> tuple:
         """
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
@@ -903,15 +912,15 @@ class AttendanceQueue:
             INSERT INTO attendance_queue
                 (student_id, student_name, date_str,
                  status, attempts, created_at, updated_at, next_retry_at,
-                 environment, device_session_id, action_field, checkin_time)
-            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?)
+                 environment, device_session_id, action_field, checkin_time, capture_jpeg)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
         with self._db() as conn:
             cur = conn.execute(sql, (
                 student_id, student_name, date_str, now, now, now,
-                environment, device_session_id, action_field, checkin_time,
+                environment, device_session_id, action_field, checkin_time, capture_jpeg,
             ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
@@ -1387,7 +1396,7 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT id, student_id, student_name, date_str, attempts, environment, action_field, checkin_time "
+                    "SELECT id, student_id, student_name, date_str, attempts, environment, action_field, checkin_time, capture_jpeg "
                     "FROM attendance_queue "
                     "WHERE status='PENDING' AND next_retry_at <= ? "
                     "ORDER BY created_at ASC LIMIT 10"
@@ -1412,12 +1421,14 @@ class AttendanceQueue:
             student_id   = row["student_id"]
             attempts     = row["attempts"]
             environment  = row["environment"]
-            action_field = row["action_field"]  if "action_field"  in row.keys() else ""
-            checkin_time = row["checkin_time"]  if "checkin_time"  in row.keys() else ""
+            action_field  = row["action_field"]  if "action_field"  in row.keys() else ""
+            checkin_time  = row["checkin_time"]  if "checkin_time"  in row.keys() else ""
+            capture_jpeg  = row["capture_jpeg"]  if "capture_jpeg"  in row.keys() else None
             logger.info(
                 f"Queue #{rec_id}: posting {name} | "
                 f"checkin_time='{checkin_time or 'NOT SET'}' | "
-                f"action='{action_field or 'NOT SET'}' | env='{environment}'"
+                f"action='{action_field or 'NOT SET'}' | "
+                f"photo={'yes' if capture_jpeg else 'no'} | env='{environment}'"
             )
             try:
                 result = self._zoho.post_attendance(
@@ -1433,11 +1444,13 @@ class AttendanceQueue:
                     zoho_id = result.get("data", {}).get("data", {}).get("ID", "")
                     if zoho_id:
                         self.update_zoho_record_id(student_id, row["date_str"], zoho_id)
-                        if callable(self.on_record_posted):
-                            try:
-                                self.on_record_posted(student_id, name, zoho_id, environment)
-                            except Exception as _cb_err:
-                                logger.warning(f"on_record_posted callback error: {_cb_err}")
+                        if capture_jpeg:
+                            import threading as _threading
+                            _threading.Thread(
+                                target=self._zoho._upload_capture_photo,
+                                args=(zoho_id, capture_jpeg, name, environment),
+                                daemon=True,
+                            ).start()
                     logger.info(f"Queue: synced {name} → Zoho (#{rec_id}) zoho_id='{zoho_id}'")
                 else:
                     self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))

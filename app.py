@@ -143,23 +143,6 @@ att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
 
-def _on_record_posted(student_id: str, student_name: str, zoho_id: str, env: str):
-    """Upload pending live capture photo after the queue worker posts attendance to Zoho."""
-    with _captures_lock:
-        _entry = _pending_captures.pop(student_id, None)
-    _jpeg = _entry[0] if _entry else None
-    if _jpeg:
-        threading.Thread(
-            target=zoho._upload_capture_photo,
-            args=(zoho_id, _jpeg, student_name, env),
-            daemon=True,
-        ).start()
-        logger.info(f"Worker photo upload queued for {student_name} (record {zoho_id})")
-    else:
-        logger.debug(f"No pending capture for {student_name} — photo already uploaded or expired")
-
-
-att_queue.on_record_posted = _on_record_posted
 
 # ─── Per-scope face cache ──────────────────────────────────────────────────────
 
@@ -1392,6 +1375,12 @@ def post_attendance():
 
     today_str = now_ist.strftime("%d-%b-%Y")
 
+    # Pop live capture JPEG in this same HTTP process before handing off to DB-backed queue.
+    # Storing in the queue row ensures the worker (potentially a different process) can upload it.
+    with _captures_lock:
+        _cap_entry = _pending_captures.pop(student_id, None)
+    capture_jpeg = _cap_entry[0] if _cap_entry else None
+
     queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
         student_id=student_id,
         student_name=student_name,
@@ -1400,6 +1389,7 @@ def post_attendance():
         device_session_id=device_session_id,
         action_field=action_field,
         checkin_time=checkin_time,
+        capture_jpeg=capture_jpeg,
     )
     if is_duplicate:
         return jsonify({
