@@ -142,6 +142,25 @@ zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
+
+def _on_record_posted(student_id: str, student_name: str, zoho_id: str, env: str):
+    """Upload pending live capture photo after the queue worker posts attendance to Zoho."""
+    with _captures_lock:
+        _entry = _pending_captures.pop(student_id, None)
+    _jpeg = _entry[0] if _entry else None
+    if _jpeg:
+        threading.Thread(
+            target=zoho._upload_capture_photo,
+            args=(zoho_id, _jpeg, student_name, env),
+            daemon=True,
+        ).start()
+        logger.info(f"Worker photo upload queued for {student_name} (record {zoho_id})")
+    else:
+        logger.debug(f"No pending capture for {student_name} — photo already uploaded or expired")
+
+
+att_queue.on_record_posted = _on_record_posted
+
 # ─── Per-scope face cache ──────────────────────────────────────────────────────
 
 _scope_caches: dict[str, FaceCache] = {}

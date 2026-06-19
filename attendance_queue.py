@@ -93,6 +93,10 @@ class AttendanceQueue:
         # In-memory fast-path dedup {date_str: set_of_student_ids}
         self._global_marked: dict[str, set] = {}
 
+        # Optional callback fired after worker posts a record and gets zoho_id.
+        # Signature: on_record_posted(student_id, student_name, zoho_id, env)
+        self.on_record_posted = None
+
 
         if self._is_postgres:
             logger.info("AttendanceQueue: using PostgreSQL (DATABASE_URL set).")
@@ -1424,6 +1428,11 @@ class AttendanceQueue:
                     zoho_id = result.get("data", {}).get("data", {}).get("ID", "")
                     if zoho_id:
                         self.update_zoho_record_id(student_id, row["date_str"], zoho_id)
+                        if callable(self.on_record_posted):
+                            try:
+                                self.on_record_posted(student_id, name, zoho_id, environment)
+                            except Exception as _cb_err:
+                                logger.warning(f"on_record_posted callback error: {_cb_err}")
                     logger.info(f"Queue: synced {name} → Zoho (#{rec_id}) zoho_id='{zoho_id}'")
                 else:
                     self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))
