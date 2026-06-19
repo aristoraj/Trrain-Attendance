@@ -363,7 +363,7 @@ class AttendanceQueue:
         Records a check-in. Returns True if inserted, False if already exists.
         Called from both the SDK path (/api/record-checkin) and server fallback (/api/post-attendance).
         """
-        now = datetime.now().isoformat()
+        now = datetime.now(_IST).isoformat()
         try:
             with self._db() as conn:
                 conn.execute(
@@ -393,7 +393,7 @@ class AttendanceQueue:
         """
         Marks the student as checked out. Returns True if updated, False if already checked out.
         """
-        now = datetime.now().isoformat()
+        now = datetime.now(_IST).isoformat()
         with self._db() as conn:
             cur = conn.execute(
                 self._q("""
