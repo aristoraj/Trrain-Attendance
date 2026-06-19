@@ -2111,7 +2111,13 @@ def today_attendance():
     today             = datetime.now(_IST).strftime("%d-%b-%Y")
     device_session_id = (request.args.get("device_session_id") or "").strip() or None
     records           = att_queue.get_today_attendance(today, device_session_id=device_session_id)
-    return jsonify({"date": today, "total": len(records), "records": records})
+    total_checked_out = sum(1 for r in records if r.get("checked_out"))
+    return jsonify({
+        "date":              today,
+        "total":             len(records),
+        "total_checked_out": total_checked_out,
+        "records":           records,
+    })
 
 
 @app.route("/admin/clear-daily-cache", methods=["GET", "POST"])

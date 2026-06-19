@@ -466,22 +466,31 @@
       color: var(--muted);
       flex-shrink: 0;
     }
-    .finish-total {
-      padding: 12px 18px;
-      background: #ECFDF5;
-      border-bottom: 1px solid #A7F3D0;
-      flex-shrink: 0;
+    .finish-stats {
       display: flex;
-      align-items: center;
-      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
-    .finish-total-num   { font-size: 32px; font-weight: 800; color: var(--success); line-height: 1; }
-    .finish-total-label { font-size: 13px; color: #065F46; font-weight: 500; }
+    .finish-stat {
+      flex: 1;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .finish-stat:first-child { border-right: 1px solid var(--border); background: #ECFDF5; }
+    .finish-stat:last-child  { background: #EFF6FF; }
+    .finish-stat-num   { font-size: 30px; font-weight: 800; line-height: 1; }
+    .finish-stat:first-child .finish-stat-num { color: #059669; }
+    .finish-stat:last-child  .finish-stat-num { color: #2563EB; }
+    .finish-stat-label { font-size: 12px; font-weight: 600; }
+    .finish-stat:first-child .finish-stat-label { color: #065F46; }
+    .finish-stat:last-child  .finish-stat-label { color: #1E40AF; }
     .finish-table-wrap  { overflow-y: auto; flex: 1; }
     .finish-table { width: 100%; border-collapse: collapse; font-size: 14px; }
     .finish-table th {
       text-align: left;
-      padding: 9px 18px;
+      padding: 9px 12px;
       background: var(--surface);
       color: var(--muted);
       font-size: 11px;
@@ -491,15 +500,12 @@
       position: sticky; top: 0;
       border-bottom: 1px solid var(--border);
     }
-    .finish-table td { padding: 11px 18px; border-bottom: 1px solid var(--border); color: var(--text); }
+    .finish-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
     .finish-table tr:last-child td { border-bottom: none; }
-    .finish-table .row-num { color: var(--muted); font-size: 12px; width: 32px; }
-    .status-badge {
-      display: inline-flex; align-items: center; gap: 4px;
-      background: #ECFDF5; color: var(--success);
-      border: 1px solid #A7F3D0; border-radius: 20px;
-      padding: 3px 10px; font-size: 12px; font-weight: 600;
-    }
+    .finish-table .row-num { color: var(--muted); font-size: 12px; width: 28px; }
+    .finish-table .col-action { width: 90px; text-align: center; }
+    .tick-yes { color: #059669; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 3px; }
+    .tick-no  { color: #D1D5DB; font-size: 18px; font-weight: 300; text-align: center; }
     .finish-empty { padding: 36px 18px; text-align: center; color: var(--muted); font-size: 14px; }
   </style>
 </head>
@@ -670,17 +676,24 @@
         <i class="bi bi-x"></i>
       </button>
     </div>
-    <div class="finish-total">
-      <div class="finish-total-num" id="finish-total-num">—</div>
-      <div class="finish-total-label">students marked present today</div>
+    <div class="finish-stats">
+      <div class="finish-stat">
+        <div class="finish-stat-num" id="finish-checkin-num">—</div>
+        <div class="finish-stat-label">Checked In</div>
+      </div>
+      <div class="finish-stat">
+        <div class="finish-stat-num" id="finish-checkout-num">—</div>
+        <div class="finish-stat-label">Checked Out</div>
+      </div>
     </div>
     <div class="finish-table-wrap">
       <table class="finish-table">
         <thead>
           <tr>
             <th class="row-num">#</th>
-            <th>Trainee Name</th>
-            <th>Status</th>
+            <th>Trainee</th>
+            <th class="col-action">Check In</th>
+            <th class="col-action">Check Out</th>
           </tr>
         </thead>
         <tbody id="finish-table-body"></tbody>
@@ -1877,47 +1890,47 @@ function esc(str) {
 // ── Finish modal ──────────────────────────────────────────────────────────────
 
 async function showFinishModal() {
-  const modal  = document.getElementById('finish-modal');
-  const tbody  = document.getElementById('finish-table-body');
-  const totalEl = document.getElementById('finish-total-num');
-  const dateEl  = document.getElementById('finish-date');
-  const emptyEl = document.getElementById('finish-empty');
+  const modal       = document.getElementById('finish-modal');
+  const tbody       = document.getElementById('finish-table-body');
+  const checkinEl   = document.getElementById('finish-checkin-num');
+  const checkoutEl  = document.getElementById('finish-checkout-num');
+  const dateEl      = document.getElementById('finish-date');
+  const emptyEl     = document.getElementById('finish-empty');
 
-  tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:24px;color:var(--muted)">Loading…</td></tr>';
-  totalEl.textContent = '—';
+  tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">Loading…</td></tr>';
+  checkinEl.textContent = '—';
+  checkoutEl.textContent = '—';
   emptyEl.style.display = 'none';
   modal.classList.add('show');
 
   try {
     const data = await authFetch('/api/today-attendance?device_session_id=' + encodeURIComponent(DEVICE_SESSION_ID)).then(r => r.json());
-    dateEl.textContent  = data.date;
-    totalEl.textContent = data.total;
+    dateEl.textContent     = data.date;
+    checkinEl.textContent  = data.total || 0;
+    checkoutEl.textContent = data.total_checked_out || 0;
     tbody.innerHTML = '';
 
     if (!data.records || data.records.length === 0) {
       emptyEl.style.display = 'block';
     } else {
       data.records.forEach((rec, i) => {
-        const s = rec.status || 'PENDING';
-        const posted = s === 'POSTED' || s === 'SDK_POSTED';
-        const failed = s === 'FAILED';
-        const badgeStyle = posted
-          ? 'background:rgba(34,197,94,.15);color:#4ade80;border:1px solid rgba(34,197,94,.3)'
-          : failed
-            ? 'background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.3)'
-            : 'background:rgba(234,179,8,.15);color:#facc15;border:1px solid rgba(234,179,8,.3)';
-        const icon  = posted ? 'bi-check-circle-fill' : failed ? 'bi-x-circle-fill' : 'bi-clock';
-        const label = posted ? 'Posted' : failed ? 'Failed' : 'Pending';
+        const ciTime = rec.checkin_time  || '';
+        const coTime = rec.checkout_time || '';
+        const ciCell = '<div class="tick-yes"><i class="bi bi-check-circle-fill"></i>' + (ciTime ? ' ' + ciTime : '') + '</div>';
+        const coCell = rec.checked_out
+          ? '<div class="tick-yes"><i class="bi bi-check-circle-fill"></i>' + (coTime ? ' ' + coTime : '') + '</div>'
+          : '<div class="tick-no">—</div>';
         const tr = document.createElement('tr');
         tr.innerHTML =
           '<td class="row-num">' + (i + 1) + '</td>' +
           '<td>' + esc(rec.name) + '</td>' +
-          '<td><span class="status-badge" style="' + badgeStyle + '"><i class="bi ' + icon + '"></i> ' + label + '</span></td>';
+          '<td class="col-action">' + ciCell + '</td>' +
+          '<td class="col-action">' + coCell + '</td>';
         tbody.appendChild(tr);
       });
     }
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:#dc2626">Failed to load: ' + (err.message || err) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px;color:#dc2626">Failed to load: ' + (err.message || err) + '</td></tr>';
   }
 }
 

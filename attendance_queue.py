@@ -984,38 +984,41 @@ class AttendanceQueue:
 
     def get_today_attendance(self, date_str: str, device_session_id: str = None) -> list:
         """
-        Return today's attendance records that are not FAILED.
-        If device_session_id is provided, only return records from that device session
-        so users sharing the same login across multiple locations see only their own entries.
+        Return today's attendance records that are not FAILED, joined with checkin_state
+        for checkout status. device_session_id scopes results to one device when provided.
         """
+        base_sql = (
+            "SELECT aq.student_name, aq.status, aq.created_at, "
+            "       cs.is_checked_out, cs.checkout_at, cs.checkin_at "
+            "FROM attendance_queue aq "
+            "LEFT JOIN checkin_state cs "
+            "  ON cs.student_id = aq.student_id AND cs.date_str = aq.date_str "
+            "WHERE aq.date_str=? AND aq.status NOT IN ('FAILED') "
+        )
         with self._db() as conn:
             if device_session_id:
                 rows = conn.execute(
-                    self._q(
-                        "SELECT student_name, status, created_at FROM attendance_queue "
-                        "WHERE date_str=? AND status NOT IN ('FAILED') "
-                        "AND device_session_id=? "
-                        "ORDER BY created_at ASC"
-                    ),
+                    self._q(base_sql + "AND aq.device_session_id=? ORDER BY aq.created_at ASC"),
                     (date_str, device_session_id),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    self._q(
-                        "SELECT student_name, status, created_at FROM attendance_queue "
-                        "WHERE date_str=? AND status NOT IN ('FAILED') "
-                        "ORDER BY created_at ASC"
-                    ),
+                    self._q(base_sql + "ORDER BY aq.created_at ASC"),
                     (date_str,),
                 ).fetchall()
-        return [
-            {
-                "name":   row["student_name"],
-                "status": row["status"],
-                "time":   row["created_at"][11:16],  # HH:MM
-            }
-            for row in rows
-        ]
+
+        records = []
+        for row in rows:
+            checkin_ts  = row["checkin_at"]  or row["created_at"]
+            checkout_ts = row["checkout_at"] or ""
+            records.append({
+                "name":          row["student_name"],
+                "status":        row["status"],
+                "checkin_time":  checkin_ts[11:16]  if len(checkin_ts)  > 11 else "",
+                "checked_out":   bool(row["is_checked_out"]),
+                "checkout_time": checkout_ts[11:16] if len(checkout_ts) > 11 else "",
+            })
+        return records
 
     def clear_today_attendance(self, student_id: str = None) -> int:
         """
