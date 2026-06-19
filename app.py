@@ -1375,11 +1375,20 @@ def post_attendance():
 
     today_str = now_ist.strftime("%d-%b-%Y")
 
-    # Pop live capture JPEG in this same HTTP process before handing off to DB-backed queue.
-    # Storing in the queue row ensures the worker (potentially a different process) can upload it.
-    with _captures_lock:
-        _cap_entry = _pending_captures.pop(student_id, None)
-    capture_jpeg = _cap_entry[0] if _cap_entry else None
+    # Prefer JPEG sent directly in the request body (base64) — cross-worker-safe.
+    # Fall back to in-memory _pending_captures only if not provided.
+    import base64 as _b64
+    capture_b64 = data.get("capture_jpeg_b64")
+    if capture_b64:
+        try:
+            capture_jpeg = _b64.b64decode(capture_b64)
+        except Exception as _dec_err:
+            logger.warning(f"Failed to decode capture_jpeg_b64 for {student_name}: {_dec_err}")
+            capture_jpeg = None
+    else:
+        with _captures_lock:
+            _cap_entry = _pending_captures.pop(student_id, None)
+        capture_jpeg = _cap_entry[0] if _cap_entry else None
 
     queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
         student_id=student_id,

@@ -1545,7 +1545,7 @@ async function captureAndVerify(cachedImage = null) {
     // checkinStatus === 'none' → normal check-in flow
     activateStep(4);
     try {
-      await postAttendanceHybrid(data);
+      await postAttendanceHybrid(data, imageData);
     } catch (postErr) {
       console.error('[Attendance] post failed:', postErr);
       showBanner('Attendance post failed: ' + postErr.message, 'danger');
@@ -1570,7 +1570,7 @@ async function captureAndVerify(cachedImage = null) {
 // 1. SDK getRecords(All_Face_Attendances) → duplicate check (0 server API calls)
 // 2. SDK addRecord(Face_Attendance) → post attendance (0 server API calls)
 // 3. Fallback: /api/post-attendance (server-side queue, 1 API call)
-async function postAttendanceHybrid(verifyData) {
+async function postAttendanceHybrid(verifyData, captureImageData = null) {
   const student  = verifyData.student;
   const today    = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
   if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
@@ -1647,6 +1647,7 @@ async function postAttendanceHybrid(verifyData) {
         zoho_environment:  ZOHO_ENV || '',
         device_session_id: DEVICE_SESSION_ID,
         action:            state.captureAction,
+        capture_jpeg_b64:  captureImageData ? captureImageData.split(',')[1] : null,
       }),
     }).then(r => r.json());
     if (fallbackResp.duplicate) {
