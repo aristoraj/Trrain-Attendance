@@ -1704,8 +1704,8 @@ async function doCheckout(verifyData) {
   });
   const data = await resp.json();
 
-  if (data.status === 'too_early') {
-    const remainMin = Math.ceil((data.seconds_remaining || 300) / 60);
+  if (data.status === 'too_early' || data.too_early) {
+    const remainMin = data.remaining_minutes || Math.ceil((data.seconds_remaining || 300) / 60);
     setFrameClass('verified');
     setStatus('ok', student.name + ' — checked in');
     showBanner(esc(student.name), 'warning', null,
@@ -1720,7 +1720,7 @@ async function doCheckout(verifyData) {
     setTimeout(() => resetVerification(), 4000);
     return;
   }
-  if (data.status === 'already_checked_out') {
+  if (data.status === 'already_checked_out' || data.duplicate) {
     setFrameClass('verified');
     setStatus('ok', student.name + ' — already checked out');
     showBanner(esc(student.name), 'info', null, 'Already checked out today.');

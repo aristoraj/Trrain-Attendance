@@ -1486,12 +1486,13 @@ def checkout():
     checkin_info = att_queue.get_checkin_status(student_id, today_str)
 
     if checkin_info["status"] == "none":
-        return jsonify({"success": False, "error": "No check-in found for today. Please check in first."}), 400
+        return jsonify({"success": False, "status": "not_checked_in", "error": "No check-in found for today. Please check in first."}), 400
 
     if checkin_info["status"] == "checked_out":
         return jsonify({
             "success":   True,
             "duplicate": True,
+            "status":    "already_checked_out",
             "message":   f"{student_name} has already checked out today.",
         })
 
@@ -1504,43 +1505,64 @@ def checkout():
         elapsed_min = 999   # parse failure → allow checkout
 
     if elapsed_min < 5:
-        remaining = max(1, int(5 - elapsed_min) + 1)
+        remaining_sec = max(0, int((5 - elapsed_min) * 60))
+        remaining_min = max(1, int(5 - elapsed_min) + 1)
         return jsonify({
             "success":           False,
             "too_early":         True,
-            "remaining_minutes": remaining,
-            "error":             f"Please wait {remaining} more minute(s) before checking out.",
+            "status":            "too_early",
+            "remaining_minutes": remaining_min,
+            "seconds_remaining": remaining_sec,
+            "error":             f"Please wait {remaining_min} more minute(s) before checking out.",
         })
 
-    # Priority: 1) SDK-resolved ID from request  2) stored ID from checkin_state  3) server-side search (may 401 in dev)
+    # Priority: 1) SDK-resolved ID from request  2) stored ID from checkin_state  3) server-side search
     zoho_rec_id = req_zoho_id or checkin_info.get("zoho_record_id", "")
     if not zoho_rec_id:
         logger.info(f"Checkout: no SDK/stored zoho_record_id for {student_name}, falling back to find_attendance_record")
         zoho_rec_id = zoho.find_attendance_record(student_id, today_str, env)
+
+    # Mark local DB checkout FIRST — independent of Zoho availability
+    checkout_time = datetime.now(_IST).strftime("%H:%M")
+    att_queue.record_checkout(student_id, today_str)
+
     if not zoho_rec_id:
-        logger.warning(f"Checkout: no Zoho record found for {student_name} on {today_str}")
+        logger.warning(f"Checked out locally: {student_name} at {checkout_time} — no Zoho record ID found, Zoho PATCH skipped")
         return jsonify({
-            "success": False,
-            "error":   "Attendance record not yet synced to Zoho. Please try again in a moment.",
+            "success":       True,
+            "status":        "checkout",
+            "action":        "checkout",
+            "message":       f"Checked out, {student_name}!",
+            "student_name":  student_name,
+            "checkout_time": checkout_time,
+            "zoho_synced":   False,
         })
+
     logger.info(f"Checkout: using zoho_rec_id={zoho_rec_id} for {student_name} (source: {'sdk_request' if req_zoho_id else 'stored' if checkin_info.get('zoho_record_id') else 'search'})")
 
     # PATCH Check_Out time + Auto_Checkout = No
-    checkout_time = datetime.now(_IST).strftime("%H:%M")
-    result        = zoho.patch_checkout(zoho_rec_id, checkout_time, env)
+    result = zoho.patch_checkout(zoho_rec_id, checkout_time, env)
     if not result.get("success"):
-        logger.error(f"Checkout PATCH failed for {student_name}: {result.get('error')}")
-        return jsonify({"success": False, "error": result.get("error", "Checkout failed")}), 500
-
-    # Mark checked out in local state
-    att_queue.record_checkout(student_id, today_str)
+        logger.error(f"Checkout PATCH failed for {student_name}: {result.get('error')} — local state already updated")
+        return jsonify({
+            "success":       True,
+            "status":        "checkout",
+            "action":        "checkout",
+            "message":       f"Checked out, {student_name}! (Zoho sync failed — will need manual fix)",
+            "student_name":  student_name,
+            "checkout_time": checkout_time,
+            "zoho_synced":   False,
+        })
 
     logger.info(f"Checked out: {student_name} at {checkout_time} (Zoho record {zoho_rec_id})")
     return jsonify({
-        "success":      True,
-        "action":       "checkout",
-        "message":      f"Checked out successfully, {student_name}!",
-        "student_name": student_name,
+        "success":       True,
+        "status":        "checkout",
+        "action":        "checkout",
+        "message":       f"Checked out successfully, {student_name}!",
+        "student_name":  student_name,
+        "checkout_time": checkout_time,
+        "zoho_synced":   True,
     })
 
 
