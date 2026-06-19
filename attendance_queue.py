@@ -846,10 +846,8 @@ class AttendanceQueue:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def is_already_marked(self, student_id: str, date_str: str) -> bool:
-        with self._lock:
-            if student_id in self._global_marked.get(date_str, set()):
-                return True
-
+        # Always check DB — the admin-clear endpoint only clears one Gunicorn worker's
+        # in-memory state; other workers retain stale marks, so memory alone is not reliable.
         with self._db() as conn:
             count = conn.execute(
                 self._q(
@@ -864,6 +862,8 @@ class AttendanceQueue:
             with self._lock:
                 self._mark_in_memory(student_id, date_str)
             return True
+        with self._lock:
+            self._global_marked.get(date_str, set()).discard(student_id)
         return False
 
     def mark_attended(self, student_id: str, student_name: str, date_str: str) -> None:
@@ -891,20 +891,19 @@ class AttendanceQueue:
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
 
-        Holding self._lock while marking in-memory blocks any concurrent
-        in-process request from passing the dedup check before this one
-        has written to the DB, closing the TOCTOU window.
-        The subsequent DB COUNT check covers cross-process duplicates
-        (e.g. multiple Render instances sharing the same PostgreSQL).
+        Memory is claimed for same-process TOCTOU prevention; DB is the authoritative
+        source. The in-memory fast-path early return is intentionally omitted: the
+        admin-clear endpoint only clears one Gunicorn worker's memory, leaving other
+        workers with stale marks — the DB check handles that case correctly.
         """
         with self._lock:
-            if student_id in self._global_marked.get(date_str, set()):
-                return None, True
-            # Claim the slot in memory immediately so concurrent threads
-            # hitting this block next will see it as already marked.
-            self._mark_in_memory(student_id, date_str)
+            in_memory = student_id in self._global_marked.get(date_str, set())
+            if not in_memory:
+                # Claim the slot immediately so concurrent same-process requests
+                # see it as marked before this request writes to the DB.
+                self._mark_in_memory(student_id, date_str)
 
-        # Cross-process durability check (DB is authoritative across instances)
+        # DB is authoritative (covers cross-process dups AND stale in-memory after admin-clear)
         with self._db() as conn:
             count = conn.execute(
                 self._q(
@@ -918,6 +917,12 @@ class AttendanceQueue:
         if count > 0:
             logger.info(f"DB dedup blocked duplicate for {student_name} ({date_str})")
             return None, True
+
+        if in_memory:
+            # Stale in-memory entry from admin-clear on a different worker — re-claim.
+            with self._lock:
+                self._mark_in_memory(student_id, date_str)
+            logger.debug(f"Stale in-memory dedup for {student_name} ({date_str}) — allowing fresh check-in")
 
         now = datetime.now().isoformat()
         sql = self._q("""

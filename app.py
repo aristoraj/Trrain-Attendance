@@ -1393,6 +1393,10 @@ def post_attendance():
             _cap_entry = _pending_captures.pop(student_id, None)
         capture_jpeg = _cap_entry[0] if _cap_entry else None
 
+    logger.info(
+        f"[Fallback] Queuing {student_name} | checkin_time='{checkin_time}' | "
+        f"action='{action_field}' | photo={'yes' if capture_jpeg else 'no'} | env='{env}'"
+    )
     queue_id, is_duplicate = att_queue.enqueue_if_not_marked(
         student_id=student_id,
         student_name=student_name,
