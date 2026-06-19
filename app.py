@@ -1489,7 +1489,7 @@ def checkout():
     # Enforce 5-minute minimum between check-in and check-out
     try:
         checkin_at  = datetime.fromisoformat(checkin_info["checkin_at"])
-        now_local   = datetime.now()
+        now_local   = datetime.now(_IST)
         elapsed_min = (now_local - checkin_at).total_seconds() / 60
     except Exception:
         elapsed_min = 999   # parse failure → allow checkout
