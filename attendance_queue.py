@@ -404,6 +404,18 @@ class AttendanceQueue:
             )
         return cur.rowcount > 0
 
+    def undo_checkout(self, student_id: str, date_str: str) -> bool:
+        """Reset a student's checkout for the day (clears is_checked_out + checkout_at)."""
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q("""
+                    UPDATE checkin_state SET is_checked_out=0, checkout_at=NULL
+                    WHERE student_id=? AND date_str=? AND is_checked_out=1
+                """),
+                (student_id, date_str),
+            )
+        return cur.rowcount > 0
+
     def _create_batch_status_table(self, conn):
         """
         Tracks the last-known status, start date, and end date of every batch

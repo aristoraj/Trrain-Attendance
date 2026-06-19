@@ -978,6 +978,31 @@ class ZohoCreatorAPI:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def clear_checkout_fields(self, zoho_rec_id: str, env: str = "") -> dict:
+        """
+        PATCH an existing Face_Attendance record to clear Check_Out and Auto_Checkout fields.
+        Used by admin undo-checkout to fix wrongly-triggered checkouts.
+        """
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
+        data_payload = {
+            FIELD_CHECK_OUT:     "",
+            FIELD_AUTO_CHECKOUT: "",
+        }
+        logger.info(f"Clear checkout PATCH — record_id={zoho_rec_id} | env='{env}'")
+        try:
+            resp = self._request("patch", url, env=env, json={"data": data_payload}, timeout=15)
+            resp.raise_for_status()
+            result = resp.json()
+            zoho_code = result.get("code")
+            if zoho_code is not None and zoho_code != 3000:
+                return {"success": False, "error": f"Zoho error {zoho_code}: {result.get('message', '')}"}
+            logger.info(f"Clear checkout PATCH successful — record {zoho_rec_id}")
+            return {"success": True, "data": result}
+        except requests.HTTPError as e:
+            return {"success": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:300]}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _upload_capture_photo(self, record_id: str, jpeg_bytes: bytes,
                                student_name: str, env: str = "") -> None:
         """

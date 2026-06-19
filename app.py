@@ -2187,6 +2187,49 @@ def admin_clear_today():
     })
 
 
+@app.route("/admin/undo-checkout", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+def admin_undo_checkout():
+    """
+    Reset a student's checkout state locally and optionally clear the Zoho Creator record.
+
+    Params:
+      student_id      — reset local checkin_state (optional if only fixing Zoho)
+      zoho_record_id  — Zoho Creator record ID to PATCH and clear Check_Out + Auto_Checkout
+      env             — 'production' or 'development' (default: production)
+      date            — dd-Mon-YYYY, defaults to today IST
+    """
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
+
+    student_id     = (request.args.get("student_id")     or "").strip() or None
+    zoho_record_id = (request.args.get("zoho_record_id") or "").strip() or None
+    env            = _resolve_env(request.args.get("env"))
+    date_str       = (request.args.get("date") or "").strip() or datetime.now(_IST).strftime("%d-%b-%Y")
+
+    if not student_id and not zoho_record_id:
+        return jsonify({"error": "Provide at least one of: student_id, zoho_record_id"}), 400
+
+    result = {"success": True, "date": date_str}
+
+    # 1. Reset local checkin_state
+    if student_id:
+        reset = att_queue.undo_checkout(student_id, date_str)
+        result["local_reset"] = reset
+        logger.info(f"Admin undo-checkout (local): student={student_id} date={date_str} reset={reset}")
+
+    # 2. Clear Zoho Creator record fields
+    if zoho_record_id:
+        zoho_result = zoho.clear_checkout_fields(zoho_record_id, env=env)
+        result["zoho_cleared"] = zoho_result.get("success")
+        if not zoho_result.get("success"):
+            result["zoho_error"] = zoho_result.get("error")
+        logger.info(f"Admin undo-checkout (Zoho): record={zoho_record_id} env='{env}' ok={zoho_result.get('success')}")
+
+    return jsonify(result)
+
+
 @app.route("/admin/clear-student-embeddings", methods=["GET", "POST"])
 @limiter.limit("20 per minute")
 def admin_clear_student_embeddings():
