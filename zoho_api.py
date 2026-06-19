@@ -958,11 +958,11 @@ class ZohoCreatorAPI:
         url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
         data_payload = {
             FIELD_CHECK_OUT:     checkout_time,
-            FIELD_AUTO_CHECKOUT: "No",
+            FIELD_AUTO_CHECKOUT: "Yes",
         }
         logger.info(
             f"Checkout PATCH — record_id={zoho_rec_id} | "
-            f"payload: {FIELD_CHECK_OUT}={checkout_time}, {FIELD_AUTO_CHECKOUT}=No | env='{env}'"
+            f"payload: {FIELD_CHECK_OUT}={checkout_time}, {FIELD_AUTO_CHECKOUT}=Yes | env='{env}'"
         )
         try:
             resp = self._request("patch", url, env=env, json={"data": data_payload}, timeout=15)
