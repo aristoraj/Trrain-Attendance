@@ -1462,6 +1462,24 @@ class AttendanceQueue:
                 if result.get("success"):
                     self._set_posted(rec_id)
                     zoho_id = result.get("data", {}).get("data", {}).get("ID", "")
+                    if not zoho_id:
+                        logger.warning(
+                            f"Queue #{rec_id}: Zoho response missing ID for {name} — "
+                            f"falling back to find_attendance_record"
+                        )
+                        zoho_id = self._zoho.find_attendance_record(
+                            student_id, row["date_str"], environment
+                        ) or ""
+                        if zoho_id:
+                            logger.info(
+                                f"Queue #{rec_id}: fallback found Zoho ID '{zoho_id}' for {name}"
+                            )
+                        else:
+                            logger.error(
+                                f"Queue #{rec_id}: fallback also failed — "
+                                f"no Zoho record found for {name} on {row['date_str']}. "
+                                f"Photo will NOT be uploaded."
+                            )
                     if zoho_id:
                         self.update_zoho_record_id(student_id, row["date_str"], zoho_id)
                         if capture_jpeg:
