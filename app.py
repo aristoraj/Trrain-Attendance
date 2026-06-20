@@ -1414,9 +1414,6 @@ def post_attendance():
             "message":   f"{student_name} is already marked present today.",
         })
 
-    # Record check-in state (non-breaking — idempotent, fails silently if already recorded)
-    att_queue.record_checkin(student_id, student_name, today_str, env)
-
     logger.info(f"Attendance queued for {student_name} via server fallback (queue #{queue_id})")
     return jsonify({
         "success":   True,

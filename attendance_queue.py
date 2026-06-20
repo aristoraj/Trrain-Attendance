@@ -1478,17 +1478,18 @@ class AttendanceQueue:
                             logger.error(
                                 f"Queue #{rec_id}: fallback also failed — "
                                 f"no Zoho record found for {name} on {row['date_str']}. "
-                                f"Photo will NOT be uploaded."
+                                f"Check-in recorded without Zoho ID. Photo will NOT be uploaded."
                             )
-                    if zoho_id:
-                        self.update_zoho_record_id(student_id, row["date_str"], zoho_id)
-                        if capture_jpeg:
-                            import threading as _threading
-                            _threading.Thread(
-                                target=self._zoho._upload_capture_photo,
-                                args=(zoho_id, capture_jpeg, name, environment),
-                                daemon=True,
-                            ).start()
+                    # Write checkin_state with the correct zoho_id — idempotent, so safe
+                    # if SDK path already wrote it (UNIQUE constraint will just return False).
+                    self.record_checkin(student_id, name, row["date_str"], environment, zoho_id)
+                    if zoho_id and capture_jpeg:
+                        import threading as _threading
+                        _threading.Thread(
+                            target=self._zoho._upload_capture_photo,
+                            args=(zoho_id, capture_jpeg, name, environment),
+                            daemon=True,
+                        ).start()
                     logger.info(f"Queue: synced {name} → Zoho (#{rec_id}) zoho_id='{zoho_id}'")
                 else:
                     self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))
