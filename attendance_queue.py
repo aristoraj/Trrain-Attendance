@@ -988,6 +988,12 @@ class AttendanceQueue:
             ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
+        # Write provisional checkin_state immediately so dedup and checkout routing
+        # always work, even if the drain is delayed or fails permanently.
+        # The drain will update zoho_record_id once the Zoho record is created.
+        self.record_checkin(student_id, student_name, date_str, environment,
+                            zoho_record_id='', checkin_time_hhmm=checkin_time)
+
         logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
         return rec_id, False
 
@@ -1591,9 +1597,10 @@ class AttendanceQueue:
                             f"zoho_id='{zoho_id}' photo={'yes' if capture_jpeg else 'no'}"
                         )
                     else:
-                        logger.error(
-                            f"Queue #{rec_id}: FAILED to write checkin_state for {name} "
-                            f"(record_checkin returned False) — student may be able to duplicate check-in"
+                        # Provisional entry was written at enqueue time — update its zoho_record_id
+                        self.update_zoho_record_id(student_id, row["date_str"], zoho_id)
+                        logger.info(
+                            f"Queue #{rec_id}: checkin_state zoho_id updated to '{zoho_id}' for {name}"
                         )
                     if zoho_id and capture_jpeg:
                         import threading as _threading
