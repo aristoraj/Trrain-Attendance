@@ -1566,58 +1566,64 @@ async function captureAndVerify(cachedImage = null) {
   }
 }
 
-// ── Hybrid attendance posting ─────────────────────────────────────────────────
-// 1. SDK getRecords(All_Face_Attendances) → duplicate check (0 server API calls)
-// 2. SDK addRecord(Face_Attendance) → post attendance (0 server API calls)
-// 3. Fallback: /api/post-attendance (server-side queue, 1 API call)
+// ── Server-primary attendance posting ────────────────────────────────────────
+// 1. PRIMARY: /api/post-attendance — server queues with full data (Check_In, Action, photo).
+//             Drain posts to Zoho async. Dedup handled server-side.
+// 2. FALLBACK: SDK addRecord — only if server is unreachable (network error / 5xx).
+//             Posts directly to Zoho via SDK session. Photo not uploaded in this path.
+// SDK is kept for auth/session and checkout record lookups (getRecords) — not for writes.
 async function postAttendanceHybrid(verifyData, captureImageData = null) {
-  const student  = verifyData.student;
-  const today    = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
-  if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
-
-  let isDuplicate = false;
+  const student    = verifyData.student;
   let postedViaSDK = false;
 
-  // Step 1: SDK duplicate check
+  // Step 1: Server primary — full record (Check_In, Action, photo) queued for drain
+  let serverOk = false;
   try {
-    const dupResp = await ZOHO.CREATOR.DATA.getRecords({
-      app_name: APP_LINK_NAME || (_cfg && _cfg.app_name), report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
-      criteria: '(' + _cfg.fields.att_student + '.ID=="' + student.id + '" && ' +
-                _cfg.fields.att_date + '=="' + today + '")',
-      page: 1, page_size: 1,
+    const resp = await authFetch('/api/post-attendance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id:        student.id,
+        student_name:      student.name,
+        zoho_environment:  ZOHO_ENV || '',
+        device_session_id: DEVICE_SESSION_ID,
+        action:            state.captureAction,
+        capture_jpeg_b64:  captureImageData ? captureImageData.split(',')[1] : null,
+      }),
     });
-    isDuplicate = dupResp && dupResp.data && dupResp.data.length > 0;
-    console.log('[Attendance] SDK dup check:', isDuplicate ? 'duplicate' : 'fresh');
+    const result = await resp.json();
+    if (result.duplicate) {
+      showDuplicate({ student, confidence: verifyData.confidence, attendance_posted: false });
+      return;
+    }
+    if (result.success) {
+      serverOk = true;
+      console.log('[Attendance] Posted via server (queue #' + result.queue_id + ')');
+    }
   } catch (e) {
-    console.warn('[Attendance] SDK dup check failed, falling back to server:', e);
-    // Let server handle dedup in fallback
+    console.warn('[Attendance] Server post failed, trying SDK fallback:', e);
   }
 
-  if (isDuplicate) {
-    showDuplicate({ student, confidence: verifyData.confidence, attendance_posted: false });
-    return;
-  }
-
-  // Step 2: SDK post attendance
-  if (!isDuplicate) {
+  // Step 2: SDK fallback — only if server was unreachable
+  if (!serverOk) {
     try {
+      if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
+      const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
       const record = {};
       record[_cfg.fields.att_student] = student.id;
       record[_cfg.fields.att_date]    = today;
       record[_cfg.fields.att_status]  = 'Present';
-      const _now = new Date();
+      const _now  = new Date();
       const _hhmm = _now.getHours().toString().padStart(2,'0') + ':' + _now.getMinutes().toString().padStart(2,'0');
       record[_cfg.fields.att_check_in || 'Check_In'] = _hhmm;
       if (state.captureAction) record[_cfg.fields.att_action || 'Action_field'] = state.captureAction;
-      console.log('[Attendance] SDK record fields:', JSON.stringify(record));
       const sdkResult = await ZOHO.CREATOR.DATA.addRecord({
         app_name: APP_LINK_NAME || (_cfg && _cfg.app_name), form_name: _cfg.reports.attendance_form, data: record,
       });
       postedViaSDK = true;
-      console.log('[SDK addRecord] raw response:', JSON.stringify(sdkResult));
       const _zohoRecId = (sdkResult && sdkResult.data && sdkResult.data.ID) ? String(sdkResult.data.ID) : '';
-      console.log('[Attendance] Posted via SDK — zoho_record_id:', _zohoRecId);
-      // Best-effort: tell backend so checkin_state is updated (with Zoho record ID) for checkout routing
+      console.log('[Attendance] SDK fallback used — zoho_record_id:', _zohoRecId);
+      // Best-effort: notify server so checkin_state is written for checkout routing
       try {
         await authFetch('/api/record-checkin', {
           method: 'POST',
@@ -1633,29 +1639,9 @@ async function postAttendanceHybrid(verifyData, captureImageData = null) {
         console.warn('[Attendance] record-checkin notify failed (non-fatal):', e2);
       }
     } catch (e) {
-      console.warn('[Attendance] SDK addRecord failed, falling back to server:', e);
+      console.error('[Attendance] SDK fallback also failed:', e);
+      throw new Error('Attendance could not be posted. Please try again.');
     }
-  }
-
-  // Step 3: Server fallback if SDK post failed
-  if (!postedViaSDK) {
-    const fallbackResp = await authFetch('/api/post-attendance', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        student_id:        student.id,
-        student_name:      student.name,
-        zoho_environment:  ZOHO_ENV || '',
-        device_session_id: DEVICE_SESSION_ID,
-        action:            state.captureAction,
-        capture_jpeg_b64:  captureImageData ? captureImageData.split(',')[1] : null,
-      }),
-    }).then(r => r.json());
-    if (fallbackResp.duplicate) {
-      showDuplicate({ student, confidence: verifyData.confidence, attendance_posted: false });
-      return;
-    }
-    console.log('[Attendance] Posted via server fallback');
   }
 
   showSuccess({
@@ -1669,12 +1655,31 @@ async function postAttendanceHybrid(verifyData, captureImageData = null) {
 async function doCheckout(verifyData) {
   const student = verifyData.student;
 
-  // Use SDK to find today's attendance record ID — SDK has proper env access, server OAuth does not
-  let zohoRecordId = '';
-  if (typeof ZOHO !== 'undefined' && ZOHO.CREATOR && ZOHO.CREATOR.DATA) {
+  // Step 1: Server primary — resolves zoho_record_id from checkin_state (written at check-in by drain).
+  // No zoho_record_id needed from client; server has it from its own drain state.
+  let data = null;
+  let serverResp = null;
+  try {
+    serverResp = await authFetch('/api/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id:       student.id,
+        student_name:     student.name,
+        zoho_environment: ZOHO_ENV || '',
+      }),
+    });
+    data = await serverResp.json();
+  } catch (e) {
+    console.warn('[Checkout] Server request failed, trying SDK fallback:', e);
+  }
+
+  // Step 2: SDK fallback — only if server is unreachable
+  if (!data) {
     try {
       if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
       const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
+      // Find today's record
       const recResp = await ZOHO.CREATOR.DATA.getRecords({
         app_name:    APP_LINK_NAME || (_cfg && _cfg.app_name),
         report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
@@ -1682,28 +1687,29 @@ async function doCheckout(verifyData) {
                      _cfg.fields.att_date + '=="' + today + '")',
         page: 1, page_size: 1,
       });
-      if (recResp && recResp.data && recResp.data.length > 0) {
-        zohoRecordId = String(recResp.data[0].ID || '');
-        console.log('[Checkout] SDK found record ID:', zohoRecordId);
-      } else {
-        console.warn('[Checkout] SDK found no attendance record for today');
-      }
+      const zohoRecordId = recResp && recResp.data && recResp.data.length > 0
+        ? String(recResp.data[0].ID || '') : '';
+      if (!zohoRecordId) throw new Error('No Zoho record found via SDK');
+      // Patch Check_Out + Auto_Checkout directly
+      const _now  = new Date();
+      const _hhmm = _now.getHours().toString().padStart(2,'0') + ':' + _now.getMinutes().toString().padStart(2,'0');
+      await ZOHO.CREATOR.DATA.updateRecord({
+        app_name:    APP_LINK_NAME || (_cfg && _cfg.app_name),
+        report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
+        id:          zohoRecordId,
+        data: {
+          [_cfg.fields.att_check_out     || 'Check_Out']:     _hhmm,
+          [_cfg.fields.att_auto_checkout || 'Auto_Checkout']: 'Yes',
+        },
+      });
+      console.log('[Checkout] SDK fallback completed for record', zohoRecordId);
+      data = { status: 'checkout', checkout_time: _hhmm };
+      serverResp = { ok: true };
     } catch (e) {
-      console.warn('[Checkout] SDK record lookup failed (non-fatal):', e);
+      console.error('[Checkout] SDK fallback also failed:', e);
+      throw new Error('Checkout failed. Please try again.');
     }
   }
-
-  const resp = await authFetch('/api/checkout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      student_id:       student.id,
-      student_name:     student.name,
-      zoho_environment: ZOHO_ENV || '',
-      zoho_record_id:   zohoRecordId,
-    }),
-  });
-  const data = await resp.json();
 
   if (data.status === 'too_early' || data.too_early) {
     const remainMin = data.remaining_minutes || Math.ceil((data.seconds_remaining || 300) / 60);
@@ -1728,7 +1734,7 @@ async function doCheckout(verifyData) {
     setTimeout(() => resetVerification(), 4000);
     return;
   }
-  if (!resp.ok || data.error) {
+  if (!serverResp.ok || data.error) {
     throw new Error(data.error || 'Checkout failed');
   }
 

@@ -8,6 +8,7 @@ Endpoints:
   GET  /api/cache/status       → Cache status info
   POST /api/cache/refresh      → Force refresh student face cache
   POST /api/verify             → Verify face + queue attendance
+  POST /api/post-attendance             → Primary attendance post (server queue → drain → Zoho)
   GET  /admin/sync-status               → Queue health: pending / processing / posted / failed counts
   POST /admin/retry-failed              → Reset FAILED queue records to PENDING
   POST /admin/reset-stuck-processing   → Force-release PROCESSING records stuck > 5 min
@@ -45,6 +46,7 @@ from config import (
     ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ACTION, FIELD_CHECK_IN,
+    FIELD_CHECK_OUT, FIELD_AUTO_CHECKOUT,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
     FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
@@ -1352,16 +1354,16 @@ def verify():
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
 
 
-# ─── Attendance posting fallback (called by frontend if SDK addRecord fails) ────
+# ─── Attendance posting — primary server path ────────────────────────────────
 
 @app.route("/api/post-attendance", methods=["POST"])
 @require_session
 @limiter.limit("60 per minute")
 def post_attendance():
     """
-    Server-side attendance posting fallback.
-    Called by the frontend when SDK addRecord on Face_Attendance fails.
-    Also used directly when SDK is unavailable.
+    Primary server-side attendance posting.
+    Called by the frontend immediately after face verification.
+    SDK addRecord is the fallback (only if this endpoint is unreachable).
 
     Request JSON: {student_id, student_name, zoho_environment, device_session_id}
     """
@@ -1716,8 +1718,10 @@ def api_config():
             "att_date":          FIELD_ATT_DATE,
             "att_status":        FIELD_ATT_STATUS,
             "att_action":        FIELD_ACTION,
-            "att_check_in":      FIELD_CHECK_IN,
-            "centre_email":      FIELD_CENTRE_LOGIN_EMAIL,
+            "att_check_in":       FIELD_CHECK_IN,
+            "att_check_out":      FIELD_CHECK_OUT,
+            "att_auto_checkout":  FIELD_AUTO_CHECKOUT,
+            "centre_email":       FIELD_CENTRE_LOGIN_EMAIL,
             "centre_name":       FIELD_CENTRE_NAME,
             "user_email":        FIELD_USER_MGMT_EMAIL,
             "face_feature":      FIELD_USER_FACE_FEATURE,
