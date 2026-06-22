@@ -145,6 +145,11 @@ zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
+@app.before_request
+def _ensure_drain_alive():
+    """Restart drain thread if it died or was never started in this worker process."""
+    att_queue.ensure_drain_alive()
+
 
 
 # ─── Per-scope face cache ──────────────────────────────────────────────────────

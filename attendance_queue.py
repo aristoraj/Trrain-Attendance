@@ -103,6 +103,9 @@ class AttendanceQueue:
         self._init_db()
         self._rebuild_dedup_from_db()
 
+        self._drain_event = threading.Event()  # set by enqueue to wake drain immediately
+        self._drain_lock  = threading.Lock()   # guards _worker restart
+
         self._worker = threading.Thread(target=self._drain_loop, daemon=True)
         self._worker.start()
         logger.info("AttendanceQueue ready — background sync worker started.")
@@ -994,6 +997,9 @@ class AttendanceQueue:
         self.record_checkin(student_id, student_name, date_str, environment,
                             zoho_record_id='', checkin_time_hhmm=checkin_time)
 
+        # Wake the drain thread immediately — don't wait for the 2-second poll interval.
+        self._drain_event.set()
+
         logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
         return rec_id, False
 
@@ -1493,18 +1499,30 @@ class AttendanceQueue:
 
     # ── Background drain loop ─────────────────────────────────────────────────
 
+    def ensure_drain_alive(self):
+        """Restart the drain thread if it has died. Call this from before_request."""
+        if not self._worker.is_alive():
+            with self._drain_lock:
+                if not self._worker.is_alive():  # double-check under lock
+                    logger.warning("Drain thread not alive — restarting in current process")
+                    self._worker = threading.Thread(target=self._drain_loop, daemon=True)
+                    self._worker.start()
+
     def _drain_loop(self):
         consecutive_errors = 0
         while True:
             try:
                 self._drain()
                 consecutive_errors = 0
-                time.sleep(WORKER_POLL_INTERVAL)
+                # Wake immediately when a new item is enqueued; otherwise poll every 2 s
+                self._drain_event.wait(timeout=WORKER_POLL_INTERVAL)
+                self._drain_event.clear()
             except Exception as e:
                 consecutive_errors += 1
                 backoff = min(WORKER_POLL_INTERVAL * (2 ** consecutive_errors), 60)
                 logger.error(f"Queue drain error (attempt {consecutive_errors}): {e} — retrying in {backoff}s")
-                time.sleep(backoff)
+                self._drain_event.wait(timeout=backoff)
+                self._drain_event.clear()
 
     def _drain(self):
         now_iso = datetime.now().isoformat()
