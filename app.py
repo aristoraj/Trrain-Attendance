@@ -1757,8 +1757,14 @@ def load_students():
     scope_key   = (data.get("scope_key") or "").strip() or "ALL"
     env         = _resolve_env(data.get("zoho_environment"))
 
+    # Guard: only accept students from Ongoing batches.
+    # ongoing_batch_ids is empty when batch_status hasn't been populated yet (first
+    # startup) — in that case we skip the filter rather than block everyone.
+    ongoing_batch_ids = set(att_queue.get_ongoing_batch_ids_from_db(scope_key))
+
     students       = []
     needs_encoding = []
+    skipped        = 0
 
     for rec in raw_records:
         student_id     = str(rec.get("ID") or rec.get("id") or "")
@@ -1768,6 +1774,16 @@ def load_students():
         student_number = str(rec.get(FIELD_STUDENT_NUMBER) or "")
         embedding_raw  = (rec.get(FIELD_STUDENT_EMBEDDING) or "").strip()
 
+        # Extract batch_id from the lookup field (may be dict or plain string)
+        batch_raw = rec.get(FIELD_STUDENT_BATCH) or ""
+        batch_id  = (batch_raw.get("ID") if isinstance(batch_raw, dict) else str(batch_raw)).strip()
+
+        # Reject students from non-Ongoing batches when we have batch status data
+        if batch_id and ongoing_batch_ids and batch_id not in ongoing_batch_ids:
+            logger.info(f"SDK load-students: skipping {name!r} — batch {batch_id!r} not Ongoing")
+            skipped += 1
+            continue
+
         if embedding_raw.startswith("["):
             emb = json_to_embedding(embedding_raw)
             if emb is not None:
@@ -1776,9 +1792,13 @@ def load_students():
                     "name":           name,
                     "student_number": student_number,
                     "encodings":      [emb],
+                    "batch_id":       batch_id,
                 })
         elif student_id:
             needs_encoding.append(rec)
+
+    if skipped:
+        logger.warning(f"SDK load-students: dropped {skipped} student(s) from non-Ongoing batches (scope '{scope_key}')")
 
     # ── Seed already-encoded students immediately ─────────────────────────────
     if students:

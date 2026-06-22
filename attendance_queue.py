@@ -1285,15 +1285,33 @@ class AttendanceQueue:
                     VALUES (?, ?, ?)
                 """), (key, _json.dumps(True), now))
 
+    def get_ongoing_batch_ids_from_db(self, scope_key: str) -> list:
+        """Return batch IDs marked Ongoing in the local batch_status table for a scope."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT batch_id FROM batch_status WHERE scope_key=? AND status='Ongoing'"),
+                (scope_key,),
+            ).fetchall()
+        return [r["batch_id"] for r in rows]
+
     def load_students_from_db(self, scope_key: str) -> list | None:
         """
         Reconstruct student list from local DB (student_cache + face_embeddings).
-        Returns list of dicts with raw_embeddings (JSON strings) for the caller to decode,
-        or None if no data exists for this scope.
+        Excludes students whose batch is known to be non-Ongoing (Pending/Completed).
+        Students with no batch_id or whose batch isn't in batch_status yet are
+        included conservatively (status unknown = don't block them).
+        Returns list of dicts with raw_embeddings (JSON strings), or None if empty.
         """
         with self._db() as conn:
             rows = conn.execute(
-                self._q("SELECT student_id, name, student_number FROM student_cache WHERE scope_key=?"),
+                self._q(
+                    "SELECT sc.student_id, sc.name, sc.student_number "
+                    "FROM student_cache sc "
+                    "LEFT JOIN batch_status bs "
+                    "  ON bs.batch_id = sc.batch_id AND bs.scope_key = sc.scope_key "
+                    "WHERE sc.scope_key = ? "
+                    "  AND (sc.batch_id = '' OR bs.batch_id IS NULL OR bs.status = 'Ongoing')"
+                ),
                 (scope_key,),
             ).fetchall()
         if not rows:
