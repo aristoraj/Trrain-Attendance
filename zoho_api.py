@@ -893,11 +893,11 @@ class ZohoCreatorAPI:
             FIELD_ATT_DATE:    now.strftime("%d-%b-%Y"),
             FIELD_ATT_STATUS:  "Present",
         }
-        if checkin_time:
-            # Zoho Time fields require HH:MM:SS; queue stores HH:MM
-            data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
         if action_field:
             data_payload[FIELD_ACTION] = action_field
+        if checkin_time:
+            # Zoho Time fields require HH:MM:SS; queue stores HH:MM — kept last in payload
+            data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
 
         try:
             payload = {"data": data_payload}
@@ -961,8 +961,8 @@ class ZohoCreatorAPI:
         # Zoho Time fields require HH:MM:SS; caller may pass HH:MM
         zoho_checkout = checkout_time + ":00" if len(checkout_time) == 5 else checkout_time
         data_payload = {
-            FIELD_CHECK_OUT:     zoho_checkout,
             FIELD_AUTO_CHECKOUT: "Yes",
+            FIELD_CHECK_OUT:     zoho_checkout,
         }
         logger.info(
             f"Checkout PATCH — record_id={zoho_rec_id} | "
@@ -989,11 +989,11 @@ class ZohoCreatorAPI:
         later fills in the missing fields.
         """
         data_payload = {}
-        if checkin_time:
-            # Zoho Time fields require HH:MM:SS; queue stores HH:MM
-            data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
         if action_field:
             data_payload[FIELD_ACTION] = action_field
+        if checkin_time:
+            # Zoho Time fields require HH:MM:SS; queue stores HH:MM — kept last in payload
+            data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
         if not data_payload:
             return True
         url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
