@@ -372,12 +372,24 @@ class AttendanceQueue:
 
     def record_checkin(self, student_id: str, student_name: str,
                        date_str: str, environment: str = "",
-                       zoho_record_id: str = "") -> bool:
+                       zoho_record_id: str = "",
+                       checkin_time_hhmm: str = "") -> bool:
         """
         Records a check-in. Returns True if inserted, False if already exists.
-        Called from both the SDK path (/api/record-checkin) and server fallback (/api/post-attendance).
+        checkin_time_hhmm ("HH:MM") is the actual scan time from the queue row.
+        When provided it is used as checkin_at so the app summary matches Zoho.
+        Falls back to now() when called from the SDK path (/api/record-checkin).
         """
-        now = datetime.now(_IST).isoformat()
+        if checkin_time_hhmm:
+            try:
+                d = datetime.strptime(date_str, "%d-%b-%Y")
+                h, m = checkin_time_hhmm.split(":")
+                checkin_at = datetime(d.year, d.month, d.day, int(h), int(m), 0,
+                                      tzinfo=_IST).isoformat()
+            except Exception:
+                checkin_at = datetime.now(_IST).isoformat()
+        else:
+            checkin_at = datetime.now(_IST).isoformat()
         try:
             with self._db() as conn:
                 conn.execute(
@@ -385,7 +397,7 @@ class AttendanceQueue:
                         INSERT INTO checkin_state (student_id, date_str, checkin_at, environment, zoho_record_id)
                         VALUES (?, ?, ?, ?, ?)
                     """),
-                    (student_id, date_str, now, environment, zoho_record_id),
+                    (student_id, date_str, checkin_at, environment, zoho_record_id),
                 )
             logger.info(f"Check-in recorded: {student_id} on {date_str} zoho_id='{zoho_record_id}'")
             return True
@@ -1550,7 +1562,8 @@ class AttendanceQueue:
                             )
                     # Write checkin_state with the correct zoho_id — idempotent, so safe
                     # if SDK path already wrote it (UNIQUE constraint will just return False).
-                    self.record_checkin(student_id, name, row["date_str"], environment, zoho_id)
+                    self.record_checkin(student_id, name, row["date_str"], environment, zoho_id,
+                                        checkin_time_hhmm=checkin_time)
                     logger.info(
                         f"Queue #{rec_id}: checkin_state written for {name} "
                         f"zoho_id='{zoho_id}' photo={'yes' if capture_jpeg else 'no'}"
@@ -1579,7 +1592,8 @@ class AttendanceQueue:
                         self._zoho.patch_checkin_fields(
                             existing_id, checkin_time, action_field, environment
                         )
-                        self.record_checkin(student_id, name, row["date_str"], environment, existing_id)
+                        self.record_checkin(student_id, name, row["date_str"], environment, existing_id,
+                                            checkin_time_hhmm=checkin_time)
                         if capture_jpeg:
                             import threading as _threading
                             _threading.Thread(
