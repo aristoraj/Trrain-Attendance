@@ -1585,185 +1585,75 @@ async function captureAndVerify(cachedImage = null) {
 //             Posts directly to Zoho via SDK session. Photo not uploaded in this path.
 // SDK is kept for auth/session and checkout record lookups (getRecords) — not for writes.
 async function postAttendanceHybrid(verifyData, captureImageData = null) {
-  const student    = verifyData.student;
-  let postedViaSDK = false;
+  const student = verifyData.student;
 
-  // Step 1: Server primary — full record (Check_In, Action, photo) queued for drain
-  let serverOk = false;
-  try {
-    const resp = await authFetch('/api/post-attendance', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        student_id:        student.id,
-        student_name:      student.name,
-        zoho_environment:  ZOHO_ENV || '',
-        device_session_id: DEVICE_SESSION_ID,
-        action:            state.captureAction,
-        capture_jpeg_b64:  captureImageData ? captureImageData.split(',')[1] : null,
-      }),
-    });
-    const result = await resp.json();
-    if (result.duplicate) {
-      showDuplicate({ student, confidence: verifyData.confidence, attendance_posted: false });
-      return;
-    }
-    if (result.success) {
-      serverOk = true;
-      console.log('[Attendance] Posted via server (queue #' + result.queue_id + ')');
-    }
-  } catch (e) {
-    console.warn('[Attendance] Server post failed, trying SDK fallback:', e);
+  const resp = await authFetch('/api/post-attendance', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id:        student.id,
+      student_name:      student.name,
+      zoho_environment:  ZOHO_ENV || '',
+      device_session_id: DEVICE_SESSION_ID,
+      action:            state.captureAction,
+      capture_jpeg_b64:  captureImageData ? captureImageData.split(',')[1] : null,
+    }),
+  });
+  const result = await resp.json();
+  if (result.duplicate) {
+    showDuplicate({ student, confidence: verifyData.confidence, attendance_posted: false });
+    return;
   }
-
-  // Step 2: SDK fallback — only if server was unreachable
-  if (!serverOk) {
-    try {
-      if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
-      const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
-      const record = {};
-      record[_cfg.fields.att_student] = student.id;
-      record[_cfg.fields.att_date]    = today;
-      record[_cfg.fields.att_status]  = 'Present';
-      const _now  = new Date();
-      const _hhmm = _now.getHours().toString().padStart(2,'0') + ':' + _now.getMinutes().toString().padStart(2,'0');
-      record[_cfg.fields.att_check_in || 'Check_In'] = _hhmm;
-      if (state.captureAction) record[_cfg.fields.att_action || 'Action_field'] = state.captureAction;
-      const sdkResult = await ZOHO.CREATOR.DATA.addRecord({
-        app_name: APP_LINK_NAME || (_cfg && _cfg.app_name), form_name: _cfg.reports.attendance_form, data: record,
-      });
-      postedViaSDK = true;
-      const _zohoRecId = (sdkResult && sdkResult.data && sdkResult.data.ID) ? String(sdkResult.data.ID) : '';
-      console.log('[Attendance] SDK fallback used — zoho_record_id:', _zohoRecId);
-      // Best-effort: notify server so checkin_state is written for checkout routing
-      try {
-        await authFetch('/api/record-checkin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            student_id:       student.id,
-            student_name:     student.name,
-            zoho_environment: ZOHO_ENV || '',
-            zoho_record_id:   _zohoRecId,
-          }),
-        });
-      } catch (e2) {
-        console.warn('[Attendance] record-checkin notify failed (non-fatal):', e2);
-      }
-    } catch (e) {
-      console.error('[Attendance] SDK fallback also failed:', e);
-      throw new Error('Attendance could not be posted. Please try again.');
-    }
+  if (!result.success) {
+    throw new Error(result.error || 'Attendance could not be posted. Please try again.');
   }
+  console.log('[Attendance] Posted via server (queue #' + result.queue_id + ')');
 
   showSuccess({
     student,
     confidence:        verifyData.confidence,
     attendance_posted: true,
-    via_sdk:           postedViaSDK,
   });
 }
 
 async function doCheckout(verifyData) {
   const student = verifyData.student;
 
-  // Step 1: Server primary — resolves zoho_record_id from checkin_state (written at check-in by drain).
-  // No zoho_record_id needed from client; server has it from its own drain state.
-  let data = null;
-  let serverResp = null;
-  try {
-    serverResp = await authFetch('/api/checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        student_id:       student.id,
-        student_name:     student.name,
-        zoho_environment: ZOHO_ENV || '',
-      }),
-    });
-    data = await serverResp.json();
-  } catch (e) {
-    console.warn('[Checkout] Server request failed, trying SDK fallback:', e);
-  }
+  const serverResp = await authFetch('/api/checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id:       student.id,
+      student_name:     student.name,
+      zoho_environment: ZOHO_ENV || '',
+    }),
+  });
+  const data = await serverResp.json();
 
-  // Handle early-return cases before attempting SDK fallback
-  if (data) {
-    if (data.status === 'too_early' || data.too_early) {
-      const remainMin = data.remaining_minutes || Math.ceil((data.seconds_remaining || 300) / 60);
-      setFrameClass('verified');
-      setStatus('ok', student.name + ' — checked in');
-      showBanner(esc(student.name), 'warning', null,
-        'Checkout available in ' + remainMin + ' min.');
-      setTimeout(() => resetVerification(), 4000);
-      return;
-    }
-    if (data.status === 'not_checked_in') {
-      setFrameClass('verified');
-      setStatus('ok', student.name);
-      showBanner(esc(student.name), 'info', null, 'No check-in found for today.');
-      setTimeout(() => resetVerification(), 4000);
-      return;
-    }
-    if (data.status === 'already_checked_out' || data.duplicate) {
-      setFrameClass('verified');
-      setStatus('ok', student.name + ' — already checked out');
-      showBanner(esc(student.name), 'info', null, 'Already checked out today.');
-      setTimeout(() => resetVerification(), 4000);
-      return;
-    }
-    if (data.error) { throw new Error(data.error); }
+  if (data.status === 'too_early' || data.too_early) {
+    const remainMin = data.remaining_minutes || Math.ceil((data.seconds_remaining || 300) / 60);
+    setFrameClass('verified');
+    setStatus('ok', student.name + ' — checked in');
+    showBanner(esc(student.name), 'warning', null,
+      'Checkout available in ' + remainMin + ' min.');
+    setTimeout(() => resetVerification(), 4000);
+    return;
   }
-
-  // Step 2: SDK fallback — if server unreachable OR server checked out locally but
-  // couldn't sync to Zoho (zoho_synced: false). SDK uses the browser Zoho session
-  // which bypasses the server-side OAuth token issues (e.g. dev environment 401s).
-  const _needsSdkCheckout = !data || data.zoho_synced === false;
-  if (_needsSdkCheckout) {
-    // Use the server's recorded checkout_time so timestamps are consistent
-    const _now  = new Date();
-    const _hhmm = (data && data.checkout_time) ||
-      (_now.getHours().toString().padStart(2,'0') + ':' + _now.getMinutes().toString().padStart(2,'0'));
-    try {
-      if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
-      const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
-      // Find today's record via SDK (browser session — works even when server-side OAuth fails)
-      const recResp = await ZOHO.CREATOR.DATA.getRecords({
-        app_name:    APP_LINK_NAME || (_cfg && _cfg.app_name),
-        report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
-        criteria:    '(' + _cfg.fields.att_student + '.ID=="' + student.id + '"&&' +
-                     _cfg.fields.att_date + '=="' + today + '")',
-        page: 1, page_size: 1,
-      });
-      const zohoRecordId = recResp && recResp.data && recResp.data.length > 0
-        ? String(recResp.data[0].ID || '') : '';
-      if (!zohoRecordId) throw new Error('No Zoho record found via SDK');
-      await ZOHO.CREATOR.DATA.updateRecord({
-        app_name:    APP_LINK_NAME || (_cfg && _cfg.app_name),
-        report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
-        id:          zohoRecordId,
-        data: {
-          [_cfg.fields.att_check_out     || 'Check_Out']:     _hhmm,
-          [_cfg.fields.att_auto_checkout || 'Auto_Checkout']: 'Yes',
-        },
-      });
-      console.log('[Checkout] SDK fallback completed for record', zohoRecordId, 'at', _hhmm);
-      data = { status: 'checkout', checkout_time: _hhmm, zoho_synced: true };
-      serverResp = { ok: true };
-    } catch (e) {
-      console.error('[Checkout] SDK fallback failed:', e);
-      if (data && data.status === 'checkout') {
-        // Local checkout already done by server — show success with a soft warning
-        console.warn('[Checkout] Local checkout recorded; Zoho sync pending (SDK also failed)');
-        serverResp = { ok: true };
-      } else {
-        throw new Error('Checkout failed. Please try again.');
-      }
-    }
+  if (data.status === 'not_checked_in') {
+    setFrameClass('verified');
+    setStatus('ok', student.name);
+    showBanner(esc(student.name), 'info', null, 'No check-in found for today.');
+    setTimeout(() => resetVerification(), 4000);
+    return;
   }
-
-  if (!serverResp || (!serverResp.ok && data && data.error)) {
-    throw new Error((data && data.error) || 'Checkout failed');
+  if (data.status === 'already_checked_out' || data.duplicate) {
+    setFrameClass('verified');
+    setStatus('ok', student.name + ' — already checked out');
+    showBanner(esc(student.name), 'info', null, 'Already checked out today.');
+    setTimeout(() => resetVerification(), 4000);
+    return;
   }
+  if (data.error) { throw new Error(data.error); }
 
   setTimeout(() => {
     for (let i = 1; i <= 4; i++) {
