@@ -1533,6 +1533,10 @@ class AttendanceQueue:
                     # Write checkin_state with the correct zoho_id — idempotent, so safe
                     # if SDK path already wrote it (UNIQUE constraint will just return False).
                     self.record_checkin(student_id, name, row["date_str"], environment, zoho_id)
+                    logger.info(
+                        f"Queue #{rec_id}: checkin_state written for {name} "
+                        f"zoho_id='{zoho_id}' photo={'yes' if capture_jpeg else 'no'}"
+                    )
                     if zoho_id and capture_jpeg:
                         import threading as _threading
                         _threading.Thread(

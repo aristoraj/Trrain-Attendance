@@ -1674,12 +1674,47 @@ async function doCheckout(verifyData) {
     console.warn('[Checkout] Server request failed, trying SDK fallback:', e);
   }
 
-  // Step 2: SDK fallback — only if server is unreachable
-  if (!data) {
+  // Handle early-return cases before attempting SDK fallback
+  if (data) {
+    if (data.status === 'too_early' || data.too_early) {
+      const remainMin = data.remaining_minutes || Math.ceil((data.seconds_remaining || 300) / 60);
+      setFrameClass('verified');
+      setStatus('ok', student.name + ' — checked in');
+      showBanner(esc(student.name), 'warning', null,
+        'Checkout available in ' + remainMin + ' min.');
+      setTimeout(() => resetVerification(), 4000);
+      return;
+    }
+    if (data.status === 'not_checked_in') {
+      setFrameClass('verified');
+      setStatus('ok', student.name);
+      showBanner(esc(student.name), 'info', null, 'No check-in found for today.');
+      setTimeout(() => resetVerification(), 4000);
+      return;
+    }
+    if (data.status === 'already_checked_out' || data.duplicate) {
+      setFrameClass('verified');
+      setStatus('ok', student.name + ' — already checked out');
+      showBanner(esc(student.name), 'info', null, 'Already checked out today.');
+      setTimeout(() => resetVerification(), 4000);
+      return;
+    }
+    if (data.error) { throw new Error(data.error); }
+  }
+
+  // Step 2: SDK fallback — if server unreachable OR server checked out locally but
+  // couldn't sync to Zoho (zoho_synced: false). SDK uses the browser Zoho session
+  // which bypasses the server-side OAuth token issues (e.g. dev environment 401s).
+  const _needsSdkCheckout = !data || data.zoho_synced === false;
+  if (_needsSdkCheckout) {
+    // Use the server's recorded checkout_time so timestamps are consistent
+    const _now  = new Date();
+    const _hhmm = (data && data.checkout_time) ||
+      (_now.getHours().toString().padStart(2,'0') + ':' + _now.getMinutes().toString().padStart(2,'0'));
     try {
       if (!_cfg) _cfg = await authFetch('/api/config').then(r => r.json());
       const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '-');
-      // Find today's record
+      // Find today's record via SDK (browser session — works even when server-side OAuth fails)
       const recResp = await ZOHO.CREATOR.DATA.getRecords({
         app_name:    APP_LINK_NAME || (_cfg && _cfg.app_name),
         report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
@@ -1690,9 +1725,6 @@ async function doCheckout(verifyData) {
       const zohoRecordId = recResp && recResp.data && recResp.data.length > 0
         ? String(recResp.data[0].ID || '') : '';
       if (!zohoRecordId) throw new Error('No Zoho record found via SDK');
-      // Patch Check_Out + Auto_Checkout directly
-      const _now  = new Date();
-      const _hhmm = _now.getHours().toString().padStart(2,'0') + ':' + _now.getMinutes().toString().padStart(2,'0');
       await ZOHO.CREATOR.DATA.updateRecord({
         app_name:    APP_LINK_NAME || (_cfg && _cfg.app_name),
         report_name: _cfg.reports.attendance_report || 'All_Face_Attendances',
@@ -1702,40 +1734,23 @@ async function doCheckout(verifyData) {
           [_cfg.fields.att_auto_checkout || 'Auto_Checkout']: 'Yes',
         },
       });
-      console.log('[Checkout] SDK fallback completed for record', zohoRecordId);
-      data = { status: 'checkout', checkout_time: _hhmm };
+      console.log('[Checkout] SDK fallback completed for record', zohoRecordId, 'at', _hhmm);
+      data = { status: 'checkout', checkout_time: _hhmm, zoho_synced: true };
       serverResp = { ok: true };
     } catch (e) {
-      console.error('[Checkout] SDK fallback also failed:', e);
-      throw new Error('Checkout failed. Please try again.');
+      console.error('[Checkout] SDK fallback failed:', e);
+      if (data && data.status === 'checkout') {
+        // Local checkout already done by server — show success with a soft warning
+        console.warn('[Checkout] Local checkout recorded; Zoho sync pending (SDK also failed)');
+        serverResp = { ok: true };
+      } else {
+        throw new Error('Checkout failed. Please try again.');
+      }
     }
   }
 
-  if (data.status === 'too_early' || data.too_early) {
-    const remainMin = data.remaining_minutes || Math.ceil((data.seconds_remaining || 300) / 60);
-    setFrameClass('verified');
-    setStatus('ok', student.name + ' — checked in');
-    showBanner(esc(student.name), 'warning', null,
-      'Checkout available in ' + remainMin + ' min.');
-    setTimeout(() => resetVerification(), 4000);
-    return;
-  }
-  if (data.status === 'not_checked_in') {
-    setFrameClass('verified');
-    setStatus('ok', student.name);
-    showBanner(esc(student.name), 'info', null, 'No check-in found for today.');
-    setTimeout(() => resetVerification(), 4000);
-    return;
-  }
-  if (data.status === 'already_checked_out' || data.duplicate) {
-    setFrameClass('verified');
-    setStatus('ok', student.name + ' — already checked out');
-    showBanner(esc(student.name), 'info', null, 'Already checked out today.');
-    setTimeout(() => resetVerification(), 4000);
-    return;
-  }
-  if (!serverResp.ok || data.error) {
-    throw new Error(data.error || 'Checkout failed');
+  if (!serverResp || (!serverResp.ok && data && data.error)) {
+    throw new Error((data && data.error) || 'Checkout failed');
   }
 
   setTimeout(() => {

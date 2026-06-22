@@ -906,12 +906,13 @@ class ZohoCreatorAPI:
 
             result = resp.json()
             zoho_code = result.get("code")
+            logger.info(f"Zoho addRecord response — code={zoho_code} data_keys={list(result.get('data', {}).keys()) if isinstance(result.get('data'), dict) else result.get('data')} message={result.get('message', '')!r}")
             if zoho_code is not None and zoho_code != 3000:
                 logger.error(f"Zoho error code={zoho_code}: {result.get('message', '')}")
                 return {"success": False, "error": f"Zoho error {zoho_code}: {result.get('message', '')}"}
 
-            rec_id = result.get("data", {}).get("ID", "unknown")
-            logger.info(f"Attendance posted for {student_name} — Zoho record ID: {rec_id}")
+            rec_id = result.get("data", {}).get("ID", "")
+            logger.info(f"Attendance posted for {student_name} — Zoho record ID: {rec_id!r}")
             return {"success": True, "data": result}
 
         except requests.HTTPError as e:
