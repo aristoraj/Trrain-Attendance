@@ -127,6 +127,20 @@
       flex-shrink: 0;
     }
     .blink-dot.filled { background: #22C55E; border-color: #22C55E; }
+    .liveness-toggle-btn {
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 12px;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 3px 9px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+      flex-shrink: 0;
+    }
+    .liveness-toggle-btn:active { background: rgba(255,255,255,0.28); }
     .blink-overlay-label {
       font-size: 13px;
       color: #fff;
@@ -582,6 +596,7 @@
     <div class="cam-blink-overlay" id="blink-overlay">
       <span class="blink-dot" id="blink-dot-1"></span>
       <span class="blink-overlay-label">Blink once</span>
+      <button class="liveness-toggle-btn" onclick="toggleLivenessMode()" title="Switch to smile mode">😊 Smile</button>
       <div style="display:none">
         <span id="ear-val"></span><div id="ear-fill"></div>
       </div>
@@ -594,6 +609,7 @@
         <i class="bi bi-emoji-smile-fill smile-icon-smile"></i>
       </div>
       <span class="blink-overlay-label">Smile for the camera</span>
+      <button class="liveness-toggle-btn" onclick="toggleLivenessMode()" title="Switch to blink mode">👁 Blink</button>
     </div>
 
     <!-- Inactivity overlay -->
@@ -1089,8 +1105,8 @@ const EAR_SMOOTH_ALPHA      = 0.3;
 const CLOSED_FRAMES_NEEDED  = 1;    // single frame below threshold counts as closed
 const FACE_LOST_GRACE       = 8;    // consecutive no-face frames before resetting step 1
 const LIVENESS_SWITCH_MS    = 15000; // ms before switching blink ↔ smile
-const SMILE_RATIO_THRESH    = 1.0;   // combined smile metric threshold (see computeSmileRatio)
-const SMILE_FRAMES_NEEDED   = 5;     // consecutive frames above ratio to confirm
+const SMILE_RATIO_THRESH    = 0.7;   // combined smile metric threshold (see computeSmileRatio)
+const SMILE_FRAMES_NEEDED   = 3;     // consecutive frames above ratio to confirm
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 
@@ -1383,6 +1399,16 @@ function showLivenessMode(mode) {
     smileOverlay.classList.add('show');
     setStatus('active', 'Smile for the camera');
   }
+}
+
+function toggleLivenessMode() {
+  if (state.blinkVerified || state.done || state.verifying) return;
+  state.livenessMode = state.livenessMode === 'blink' ? 'smile' : 'blink';
+  state.smileFrames  = 0;
+  state.closedFrames = 0;
+  state.eyeWasClosed = false;
+  showLivenessMode(state.livenessMode);
+  startLivenessTimer(); // reset auto-switch timer from this point
 }
 
 function computeSmileRatio(landmarks, w, h) {
