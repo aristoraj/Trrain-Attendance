@@ -345,6 +345,20 @@ class AttendanceQueue:
                 (student_id, date_str),
             ).fetchone()
         if not row:
+            # checkin_state not yet written — drain may still be pending (runs every 2s).
+            # Check attendance_queue so a second scan routes to checkout, not "already marked".
+            with self._db() as conn:
+                qrow = conn.execute(
+                    self._q(
+                        "SELECT created_at FROM attendance_queue "
+                        "WHERE student_id=? AND date_str=? "
+                        "AND status IN ('PENDING','PROCESSING','POSTED','SDK_POSTED') "
+                        "ORDER BY created_at ASC LIMIT 1"
+                    ),
+                    (student_id, date_str),
+                ).fetchone()
+            if qrow:
+                return {"status": "checked_in", "checkin_at": qrow["created_at"], "zoho_record_id": ""}
             return {"status": "none"}
         zoho_record_id = row["zoho_record_id"] if "zoho_record_id" in row.keys() else ""
         if row["is_checked_out"]:
@@ -1033,7 +1047,7 @@ class AttendanceQueue:
         for checkout status. device_session_id scopes results to one device when provided.
         """
         base_sql = (
-            "SELECT aq.student_name, aq.status, aq.created_at, "
+            "SELECT aq.student_name, aq.status, aq.created_at, aq.checkin_time, "
             "       cs.is_checked_out, cs.checkout_at, cs.checkin_at "
             "FROM attendance_queue aq "
             "LEFT JOIN checkin_state cs "
@@ -1054,12 +1068,20 @@ class AttendanceQueue:
 
         records = []
         for row in rows:
-            checkin_ts  = row["checkin_at"]  or row["created_at"]
+            checkin_ts  = row["checkin_at"]  or ""
             checkout_ts = row["checkout_at"] or ""
+            # checkin_time priority:
+            #   1. checkin_state.checkin_at (IST ISO — written by drain after Zoho POST)
+            #   2. attendance_queue.checkin_time (HH:MM IST — stored at queue time, always correct)
+            # Never fall back to created_at which is UTC naive and would show wrong timezone.
+            checkin_time_display = (
+                (checkin_ts[11:16] if len(checkin_ts) > 11 else "")
+                or (row["checkin_time"] or "")
+            )
             records.append({
                 "name":          row["student_name"],
                 "status":        row["status"],
-                "checkin_time":  checkin_ts[11:16]  if len(checkin_ts)  > 11 else "",
+                "checkin_time":  checkin_time_display,
                 "checked_out":   bool(row["is_checked_out"]),
                 "checkout_time": checkout_ts[11:16] if len(checkout_ts) > 11 else "",
             })
