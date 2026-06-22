@@ -978,6 +978,34 @@ class ZohoCreatorAPI:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def patch_checkin_fields(self, zoho_rec_id: str, checkin_time: str, action_field: str, env: str = "") -> bool:
+        """
+        PATCH Check_In and Action_field onto an existing attendance record.
+        Used when the record was created thin (e.g. by the SDK) and our drain
+        later fills in the missing fields.
+        """
+        data_payload = {}
+        if checkin_time:
+            data_payload[FIELD_CHECK_IN] = checkin_time
+        if action_field:
+            data_payload[FIELD_ACTION] = action_field
+        if not data_payload:
+            return True
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
+        try:
+            resp = self._request("patch", url, env=env, json={"data": data_payload}, timeout=15)
+            resp.raise_for_status()
+            result = resp.json()
+            zoho_code = result.get("code")
+            if zoho_code is not None and zoho_code != 3000:
+                logger.error(f"patch_checkin_fields error {zoho_code} for record {zoho_rec_id}: {result.get('message', '')}")
+                return False
+            logger.info(f"Patched Check_In='{checkin_time}' Action='{action_field}' onto record {zoho_rec_id}")
+            return True
+        except Exception as e:
+            logger.error(f"patch_checkin_fields failed for {zoho_rec_id}: {e}")
+            return False
+
     def clear_checkout_fields(self, zoho_rec_id: str, env: str = "") -> dict:
         """
         PATCH an existing Face_Attendance record to clear Check_Out and Auto_Checkout fields.

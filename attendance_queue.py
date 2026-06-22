@@ -1492,7 +1492,31 @@ class AttendanceQueue:
                         ).start()
                     logger.info(f"Queue: synced {name} → Zoho (#{rec_id}) zoho_id='{zoho_id}'")
                 else:
-                    self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))
+                    # POST failed — but Zoho may have already created a thin record
+                    # (e.g. via the SDK client-side, or a prior retry that timed out).
+                    # Try to find it, patch in Check_In + Action, write checkin_state, upload photo.
+                    existing_id = self._zoho.find_attendance_record(
+                        student_id, row["date_str"], environment
+                    ) or ""
+                    if existing_id:
+                        logger.warning(
+                            f"Queue #{rec_id}: POST failed for {name} but existing Zoho record "
+                            f"'{existing_id}' found — patching Check_In/Action and uploading photo"
+                        )
+                        self._set_posted(rec_id)
+                        self._zoho.patch_checkin_fields(
+                            existing_id, checkin_time, action_field, environment
+                        )
+                        self.record_checkin(student_id, name, row["date_str"], environment, existing_id)
+                        if capture_jpeg:
+                            import threading as _threading
+                            _threading.Thread(
+                                target=self._zoho._upload_capture_photo,
+                                args=(existing_id, capture_jpeg, name, environment),
+                                daemon=True,
+                            ).start()
+                    else:
+                        self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))
             except Exception as e:
                 self._handle_failure(rec_id, attempts, str(e))
 
