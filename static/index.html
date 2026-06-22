@@ -920,20 +920,6 @@ function waitForDataLoaded(maxMs) {
   });
 }
 
-// ── Zoho SDK attendance post ──────────────────────────────────────────────────
-
-async function postAttendanceSdk(student, dateStr) {
-  const cfg    = _cfg;
-  const record = {};
-  record[cfg.fields.att_student] = student.id;
-  record[cfg.fields.att_date]    = dateStr;
-  record[cfg.fields.att_status]  = 'Present';
-  await ZOHO.CREATOR.DATA.addRecord({
-    app_name: APP_LINK_NAME, form_name: cfg.reports.attendance_form, data: record,
-  });
-}
-
-
 function triggerPreload(email) {
   const params = new URLSearchParams({ user_email: email });
   if (ZOHO_ENV) params.set('zoho_environment', ZOHO_ENV);
