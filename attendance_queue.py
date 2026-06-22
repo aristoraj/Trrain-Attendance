@@ -966,6 +966,7 @@ class AttendanceQueue:
 
     def get_status_summary(self) -> dict:
         since = (datetime.now() - timedelta(days=1)).strftime("%d-%b-%Y")
+        stale_cutoff = (datetime.now() - timedelta(minutes=5)).isoformat()
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
@@ -988,16 +989,43 @@ class AttendanceQueue:
                     "FROM attendance_queue WHERE status='PENDING' "
                     "AND created_at < ? ORDER BY created_at ASC LIMIT 20"
                 ),
-                ((datetime.now() - timedelta(minutes=5)).isoformat(),),
+                (stale_cutoff,),
+            ).fetchall()
+
+            # PROCESSING records — any that exist indicate an instance is mid-drain
+            # or (if updated_at is old) a claim that was never released after an instance crash.
+            processing = conn.execute(
+                self._q(
+                    "SELECT id, student_name, date_str, attempts, updated_at "
+                    "FROM attendance_queue WHERE status='PROCESSING' "
+                    "ORDER BY updated_at ASC LIMIT 20"
+                )
             ).fetchall()
 
         return {
-            "pending":        counts.get("PENDING", 0),
-            "posted":         counts.get("POSTED",  0),
-            "failed":         counts.get("FAILED",  0),
-            "failed_records": [dict(r) for r in failed],
-            "stuck_pending":  [dict(r) for r in pending_old],
+            "pending":             counts.get("PENDING",    0),
+            "posted":              counts.get("POSTED",     0),
+            "failed":              counts.get("FAILED",     0),
+            "processing":          counts.get("PROCESSING", 0),
+            "failed_records":      [dict(r) for r in failed],
+            "stuck_pending":       [dict(r) for r in pending_old],
+            "processing_records":  [dict(r) for r in processing],
         }
+
+    def reset_stuck_processing(self) -> int:
+        """Force-release PROCESSING records older than 5 min back to PENDING."""
+        stale_iso = (datetime.now() - timedelta(minutes=5)).isoformat()
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q(
+                    "UPDATE attendance_queue "
+                    "SET status='PENDING', next_retry_at=?, updated_at=? "
+                    "WHERE status='PROCESSING' AND updated_at < ?"
+                ),
+                (now, now, stale_iso),
+            )
+            return cur.rowcount
 
     def get_today_attendance(self, date_str: str, device_session_id: str = None) -> list:
         """

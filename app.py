@@ -8,8 +8,9 @@ Endpoints:
   GET  /api/cache/status       → Cache status info
   POST /api/cache/refresh      → Force refresh student face cache
   POST /api/verify             → Verify face + queue attendance
-  GET  /admin/sync-status      → Queue health: pending / posted / failed counts
-  POST /admin/retry-failed     → Reset FAILED queue records to PENDING
+  GET  /admin/sync-status               → Queue health: pending / processing / posted / failed counts
+  POST /admin/retry-failed              → Reset FAILED queue records to PENDING
+  POST /admin/reset-stuck-processing   → Force-release PROCESSING records stuck > 5 min
   GET  /admin/reauth           → Admin page: paste Zoho auth code → auto-updates Render env var
   POST /admin/reauth           → Exchanges auth code, saves new refresh token to Render
 """
@@ -2046,8 +2047,20 @@ def admin_sync_status():
           <td style="font-size:11px;color:#6b7280">{r['created_at'][:19]}</td>
         </tr>"""
 
-    pending_color = "#fbbf24" if summary["pending"] > 0 else "#4ade80"
-    failed_color  = "#f87171" if summary["failed"]  > 0 else "#4ade80"
+    processing_rows_html = ""
+    for r in summary["processing_records"]:
+        processing_rows_html += f"""
+        <tr>
+          <td>#{r['id']}</td>
+          <td>{r['student_name']}</td>
+          <td>{r['date_str']}</td>
+          <td>{r['attempts']}</td>
+          <td style="font-size:11px;color:#6b7280">{r['updated_at'][:19]}</td>
+        </tr>"""
+
+    pending_color    = "#fbbf24" if summary["pending"]    > 0 else "#4ade80"
+    failed_color     = "#f87171" if summary["failed"]     > 0 else "#4ade80"
+    processing_color = "#fb923c" if summary["processing"] > 0 else "#4ade80"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -2088,6 +2101,11 @@ def admin_sync_status():
       <div class="lbl">queued, not yet synced</div>
     </div>
     <div class="card">
+      <div class="lbl">Processing</div>
+      <div class="num" style="color:{processing_color}">{summary['processing']}</div>
+      <div class="lbl">mid-drain (should clear in &lt;2s)</div>
+    </div>
+    <div class="card">
       <div class="lbl">Posted</div>
       <div class="num" style="color:#4ade80">{summary['posted']}</div>
       <div class="lbl">synced to Zoho</div>
@@ -2100,7 +2118,20 @@ def admin_sync_status():
   </div>
 
   {f'''
-  <h3>Failed Records</h3>
+  <h3>Stuck Processing (&gt; 5 min — instance crash likely)</h3>
+  <table>
+    <thead><tr><th>#</th><th>Student</th><th>Date</th><th>Attempts</th><th>Claimed At</th></tr></thead>
+    <tbody>{processing_rows_html}</tbody>
+  </table>
+  <a class="btn" href="/admin/reset-stuck-processing"
+     onclick="return confirm('Force-release all PROCESSING records older than 5 min back to PENDING?')"
+     style="background:#b45309">
+    ↺ Release Stuck Processing ({summary['processing']})
+  </a>
+  ''' if summary['processing'] > 0 else '<p style="color:#4ade80;font-size:14px">✓ No stuck processing records.</p>'}
+
+  {f'''
+  <h3 style="margin-top:24px">Failed Records</h3>
   <table>
     <thead><tr>
       <th>#</th><th>Student</th><th>Date</th>
@@ -2545,6 +2576,19 @@ def admin_retry_failed():
     count = att_queue.retry_failed()
     return jsonify({"success": True, "records_reset": count,
                     "message": f"{count} FAILED record(s) reset to PENDING."})
+
+
+@app.route("/admin/reset-stuck-processing", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+def admin_reset_stuck_processing():
+    """Force-release PROCESSING records older than 5 min back to PENDING."""
+    _auth_err = _check_admin_auth()
+    if _auth_err:
+        return _auth_err
+    count = att_queue.reset_stuck_processing()
+    logger.warning(f"Admin manually released {count} stuck PROCESSING record(s) back to PENDING.")
+    return jsonify({"success": True, "records_reset": count,
+                    "message": f"{count} stuck PROCESSING record(s) released to PENDING."})
 
 
 # ─── Reauth ───────────────────────────────────────────────────────────────────
