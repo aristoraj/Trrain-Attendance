@@ -401,7 +401,12 @@ class AttendanceQueue:
                 )
             logger.info(f"Check-in recorded: {student_id} on {date_str} zoho_id='{zoho_record_id}'")
             return True
-        except Exception:
+        except Exception as e:
+            err_lower = str(e).lower()
+            if "unique" not in err_lower and "duplicate key" not in err_lower and "duplicate" not in err_lower:
+                logger.warning(
+                    f"record_checkin: unexpected DB error for {student_id} on {date_str}: {e}"
+                )
             return False  # UNIQUE constraint = already recorded (idempotent)
 
     def update_zoho_record_id(self, student_id: str, date_str: str, zoho_record_id: str) -> None:
@@ -942,6 +947,22 @@ class AttendanceQueue:
 
         if count > 0:
             logger.info(f"DB dedup blocked duplicate for {student_name} ({date_str})")
+            return None, True
+
+        # Also check checkin_state — catches cases where queue record was drained/deleted
+        # by another instance but checkin_state was written (or vice versa: queue FAILED
+        # but a later successful drain wrote checkin_state).
+        with self._db() as conn:
+            already_in = conn.execute(
+                self._q(
+                    "SELECT COUNT(*) AS cnt FROM checkin_state "
+                    "WHERE student_id=? AND date_str=?"
+                ),
+                (student_id, date_str),
+            ).fetchone()["cnt"]
+
+        if already_in > 0:
+            logger.info(f"checkin_state dedup blocked duplicate for {student_name} ({date_str})")
             return None, True
 
         if in_memory:
@@ -1562,12 +1583,18 @@ class AttendanceQueue:
                             )
                     # Write checkin_state with the correct zoho_id — idempotent, so safe
                     # if SDK path already wrote it (UNIQUE constraint will just return False).
-                    self.record_checkin(student_id, name, row["date_str"], environment, zoho_id,
-                                        checkin_time_hhmm=checkin_time)
-                    logger.info(
-                        f"Queue #{rec_id}: checkin_state written for {name} "
-                        f"zoho_id='{zoho_id}' photo={'yes' if capture_jpeg else 'no'}"
-                    )
+                    wrote = self.record_checkin(student_id, name, row["date_str"], environment, zoho_id,
+                                               checkin_time_hhmm=checkin_time)
+                    if wrote:
+                        logger.info(
+                            f"Queue #{rec_id}: checkin_state written for {name} "
+                            f"zoho_id='{zoho_id}' photo={'yes' if capture_jpeg else 'no'}"
+                        )
+                    else:
+                        logger.error(
+                            f"Queue #{rec_id}: FAILED to write checkin_state for {name} "
+                            f"(record_checkin returned False) — student may be able to duplicate check-in"
+                        )
                     if zoho_id and capture_jpeg:
                         import threading as _threading
                         _threading.Thread(
@@ -1604,6 +1631,37 @@ class AttendanceQueue:
                     else:
                         self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))
             except Exception as e:
+                logger.error(f"Queue #{rec_id}: drain exception for {name}: {e}")
+                # If post_attendance already created a Zoho record before the exception,
+                # patch it with Check_In/Action fields and write checkin_state so the
+                # student isn't left with a thin record or able to duplicate check-in.
+                try:
+                    existing_id = self._zoho.find_attendance_record(
+                        student_id, row["date_str"], environment
+                    ) or ""
+                    if existing_id:
+                        logger.warning(
+                            f"Queue #{rec_id}: exception mid-drain but found Zoho record "
+                            f"'{existing_id}' for {name} — patching and completing"
+                        )
+                        self._set_posted(rec_id)
+                        self._zoho.patch_checkin_fields(
+                            existing_id, checkin_time, action_field, environment
+                        )
+                        self.record_checkin(
+                            student_id, name, row["date_str"], environment, existing_id,
+                            checkin_time_hhmm=checkin_time,
+                        )
+                        if capture_jpeg:
+                            import threading as _threading
+                            _threading.Thread(
+                                target=self._zoho._upload_capture_photo,
+                                args=(existing_id, capture_jpeg, name, environment),
+                                daemon=True,
+                            ).start()
+                        continue  # recovery succeeded — skip _handle_failure, process next row
+                except Exception as recovery_err:
+                    logger.error(f"Queue #{rec_id}: exception recovery also failed: {recovery_err}")
                 self._handle_failure(rec_id, attempts, str(e))
 
     def _set_posted(self, rec_id: int):
