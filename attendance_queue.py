@@ -33,6 +33,7 @@ DB_PATH = os.environ.get(
 DATABASE_URL = os.environ.get("DATABASE_URL")   # Render managed PostgreSQL
 MAX_ATTEMPTS = 5
 WORKER_POLL_INTERVAL = 2
+FAILED_RESURRECTION_INTERVAL = 600   # seconds between auto-retry sweeps of FAILED records
 
 
 # ── Thin connection wrapper — uniform interface for sqlite3 and psycopg2 ──────
@@ -1508,10 +1509,37 @@ class AttendanceQueue:
                     self._worker = threading.Thread(target=self._drain_loop, daemon=True)
                     self._worker.start()
 
+    def _resurrect_failed_auto(self) -> int:
+        """Reset FAILED records from the last 24 h back to PENDING for another retry cycle."""
+        now_dt = datetime.now()
+        now    = now_dt.isoformat()
+        cutoff = (now_dt - timedelta(hours=24)).isoformat()
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q(
+                    "UPDATE attendance_queue "
+                    "SET status='PENDING', attempts=0, last_error=NULL, "
+                    "    next_retry_at=?, updated_at=? "
+                    "WHERE status='FAILED' AND updated_at >= ?"
+                ),
+                (now, now, cutoff),
+            )
+            count = cur.rowcount if hasattr(cur, "rowcount") else 0
+        if count:
+            logger.info(f"Auto-resurrected {count} FAILED queue record(s) → PENDING for retry")
+            self._drain_event.set()
+        return count
+
     def _drain_loop(self):
         consecutive_errors = 0
+        last_resurrect = 0.0
         while True:
             try:
+                now_ts = time.time()
+                if now_ts - last_resurrect >= FAILED_RESURRECTION_INTERVAL:
+                    self._resurrect_failed_auto()
+                    last_resurrect = now_ts
+
                 self._drain()
                 consecutive_errors = 0
                 # Wake immediately when a new item is enqueued; otherwise poll every 2 s

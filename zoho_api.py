@@ -894,7 +894,8 @@ class ZohoCreatorAPI:
             FIELD_ATT_STATUS:  "Present",
         }
         if checkin_time:
-            data_payload[FIELD_CHECK_IN] = checkin_time
+            # Zoho Time fields require HH:MM:SS; queue stores HH:MM
+            data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
         if action_field:
             data_payload[FIELD_ACTION] = action_field
 
@@ -957,13 +958,15 @@ class ZohoCreatorAPI:
         checkout_time must be formatted as "HH:MM".
         """
         url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
+        # Zoho Time fields require HH:MM:SS; caller may pass HH:MM
+        zoho_checkout = checkout_time + ":00" if len(checkout_time) == 5 else checkout_time
         data_payload = {
-            FIELD_CHECK_OUT:     checkout_time,
+            FIELD_CHECK_OUT:     zoho_checkout,
             FIELD_AUTO_CHECKOUT: "Yes",
         }
         logger.info(
             f"Checkout PATCH — record_id={zoho_rec_id} | "
-            f"payload: {FIELD_CHECK_OUT}={checkout_time}, {FIELD_AUTO_CHECKOUT}=Yes | env='{env}'"
+            f"payload: {FIELD_CHECK_OUT}={zoho_checkout}, {FIELD_AUTO_CHECKOUT}=Yes | env='{env}'"
         )
         try:
             resp = self._request("patch", url, env=env, json={"data": data_payload}, timeout=15)
@@ -987,7 +990,8 @@ class ZohoCreatorAPI:
         """
         data_payload = {}
         if checkin_time:
-            data_payload[FIELD_CHECK_IN] = checkin_time
+            # Zoho Time fields require HH:MM:SS; queue stores HH:MM
+            data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
         if action_field:
             data_payload[FIELD_ACTION] = action_field
         if not data_payload:
