@@ -52,8 +52,8 @@ def test_device_session_filtering(sqlite_queue):
     q.enqueue_if_not_marked("S002", "Bob",   "01-Jun-2026", device_session_id="dev_B")
     records_A = q.get_today_attendance("01-Jun-2026", device_session_id="dev_A")
     records_B = q.get_today_attendance("01-Jun-2026", device_session_id="dev_B")
-    assert all(r["student_name"] == "Alice" for r in records_A)
-    assert all(r["student_name"] == "Bob"   for r in records_B)
+    assert len(records_A) > 0 and all(r["name"] == "Alice" for r in records_A)
+    assert len(records_B) > 0 and all(r["name"] == "Bob"   for r in records_B)
 
 
 # ── TC-039: clear_enrollment_embeddings_for_scope — scope isolation ───────────

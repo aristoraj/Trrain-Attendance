@@ -1011,6 +1011,119 @@ class ZohoCreatorAPI:
             logger.error(f"patch_checkin_fields failed for {zoho_rec_id}: {e}")
             return False
 
+    def get_attendance_fields(self, zoho_rec_id: str, env: str = "") -> dict:
+        """
+        Read back a single attendance record and return its field map.
+        Used to VERIFY that Check_In / Action_field actually persisted after a
+        create or patch — Zoho can return code=3000 yet silently drop a field.
+        Returns {} on any error (caller treats empty as "not confirmed").
+        """
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
+        try:
+            resp = self._request("get", url, env=env, timeout=10)
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            return data or {}
+        except Exception as e:
+            logger.warning(f"get_attendance_fields failed for {zoho_rec_id}: {e}")
+            return {}
+
+    @staticmethod
+    def _time_variants(checkin_time: str) -> list:
+        """
+        Time-string formats to try when repairing a dropped Check_In, ordered
+        most-likely-correct first. Covers a Zoho Time field configured as
+        24-hour-with-seconds, bare HH:MM, or 12-hour AM/PM — so the repair is
+        format-agnostic regardless of how the production form is set up.
+        """
+        t = (checkin_time or "").strip()
+        if not t:
+            return []
+        hhmmss = t + ":00" if len(t) == 5 else t
+        variants = [hhmmss, t]
+        try:
+            parsed = datetime.strptime(hhmmss, "%H:%M:%S")
+            variants.append(parsed.strftime("%I:%M:%S %p"))   # 10:15:00 PM
+            variants.append(parsed.strftime("%I:%M %p"))       # 10:15 PM
+        except Exception:
+            pass
+        seen, out = set(), []
+        for v in variants:
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
+    def ensure_checkin_fields(self, zoho_rec_id: str, checkin_time: str,
+                              action_field: str, env: str = "",
+                              settle_delay: float = 0.6) -> bool:
+        """
+        GUARANTEE that Check_In and Action_field are populated on a record.
+
+        Zoho can accept a create/patch (code=3000) and silently drop a Time or
+        dropdown value, producing a "thin" record. This method reads the record
+        back; if a wanted field is empty it re-PATCHes (trying each time-format
+        variant) and re-verifies, up to a bounded number of attempts. A short
+        settle delay lets any on-edit Zoho workflow finish before we verify.
+
+        Returns True only when the wanted fields are CONFIRMED present in Zoho.
+        Returns False if they could not be made to stick — the caller should log
+        loudly rather than mark the record silently done. Does NOT create new
+        records, so it can never produce duplicates.
+        """
+        if not zoho_rec_id:
+            return False
+        want_checkin = bool((checkin_time or "").strip())
+        want_action  = bool((action_field or "").strip())
+        if not (want_checkin or want_action):
+            return True
+
+        def _present(rec: dict):
+            ci_ok = (not want_checkin) or bool(str(rec.get(FIELD_CHECK_IN) or "").strip())
+            ac_ok = (not want_action)  or bool(str(rec.get(FIELD_ACTION)   or "").strip())
+            return ci_ok, ac_ok
+
+        rec = self.get_attendance_fields(zoho_rec_id, env)
+        ci_ok, ac_ok = _present(rec)
+        if ci_ok and ac_ok:
+            return True
+
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
+        for attempt, tval in enumerate(self._time_variants(checkin_time) or [None]):
+            payload = {}
+            if want_action and not ac_ok:
+                payload[FIELD_ACTION] = action_field        # dropdown first — survives any cascade
+            if want_checkin and not ci_ok and tval:
+                payload[FIELD_CHECK_IN] = tval
+            if not payload:
+                break
+            try:
+                resp = self._request("patch", url, env=env, json={"data": payload}, timeout=15)
+                resp.raise_for_status()
+                code = resp.json().get("code")
+                logger.info(
+                    f"ensure_checkin_fields repair #{attempt + 1} record={zoho_rec_id} "
+                    f"fields={list(payload.keys())} checkin_try={tval!r} code={code}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"ensure_checkin_fields PATCH failed (record {zoho_rec_id}, try {tval!r}): {e}"
+                )
+            time.sleep(settle_delay)
+            rec = self.get_attendance_fields(zoho_rec_id, env)
+            ci_ok, ac_ok = _present(rec)
+            if ci_ok and ac_ok:
+                logger.info(f"ensure_checkin_fields CONFIRMED record={zoho_rec_id} (try {tval!r})")
+                return True
+
+        logger.error(
+            f"ensure_checkin_fields could NOT confirm record {zoho_rec_id} — "
+            f"Check_In present={ci_ok}, Action present={ac_ok}. Record is THIN."
+        )
+        return False
+
     def clear_checkout_fields(self, zoho_rec_id: str, env: str = "") -> dict:
         """
         PATCH an existing Face_Attendance record to clear Check_Out and Auto_Checkout fields.

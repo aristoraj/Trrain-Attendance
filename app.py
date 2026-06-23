@@ -1379,7 +1379,7 @@ def post_attendance():
     device_session_id = (data.get("device_session_id") or "").strip()
     action_field      = (data.get("action") or "").strip()
     now_ist           = datetime.now(_IST)
-    checkin_time      = now_ist.strftime("%H:%M")
+    checkin_time      = now_ist.strftime("%H:%M:%S")
 
     if not student_id or not student_name:
         return jsonify({"success": False, "error": "student_id and student_name required"}), 400
@@ -1535,7 +1535,7 @@ def checkout():
         zoho_rec_id = zoho.find_attendance_record(student_id, today_str, env)
 
     # Mark local DB checkout FIRST — independent of Zoho availability
-    checkout_time = datetime.now(_IST).strftime("%H:%M")
+    checkout_time = datetime.now(_IST).strftime("%H:%M:%S")
     att_queue.record_checkout(student_id, today_str)
 
     if not zoho_rec_id:

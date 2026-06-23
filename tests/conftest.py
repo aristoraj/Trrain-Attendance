@@ -49,8 +49,9 @@ def sqlite_queue(tmp_path, mocker):
     """AttendanceQueue backed by a temp SQLite DB (no PostgreSQL needed)."""
     mocker.patch.dict(os.environ, {"DATABASE_URL": ""})
     db_path = str(tmp_path / "test_queue.db")
-    mocker.patch.dict(os.environ, {"ATTENDANCE_DB_PATH": db_path})
     from attendance_queue import AttendanceQueue
     mock_zoho = mocker.MagicMock()
-    queue = AttendanceQueue(mock_zoho)
+    # Pass db_path directly so each test gets its own isolated DB file,
+    # regardless of the module-level DB_PATH constant (read once at import time).
+    queue = AttendanceQueue(mock_zoho, db_path=db_path)
     return queue

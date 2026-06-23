@@ -5,12 +5,16 @@ Covers TC-006 to TC-016 from the QA test plan.
 import io
 import json
 import threading
+import importlib.util
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
+_insightface_available = importlib.util.find_spec("insightface") is not None
+
 
 # ── TC-006: encode_face_from_array — valid single face ────────────────────────
+@pytest.mark.skipif(not _insightface_available, reason="insightface not installed locally")
 def test_encode_face_from_array_no_face(blank_rgb_image):
     """TC-007: blank white image returns (None, error message)."""
     from face_utils import encode_face_from_array

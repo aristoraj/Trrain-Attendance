@@ -83,11 +83,12 @@ class AttendanceQueue:
     angle-variant embeddings per student for better accuracy.
     """
 
-    def __init__(self, zoho_api):
+    def __init__(self, zoho_api, db_path: str = None):
         self._zoho = zoho_api
         self._lock = threading.Lock()
 
         self._is_postgres = bool(DATABASE_URL)
+        self._db_path = db_path or DB_PATH
         # SQL placeholder: ? for SQLite, %s for PostgreSQL
         self._ph = "%s" if self._is_postgres else "?"
 
@@ -99,7 +100,7 @@ class AttendanceQueue:
         if self._is_postgres:
             logger.info("AttendanceQueue: using PostgreSQL (DATABASE_URL set).")
         else:
-            logger.info(f"AttendanceQueue: using SQLite at {DB_PATH}.")
+            logger.info(f"AttendanceQueue: using SQLite at {self._db_path}.")
 
         self._init_db()
         self._rebuild_dedup_from_db()
@@ -128,9 +129,9 @@ class AttendanceQueue:
             dsn = DATABASE_URL.replace("postgres://", "postgresql://", 1)
             raw = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
         else:
-            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
             import sqlite3
-            raw = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+            raw = sqlite3.connect(self._db_path, check_same_thread=False, timeout=30)
             raw.row_factory = sqlite3.Row
 
         conn = _ConnWrapper(raw, self._is_postgres)
@@ -151,7 +152,7 @@ class AttendanceQueue:
         for attempt in range(20):
             raw = None
             try:
-                raw = sqlite3.connect(DB_PATH, timeout=2)
+                raw = sqlite3.connect(self._db_path, timeout=2)
                 row = raw.execute("PRAGMA journal_mode=WAL").fetchone()
                 raw.close()
                 if row and row[0] == "wal":
@@ -1648,6 +1649,18 @@ class AttendanceQueue:
                         logger.info(
                             f"Queue #{rec_id}: checkin_state zoho_id updated to '{zoho_id}' for {name}"
                         )
+                    # SAFETY NET: Zoho can return code=3000 yet silently drop
+                    # Check_In/Action (thin record). Read the record back and
+                    # repair until the fields are confirmed present in Zoho.
+                    if zoho_id:
+                        if not self._zoho.ensure_checkin_fields(
+                            zoho_id, checkin_time, action_field, environment
+                        ):
+                            logger.critical(
+                                f"Queue #{rec_id}: THIN RECORD — Check_In/Action could not be "
+                                f"confirmed on Zoho record '{zoho_id}' for {name} after repair. "
+                                f"Needs manual review."
+                            )
                     if zoho_id and capture_jpeg:
                         import threading as _threading
                         _threading.Thread(
@@ -1669,9 +1682,14 @@ class AttendanceQueue:
                             f"'{existing_id}' found — patching Check_In/Action and uploading photo"
                         )
                         self._set_posted(rec_id)
-                        self._zoho.patch_checkin_fields(
+                        if not self._zoho.ensure_checkin_fields(
                             existing_id, checkin_time, action_field, environment
-                        )
+                        ):
+                            logger.critical(
+                                f"Queue #{rec_id}: THIN RECORD — Check_In/Action could not be "
+                                f"confirmed on existing Zoho record '{existing_id}' for {name}. "
+                                f"Needs manual review."
+                            )
                         self.record_checkin(student_id, name, row["date_str"], environment, existing_id,
                                             checkin_time_hhmm=checkin_time)
                         if capture_jpeg:
@@ -1698,9 +1716,14 @@ class AttendanceQueue:
                             f"'{existing_id}' for {name} — patching and completing"
                         )
                         self._set_posted(rec_id)
-                        self._zoho.patch_checkin_fields(
+                        if not self._zoho.ensure_checkin_fields(
                             existing_id, checkin_time, action_field, environment
-                        )
+                        ):
+                            logger.critical(
+                                f"Queue #{rec_id}: THIN RECORD — Check_In/Action could not be "
+                                f"confirmed on existing Zoho record '{existing_id}' for {name}. "
+                                f"Needs manual review."
+                            )
                         self.record_checkin(
                             student_id, name, row["date_str"], environment, existing_id,
                             checkin_time_hhmm=checkin_time,
