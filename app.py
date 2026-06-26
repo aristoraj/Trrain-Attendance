@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 _IST = ZoneInfo("Asia/Kolkata")
@@ -717,6 +717,32 @@ def _keepalive_worker():
 
 _keepalive_thread = threading.Thread(target=_keepalive_worker, daemon=True)
 _keepalive_thread.start()
+
+
+# ─── 10 PM auto-checkout scheduler ───────────────────────────────────────────
+def _auto_checkout_worker():
+    """At 22:00 IST daily, mark unchecked-out attendance records with Auto_Checkout=No."""
+    logger.info("Auto-checkout scheduler started — will run at 22:00 IST daily")
+    while True:
+        now = datetime.now(_IST)
+        target = now.replace(hour=22, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        sleep_secs = (target - now).total_seconds()
+        logger.info(
+            f"Auto-checkout: next run in {sleep_secs / 3600:.1f}h "
+            f"({target.strftime('%Y-%m-%d %H:%M IST')})"
+        )
+        time.sleep(sleep_secs)
+        date_str = datetime.now(_IST).strftime("%d-%b-%Y")
+        try:
+            result = zoho.mark_no_auto_checkout(date_str=date_str)
+            logger.info(f"Auto-checkout complete — {result}")
+        except Exception as e:
+            logger.error(f"Auto-checkout error: {e}")
+
+
+threading.Thread(target=_auto_checkout_worker, daemon=True, name="auto-checkout").start()
 
 # Rebuild FaceCaches from local DB in a background thread (non-blocking startup)
 threading.Thread(target=_restore_face_caches_from_db, daemon=True, name="db-restore").start()

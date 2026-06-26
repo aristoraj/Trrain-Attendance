@@ -1176,6 +1176,79 @@ class ZohoCreatorAPI:
         except Exception as e:
             logger.warning(f"Live capture upload failed for {student_name} ({record_id}): {e}")
 
+    # ─── 10 PM Auto-Checkout Sweep ────────────────────────────────────────────
+
+    def mark_no_auto_checkout(self, date_str: str, env: str = "") -> dict:
+        """
+        Query all attendance records for date_str and PATCH Auto_Checkout=No for
+        any that have no Check_Out value. Called by the nightly 22:00 IST scheduler.
+        Returns {"updated": N, "failed": N, "skipped": N}.
+        """
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
+        criteria = f'({FIELD_ATT_DATE}=="{date_str}")'
+        records = []
+        page_start = 1
+        while True:
+            try:
+                resp = self._request(
+                    "get", url, env=env,
+                    params={"criteria": criteria, "from": page_start, "limit": 200},
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"mark_no_auto_checkout: fetch page {page_start} → HTTP {resp.status_code}"
+                    )
+                    break
+                page_data = resp.json().get("data", [])
+                if not page_data:
+                    break
+                records.extend(page_data)
+                if len(page_data) < 200:
+                    break
+                page_start += 200
+            except Exception as e:
+                logger.warning(f"mark_no_auto_checkout: fetch error: {e}")
+                break
+
+        logger.info(
+            f"mark_no_auto_checkout: {len(records)} record(s) found for {date_str}"
+        )
+        updated = failed = skipped = 0
+        for rec in records:
+            rec_id = rec.get("ID")
+            if not rec_id:
+                skipped += 1
+                continue
+            if rec.get(FIELD_CHECK_OUT):
+                skipped += 1
+                continue
+            patch_url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{rec_id}"
+            try:
+                resp = self._request(
+                    "patch", patch_url, env=env,
+                    json={"data": {FIELD_AUTO_CHECKOUT: "No"}},
+                    timeout=15,
+                )
+                result = resp.json() if resp.status_code == 200 else {}
+                if resp.status_code == 200 and result.get("code", 3000) == 3000:
+                    updated += 1
+                else:
+                    logger.warning(
+                        f"mark_no_auto_checkout: PATCH HTTP {resp.status_code} "
+                        f"code={result.get('code')} for record {rec_id}"
+                    )
+                    failed += 1
+            except Exception as e:
+                logger.warning(f"mark_no_auto_checkout: PATCH error for record {rec_id}: {e}")
+                failed += 1
+
+        logger.info(
+            f"mark_no_auto_checkout: date={date_str} — "
+            f"updated={updated}, failed={failed}, skipped={skipped}"
+        )
+        return {"updated": updated, "failed": failed, "skipped": skipped}
+
     # ─── Utility ───────────────────────────────────────────────────────────────
 
     def test_connection(self) -> dict:
