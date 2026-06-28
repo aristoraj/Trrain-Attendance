@@ -2670,7 +2670,13 @@ def _save_refresh_token(new_refresh_token: str) -> tuple:
             headers={"Authorization": f"Bearer {RENDER_API_KEY}"},
             timeout=15,
         )
-        existing = get_resp.json() if get_resp.status_code == 200 else []
+        raw = get_resp.json() if get_resp.status_code == 200 else []
+        # Render GET returns [{envVar: {key, value}}, ...] — normalise to flat [{key, value}]
+        existing = []
+        for item in raw:
+            ev = item.get("envVar") or item
+            if ev.get("key"):
+                existing.append({"key": ev["key"], "value": ev.get("value", "")})
         updated = [e for e in existing if e.get("key") != "ZOHO_REFRESH_TOKEN"]
         updated.append({"key": "ZOHO_REFRESH_TOKEN", "value": new_refresh_token})
         render_resp = req.put(
