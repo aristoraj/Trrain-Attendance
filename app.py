@@ -25,6 +25,7 @@ import io
 import json as _json
 import logging
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta
@@ -33,7 +34,7 @@ from zoneinfo import ZoneInfo
 _IST = ZoneInfo("Asia/Kolkata")
 
 import requests as req
-from flask import Flask, jsonify, request, send_from_directory, make_response
+from flask import Flask, jsonify, request, send_from_directory, make_response, session, redirect
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -42,7 +43,7 @@ from config import (
     PORT, DEBUG, SECRET_KEY, FACE_MATCH_TOLERANCE,
     CACHE_TTL_SECONDS, SELF_URL, ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_REPORT,
     RENDER_API_KEY, RENDER_SERVICE_ID, ADMIN_SECRET,
-    ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT,
+    ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT, ZOHO_REDIRECT_URI,
     ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ACTION, FIELD_CHECK_IN,
@@ -2648,6 +2649,44 @@ def admin_reset_stuck_processing():
 
 # ─── Reauth ───────────────────────────────────────────────────────────────────
 
+def _save_refresh_token(new_refresh_token: str) -> tuple:
+    """
+    Persist new_refresh_token in memory, os.environ, and Render env vars.
+    Returns (render_updated: bool, render_msg: str).
+    """
+    import config as cfg
+    cfg.ZOHO_REFRESH_TOKEN = new_refresh_token
+    os.environ["ZOHO_REFRESH_TOKEN"] = new_refresh_token
+    zoho._access_token = None
+    zoho._token_expiry = 0.0
+    logger.info("Zoho refresh token hot-reloaded.")
+
+    if not (RENDER_API_KEY and RENDER_SERVICE_ID):
+        return False, "RENDER_API_KEY / RENDER_SERVICE_ID not set — token active for this session only."
+
+    try:
+        get_resp = req.get(
+            f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars",
+            headers={"Authorization": f"Bearer {RENDER_API_KEY}"},
+            timeout=15,
+        )
+        existing = get_resp.json() if get_resp.status_code == 200 else []
+        updated = [e for e in existing if e.get("key") != "ZOHO_REFRESH_TOKEN"]
+        updated.append({"key": "ZOHO_REFRESH_TOKEN", "value": new_refresh_token})
+        render_resp = req.put(
+            f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars",
+            headers={"Authorization": f"Bearer {RENDER_API_KEY}", "Content-Type": "application/json"},
+            json=updated,
+            timeout=15,
+        )
+        if render_resp.status_code in (200, 201):
+            logger.info("ZOHO_REFRESH_TOKEN updated in Render.")
+            return True, "Render environment variable updated."
+        return False, f"Render API HTTP {render_resp.status_code}: {render_resp.text[:200]}"
+    except Exception as e:
+        return False, f"Render API call failed: {e}"
+
+
 @app.route("/admin/reauth", methods=["GET"])
 @limiter.limit("10 per minute")
 def admin_reauth_page():
@@ -2655,10 +2694,25 @@ def admin_reauth_page():
     if _auth_err:
         return _auth_err
 
-    render_configured = bool(RENDER_API_KEY and RENDER_SERVICE_ID)
+    if not ZOHO_REDIRECT_URI:
+        return make_response("ZOHO_REDIRECT_URI is not configured — set it in Render env vars.", 500)
 
-    secret_safe = _html.escape(secret, quote=True)
-    html = f"""<!DOCTYPE html>
+    state = secrets.token_urlsafe(16)
+    session["oauth_state"] = state
+
+    scope = "ZohoCreator.report.ALL,ZohoCreator.form.CREATE,ZohoCreator.report.READ"
+    auth_url = (
+        f"https://accounts.zoho.{ZOHO_DATA_CENTER}/oauth/v2/auth"
+        f"?scope={scope}"
+        f"&client_id={ZOHO_CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={ZOHO_REDIRECT_URI}"
+        f"&access_type=offline"
+        f"&prompt=consent"
+        f"&state={state}"
+    )
+    render_configured = bool(RENDER_API_KEY and RENDER_SERVICE_ID)
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
@@ -2669,26 +2723,18 @@ def admin_reauth_page():
            background: #0d1117; color: #e6edf3; margin: 0;
            display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
     .box {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-            padding: 32px; max-width: 520px; width: 100%; }}
+            padding: 32px; max-width: 480px; width: 100%; }}
     h2   {{ margin: 0 0 6px; font-size: 20px; }}
-    p    {{ color: #8b949e; font-size: 13px; margin: 0 0 20px; line-height: 1.6; }}
-    ol   {{ color: #8b949e; font-size: 13px; padding-left: 18px; margin: 0 0 20px; line-height: 2; }}
-    ol a {{ color: #60a5fa; }}
-    code {{ background: #21262d; padding: 2px 6px; border-radius: 4px; font-size: 12px; }}
-    textarea {{
-      width: 100%; background: #21262d; border: 1px solid #30363d;
-      color: #e6edf3; border-radius: 8px; padding: 10px; font-size: 13px;
-      resize: vertical; min-height: 80px; box-sizing: border-box;
+    p    {{ color: #8b949e; font-size: 13px; margin: 0 0 24px; line-height: 1.6; }}
+    a.btn {{
+      display: block; text-align: center; padding: 12px;
+      background: #2563eb; color: #fff; border-radius: 8px;
+      font-size: 14px; font-weight: 600; text-decoration: none;
+      transition: opacity .2s;
     }}
-    textarea:focus {{ outline: none; border-color: #2563eb; }}
-    button {{
-      width: 100%; padding: 12px; background: #2563eb; color: #fff;
-      border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
-      cursor: pointer; margin-top: 12px; transition: opacity .2s;
-    }}
-    button:hover {{ opacity: .85; }}
+    a.btn:hover {{ opacity: .85; }}
     .badge {{ display: inline-block; padding: 2px 10px; border-radius: 20px;
-              font-size: 12px; margin-bottom: 16px; }}
+              font-size: 12px; margin-bottom: 20px; }}
     .ok   {{ background: rgba(22,163,74,.15); color: #4ade80; border: 1px solid rgba(22,163,74,.3); }}
     .warn {{ background: rgba(217,119,6,.15); color: #fbbf24; border: 1px solid rgba(217,119,6,.3); }}
   </style>
@@ -2696,99 +2742,50 @@ def admin_reauth_page():
 <body>
 <div class="box">
   <h2>Re-Authorise Zoho</h2>
-  <p>The Zoho OAuth token has expired. Follow these steps to regenerate it automatically.</p>
+  <p>Click the button below. You will be redirected to Zoho to approve access, then automatically sent back.</p>
   {'<span class="badge ok">Render API configured — token will auto-update</span>' if render_configured else
    '<span class="badge warn">RENDER_API_KEY / RENDER_SERVICE_ID not set — token saved in memory only</span>'}
-  <ol>
-    <li>Go to <a href="https://api-console.zoho.com" target="_blank">api-console.zoho.com</a> → your Self Client app</li>
-    <li>Click <strong>Generate Code</strong> and use these scopes:<br/>
-        <code>ZohoCreator.report.ALL,ZohoCreator.form.CREATE,ZohoCreator.report.READ</code></li>
-    <li>Set duration to <strong>10 minutes</strong>, click Create, copy the code</li>
-    <li>Paste it below and click Submit</li>
-  </ol>
-  <form method="POST" action="/admin/reauth?secret={secret_safe}">
-    <label style="font-size:13px; color:#8b949e;">Zoho Authorization Code</label>
-    <textarea name="auth_code" placeholder="1000.xxxxxxxxxxxx.xxxxxxxxxxxx" required></textarea>
-    <button type="submit">↻ Exchange Code &amp; Save Refresh Token</button>
-  </form>
+  <a class="btn" href="{auth_url}">Authorise with Zoho →</a>
 </div>
 </body>
 </html>"""
-    return html
 
 
-@app.route("/admin/reauth", methods=["POST"])
-@limiter.limit("5 per minute")
-def admin_reauth_submit():
-    _auth_err = _check_admin_auth()
-    if _auth_err:
-        return _auth_err
+@app.route("/auth/callback", methods=["GET"])
+@limiter.limit("10 per minute")
+def auth_callback():
+    error = request.args.get("error")
+    if error:
+        return _reauth_result(False, f"Zoho authorisation denied: {_html.escape(error)}", "")
 
-    auth_code = request.form.get("auth_code", "").strip()
-    if not auth_code:
-        return make_response("auth_code is required.", 400)
+    state = request.args.get("state", "")
+    if not state or state != session.pop("oauth_state", None):
+        return make_response("Invalid or expired OAuth state — please try again from /admin/reauth.", 400)
+
+    code = request.args.get("code", "").strip()
+    if not code:
+        return make_response("No authorisation code received from Zoho.", 400)
 
     token_url = f"https://accounts.zoho.{ZOHO_DATA_CENTER}/oauth/v2/token"
     try:
         resp = req.post(token_url, data={
-            "code":          auth_code,
+            "code":          code,
             "client_id":     ZOHO_CLIENT_ID,
             "client_secret": ZOHO_CLIENT_SECRET,
+            "redirect_uri":  ZOHO_REDIRECT_URI,
             "grant_type":    "authorization_code",
         }, timeout=15)
         resp.raise_for_status()
         tokens = resp.json()
     except Exception as e:
-        return _reauth_result(False, f"Token exchange failed: {e}", secret)
+        return _reauth_result(False, f"Token exchange failed: {e}", "")
 
     new_refresh_token = tokens.get("refresh_token")
     if not new_refresh_token:
-        return _reauth_result(False, f"No refresh_token in response: {tokens}", secret)
+        return _reauth_result(False, f"No refresh_token in Zoho response: {tokens}", "")
 
-    import config as cfg
-    cfg.ZOHO_REFRESH_TOKEN = new_refresh_token
-    os.environ["ZOHO_REFRESH_TOKEN"] = new_refresh_token
-    # Reset cached token so the next request fetches a fresh one via the new refresh_token
-    zoho._access_token = None
-    zoho._token_expiry = 0.0
-    logger.info("Zoho refresh token hot-reloaded.")
-
-    render_updated = False
-    render_msg = ""
-    if RENDER_API_KEY and RENDER_SERVICE_ID:
-        try:
-            # Fetch existing env vars first so we only update ZOHO_REFRESH_TOKEN
-            # (Render PUT /env-vars is a full replace — sending only one key wipes the rest)
-            get_resp = req.get(
-                f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars",
-                headers={"Authorization": f"Bearer {RENDER_API_KEY}"},
-                timeout=15,
-            )
-            existing = []
-            if get_resp.status_code == 200:
-                existing = get_resp.json()
-
-            updated = [e for e in existing if e.get("key") != "ZOHO_REFRESH_TOKEN"]
-            updated.append({"key": "ZOHO_REFRESH_TOKEN", "value": new_refresh_token})
-
-            render_resp = req.put(
-                f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars",
-                headers={"Authorization": f"Bearer {RENDER_API_KEY}", "Content-Type": "application/json"},
-                json=updated,
-                timeout=15,
-            )
-            if render_resp.status_code in (200, 201):
-                render_updated = True
-                render_msg = "Render environment variable updated."
-                logger.info("ZOHO_REFRESH_TOKEN updated in Render.")
-            else:
-                render_msg = f"Render API HTTP {render_resp.status_code}: {render_resp.text[:200]}"
-        except Exception as e:
-            render_msg = f"Render API call failed: {e}"
-    else:
-        render_msg = "RENDER_API_KEY / RENDER_SERVICE_ID not set — token active for this session only."
-
-    return _reauth_result(True, render_msg, secret, render_updated, new_refresh_token[:20] + "...")
+    render_updated, render_msg = _save_refresh_token(new_refresh_token)
+    return _reauth_result(True, render_msg, "", render_updated, new_refresh_token[:20] + "...")
 
 
 def _reauth_result(success, message, secret, render_updated=False, token_preview=""):

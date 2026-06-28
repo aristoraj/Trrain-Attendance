@@ -28,6 +28,7 @@ if not ZOHO_ACCOUNT_OWNER:
     )
 ZOHO_APP_NAME      = os.environ.get("ZOHO_APP_NAME", "trrain")
 ZOHO_DATA_CENTER   = os.environ.get("ZOHO_DATA_CENTER", "in")
+ZOHO_REDIRECT_URI  = os.environ.get("ZOHO_REDIRECT_URI", "")
 
 # Report / form link names
 ZOHO_STUDENT_REPORT   = os.environ.get("ZOHO_STUDENT_REPORT",   "CV_Management")
