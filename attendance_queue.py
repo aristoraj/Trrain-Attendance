@@ -902,6 +902,7 @@ class AttendanceQueue:
             self._create_batch_status_table(conn)
             self._create_webhook_sync_log_table(conn)
             self._create_checkin_state_table(conn)
+            self._create_global_settings_table(conn)
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now(_IST).strftime("%d-%b-%Y")
@@ -1438,6 +1439,44 @@ class AttendanceQueue:
         """Delete a single daily_cache row by key (used to force a fresh Zoho fetch)."""
         with self._db() as conn:
             conn.execute(self._q("DELETE FROM daily_cache WHERE cache_key=?"), (key,))
+
+    # ── Global settings ───────────────────────────────────────────────────────
+
+    def _create_global_settings_table(self, conn):
+        """Persistent key-value store for global app settings with no TTL."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS global_settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+    def get_global_setting(self, key: str, default: str = None) -> str:
+        """Return the value for a global setting key, or default if not set."""
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT value FROM global_settings WHERE key=?"),
+                (key,)
+            ).fetchone()
+        return row["value"] if row else default
+
+    def set_global_setting(self, key: str, value: str) -> None:
+        """Upsert a global setting key/value pair."""
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            if self._is_postgres:
+                conn.execute(self._q("""
+                    INSERT INTO global_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE
+                        SET value=excluded.value, updated_at=excluded.updated_at
+                """), (key, value, now))
+            else:
+                conn.execute(self._q("""
+                    INSERT OR REPLACE INTO global_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                """), (key, value, now))
 
     def upsert_student_in_scope(self, scope_key: str, student: dict) -> None:
         """Add or update a single student row in student_cache for the given scope key."""

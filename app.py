@@ -146,6 +146,16 @@ zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
+# ── Global face-recognition live flag ────────────────────────────────────────
+# Loaded from DB on startup; updated in-memory by /api/webhook/environment-changed.
+# True  → "Live Face Recognition" is active for all users.
+# False → widget shows "feature not available" message to everyone.
+_face_recognition_live: bool = (
+    att_queue.get_global_setting("face_recognition_live", "false") == "true"
+)
+_face_recognition_live_lock = threading.Lock()
+logger.info(f"Global face-recognition flag on startup: {'LIVE' if _face_recognition_live else 'OFF'}")
+
 @app.before_request
 def _ensure_drain_alive():
     """Restart drain thread if it died or was never started in this worker process."""
@@ -1837,47 +1847,93 @@ def create_session():
     return jsonify({"session_token": token, "has_access": has_access, "expires_in": _SESSION_TTL})
 
 
-# ─── Feature-access check ─────────────────────────────────────────────────────
-_feature_cache: dict[str, tuple[bool, float]] = {}
-_feature_cache_lock = threading.Lock()
-_FEATURE_CACHE_TTL = 86400   # 24h — webhook evicts on toggle so polling every 10 min is unnecessary
+# ─── Feature-access check (global flag) ──────────────────────────────────────
 
-
-def _get_feature_access(email: str, env: str = "") -> bool:
-    """Core logic: returns True if email has Face_Recognition_Feature enabled."""
-    cache_key = f"{env}:{email}"
-    with _feature_cache_lock:
-        cached = _feature_cache.get(cache_key)
-    if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
-        return cached[0]
-    url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
-    criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}" && {FIELD_USER_FACE_FEATURE}==true)'
-    try:
-        resp      = zoho._request("get", url, env=env,
-                                  params={"criteria": criteria, "limit": 1}, timeout=10)
-        resp_json = resp.json()
-        if resp_json.get("code") == 4000:
-            logger.warning(f"Feature-access: Zoho API limit for {email} — failing open")
-            return True
-        records    = resp_json.get("data", [])
-        has_access = isinstance(records, list) and len(records) > 0
-        with _feature_cache_lock:
-            _feature_cache[cache_key] = (has_access, time.time())
-        logger.info(f"Feature-access: {email} → {'enabled' if has_access else 'disabled'}")
-        return has_access
-    except Exception as e:
-        logger.warning(f"Feature-access check failed for {email}: {e} — failing open")
-        return True
+def _get_feature_access(email: str = "", env: str = "") -> bool:
+    """Returns True if Face Recognition is globally enabled via the Environment form."""
+    return _face_recognition_live
 
 
 @app.route("/api/feature-access")
 @require_session
 def feature_access():
-    """Check Face_Recognition_Feature flag. Requires session auth (use /api/session for initial check)."""
-    email = request.session_email
-    env   = request.session_env
-    has_access = _get_feature_access(email, env)
-    return jsonify({"has_access": has_access})
+    """Return global face-recognition live status. Requires session auth."""
+    return jsonify({"has_access": _face_recognition_live})
+
+
+# ─── Environment form webhook ─────────────────────────────────────────────────
+
+@app.route("/api/webhook/environment-changed", methods=["POST"])
+@limiter.limit("10 per minute")
+def webhook_environment_changed():
+    """
+    Called by a Zoho Creator Deluge workflow on submit of the Environment form.
+    Sets the global face-recognition ON/OFF flag based on Attendance_Capturing_Method.
+
+    Expected JSON payload:
+        {
+            "Attendance_Capturing_Method": "Live Face Recognition" | "Zoho People",
+            "Environment":                 "<environment display name>",
+            "zoho_environment":            "<env link name>"  (optional)
+        }
+
+    Auth: pass ADMIN_SECRET in the X-Webhook-Secret request header.
+
+    Deluge snippet (Environment form → On Add / On Edit):
+
+        body = {
+            "Attendance_Capturing_Method": input.Attendance_Capturing_Method.toString(),
+            "Environment":                 input.Environment.toString(),
+            "zoho_environment":            thisapp.environment.linkname
+        };
+        response = invokeurl
+        [
+            url  : "https://<your-app>.onrender.com/api/webhook/environment-changed"
+            type : POST
+            body : body.toString()
+            headers: {
+                "X-Webhook-Secret": "<ADMIN_SECRET>",
+                "Content-Type": "application/json"
+            }
+        ];
+    """
+    global _face_recognition_live
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    body             = request.get_json(force=True) or {}
+    method           = (body.get("Attendance_Capturing_Method") or "").strip()
+    environment_name = (body.get("Environment") or "").strip()
+
+    if not method:
+        return jsonify({"error": "Attendance_Capturing_Method is required"}), 400
+
+    is_live = method.lower() == "live face recognition"
+
+    # ── Update in-memory flag + persist to DB ─────────────────────────────────
+    with _face_recognition_live_lock:
+        _face_recognition_live = is_live
+
+    att_queue.set_global_setting("face_recognition_live", "true" if is_live else "false")
+    if environment_name:
+        att_queue.set_global_setting("environment_name", environment_name)
+
+    logger.info(
+        f"[EnvWebhook] Attendance_Capturing_Method='{method}' "
+        f"environment='{environment_name}' → face recognition "
+        f"{'ENABLED globally' if is_live else 'DISABLED globally'}."
+    )
+
+    return jsonify({
+        "success":               True,
+        "face_recognition_live": is_live,
+        "method":                method,
+        "environment":           environment_name,
+    })
 
 
 # ─── SDK data-loading endpoints ───────────────────────────────────────────────
