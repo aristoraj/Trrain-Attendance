@@ -751,6 +751,68 @@ _keepalive_thread = threading.Thread(target=_keepalive_worker, daemon=True)
 _keepalive_thread.start()
 
 
+# ─── Batch-started webhook background worker ─────────────────────────────────
+def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> None:
+    """
+    Triggered by /api/webhook/batch-started.
+    Fetches students for a newly-started batch from Zoho and merges them into the
+    local DB and face cache immediately — without waiting for the nightly scheduler.
+    """
+    try:
+        logger.info(
+            f"[BatchWebhook] Syncing batch {batch_id} for scope '{scope_key}' "
+            f"(env={env or 'production'})..."
+        )
+        no_photo: list = []
+        students = zoho.get_students(
+            centers=centers, batch_ids=[batch_id], env=env,
+            no_photo_out=no_photo, fresh_load=True,
+        )
+
+        # Upsert batch_status as Ongoing (insert if new, overwrite if Hold/other)
+        att_queue.save_batch_statuses(
+            scope_key, [{"id": batch_id, "name": "", "status": "Ongoing"}]
+        )
+
+        if students:
+            # Non-destructive upsert — doesn't wipe other batches in the same scope
+            att_queue.upsert_students_for_batch(scope_key, batch_id, students)
+
+        if no_photo:
+            att_queue.save_no_photo_students(scope_key, no_photo)
+            logger.info(f"[BatchWebhook] {len(no_photo)} student(s) have no photo yet for batch {batch_id}.")
+
+        # Rebuild in-memory face cache from DB so new students are live immediately
+        raw = att_queue.load_students_from_db(scope_key)
+        if raw:
+            decoded = []
+            for s in raw:
+                encs = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+                encs = [e for e in encs if e is not None]
+                if encs:
+                    decoded.append({
+                        "id":             s["id"],
+                        "name":           s["name"],
+                        "student_number": s["student_number"],
+                        "encodings":      encs,
+                    })
+            if decoded:
+                _get_cache(centers, env).set(decoded)
+                logger.info(
+                    f"[BatchWebhook] Face cache rebuilt — {len(decoded)} student(s) live "
+                    f"for scope '{scope_key}'."
+                )
+
+        if not students and not no_photo:
+            logger.warning(
+                f"[BatchWebhook] No students found for batch {batch_id}. "
+                "Check that the batch has trainees with photos in Zoho Creator."
+            )
+
+    except Exception as e:
+        logger.error(f"[BatchWebhook] Failed to sync batch {batch_id}: {e}")
+
+
 # ─── 10 PM auto-checkout scheduler ───────────────────────────────────────────
 def _auto_checkout_worker():
     """At 22:00 IST daily, mark unchecked-out attendance records with Auto_Checkout=No."""
@@ -1934,6 +1996,81 @@ def webhook_environment_changed():
         "method":                method,
         "environment":           environment_name,
     })
+
+
+@app.route("/api/webhook/batch-started", methods=["POST"])
+@limiter.limit("30 per minute")
+def webhook_batch_started():
+    """
+    Called by a Zoho Creator button action when a batch is started (status → Ongoing).
+    Immediately fetches and caches trainees for that batch so they can mark attendance
+    the same day — without waiting for the 02:00 IST nightly scheduler.
+
+    Expected JSON payload:
+        {
+            "batch_id":    "<Zoho Creator record ID of the batch>",
+            "centre_ids":  "<comma-separated numeric centre IDs>",
+            "environment": "<Zoho app environment link name>"  (omit / leave blank for production)
+        }
+
+    Auth: pass ADMIN_SECRET in the X-Webhook-Secret header.
+
+    Deluge snippet (Batch form → button script):
+
+        body = {
+            "batch_id"   : input.ID.toLong().toString(),
+            "centre_ids" : input.Centres.ID.toString(),
+            "environment": thisapp.environment.linkname
+        };
+        response = invokeurl
+        [
+            url    : "https://<your-app>.onrender.com/api/webhook/batch-started"
+            type   : POST
+            body   : body.toString()
+            headers: {"X-Webhook-Secret": "<ADMIN_SECRET>",
+                      "Content-Type": "application/json"}
+        ];
+
+    Note: for a multi-centre batch, join the IDs with a comma, e.g.
+        "centre_ids": input.Centres.ID.toString()  (Creator joins multi-select IDs with comma)
+    """
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    body       = request.get_json(force=True) or {}
+    batch_id   = (body.get("batch_id") or "").strip()
+    centre_ids = (body.get("centre_ids") or "").strip()
+    env        = (body.get("environment") or "").strip().lower()
+    if env == "production":
+        env = ""
+
+    if not batch_id:
+        return jsonify({"error": "batch_id is required"}), 400
+
+    centers   = [c.strip() for c in centre_ids.split(",") if c.strip()] if centre_ids else []
+    scope_key = _build_scope_key(centers, env)
+
+    logger.info(
+        f"[BatchWebhook] Received batch-started: batch_id='{batch_id}' "
+        f"centres={centers} env='{env or 'production'}' scope='{scope_key}'"
+    )
+
+    threading.Thread(
+        target=_sync_batch_now,
+        args=(batch_id, centers, env, scope_key),
+        daemon=True,
+        name=f"batch-sync-{batch_id[:8]}",
+    ).start()
+
+    return jsonify({
+        "success":   True,
+        "batch_id":  batch_id,
+        "scope_key": scope_key,
+        "message":   "Batch sync started — trainees will be available within ~30 seconds.",
+    }), 202
 
 
 # ─── SDK data-loading endpoints ───────────────────────────────────────────────

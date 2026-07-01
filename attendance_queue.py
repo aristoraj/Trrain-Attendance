@@ -1324,6 +1324,38 @@ class AttendanceQueue:
                        True, s.get("batch_id", ""), now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
 
+    def upsert_students_for_batch(self, scope_key: str, batch_id: str, students: list) -> None:
+        """
+        Add/update students for a single batch without wiping other batches in the scope.
+        Used by the batch-started webhook so same-day Ongoing batches are available immediately.
+        Embeddings are already stored in face_embeddings by _process_record; this only
+        updates student_cache metadata.
+        """
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            for s in students:
+                if self._is_postgres:
+                    conn.execute(self._q("""
+                        INSERT INTO student_cache
+                            (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(student_id, scope_key) DO UPDATE
+                            SET name=excluded.name,
+                                student_number=excluded.student_number,
+                                has_embedding=excluded.has_embedding,
+                                batch_id=excluded.batch_id,
+                                updated_at=excluded.updated_at
+                    """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
+                           True, batch_id, now))
+                else:
+                    conn.execute(self._q("""
+                        INSERT OR REPLACE INTO student_cache
+                            (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
+                           True, batch_id, now))
+        logger.info(f"Upserted {len(students)} student(s) for batch {batch_id} in scope '{scope_key}'.")
+
     def save_no_photo_students(self, scope_key: str, students: list) -> None:
         """
         Persist students WITHOUT embeddings so we know they exist in the system
