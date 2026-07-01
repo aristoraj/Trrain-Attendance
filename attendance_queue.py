@@ -533,6 +533,32 @@ class AttendanceQueue:
                 (status, now, batch_id, scope_key)
             )
 
+    def remove_student_by_id(self, student_id: str) -> tuple:
+        """
+        Permanently remove a single student and all their embeddings from every scope.
+        Used by the student-removed webhook when a trainee drops out.
+        Returns (student_cache_rows_deleted, embeddings_deleted).
+        """
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q("DELETE FROM face_embeddings WHERE student_id=?"),
+                (student_id,)
+            )
+            removed_embeddings = cur.rowcount if hasattr(cur, "rowcount") else 0
+
+            cur = conn.execute(
+                self._q("DELETE FROM student_cache WHERE student_id=?"),
+                (student_id,)
+            )
+            removed_students = cur.rowcount if hasattr(cur, "rowcount") else 0
+
+        if removed_students or removed_embeddings:
+            logger.info(
+                f"Removed student {student_id}: "
+                f"{removed_students} cache row(s), {removed_embeddings} embedding(s) deleted."
+            )
+        return removed_students, removed_embeddings
+
     def remove_students_by_batch(self, batch_id: str, scope_key: str) -> tuple:
         """
         Permanently remove all student_cache rows AND face_embeddings for a batch

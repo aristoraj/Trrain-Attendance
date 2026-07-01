@@ -2073,6 +2073,95 @@ def webhook_batch_started():
     }), 202
 
 
+@app.route("/api/webhook/student-removed", methods=["POST"])
+@limiter.limit("30 per minute")
+def webhook_student_removed():
+    """
+    Called when a trainee drops out. Removes the student from the local DB
+    (student_cache + face_embeddings) and evicts them from all warm in-memory
+    face caches so they can no longer mark attendance immediately.
+
+    Auth  : ?secret=<ADMIN_SECRET> query param
+    Env   : "environment" request header (thisapp.environment.linkname)
+
+    Body (JSON):
+        { "student_id": "<Zoho Creator record ID of the trainee>",
+          "centre_id":  "<numeric centre ID>" }
+
+    Deluge snippet (CV_Management form → On Delete / button script):
+
+        try
+        {
+            if(thisapp.environment.linkname == "development")
+            {
+                webhookUrl = "https://trrain-attendance-1.onrender.com/api/webhook/student-removed";
+            }
+            else
+            {
+                webhookUrl = "https://trrain-attendance.onrender.com/api/webhook/student-removed";
+            }
+            body = {"student_id": input.ID.toString(),
+                    "centre_id" : input.Centre_Name.ID.toString()};
+            response = invokeurl
+            [
+                url    : webhookUrl + "?secret=<ADMIN_SECRET>"
+                type   : POST
+                body   : body.toString()
+                headers: {"environment": thisapp.environment.linkname,
+                          "Content-Type": "application/json"}
+            ];
+        }
+        catch (e)
+        {
+            res = insert into Logs
+            [
+                Added_User = zoho.loginuser
+                Exception  = e.tostring()
+                Module     = "Face Recognition Attendance Remove Trainee " + input.ID
+            ];
+        }
+    """
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    body       = request.get_json(force=True) or {}
+    student_id = (body.get("student_id") or "").strip()
+
+    if not student_id:
+        return jsonify({"error": "student_id is required"}), 400
+
+    # ── Remove from DB (all scopes) ───────────────────────────────────────────
+    s_count, e_count = att_queue.remove_student_by_id(student_id)
+
+    # ── Evict from all warm in-memory caches ──────────────────────────────────
+    evicted = 0
+    with _scope_caches_lock:
+        for cache in _scope_caches.values():
+            students = cache.get()
+            if students is None:
+                continue
+            before = len(students)
+            students[:] = [s for s in students if s["id"] != student_id]
+            evicted += before - len(students)
+
+    logger.info(
+        f"[StudentRemoved] student_id='{student_id}' — "
+        f"DB: {s_count} cache row(s), {e_count} embedding(s) deleted; "
+        f"in-memory: evicted from {evicted} scope cache(s)."
+    )
+
+    return jsonify({
+        "success":            True,
+        "student_id":         student_id,
+        "db_rows_deleted":    s_count,
+        "embeddings_deleted": e_count,
+        "caches_evicted":     evicted,
+    })
+
+
 # ─── SDK data-loading endpoints ───────────────────────────────────────────────
 
 @app.route("/api/config")
