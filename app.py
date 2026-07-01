@@ -2006,36 +2006,49 @@ def webhook_batch_started():
     Immediately fetches and caches trainees for that batch so they can mark attendance
     the same day — without waiting for the 02:00 IST nightly scheduler.
 
-    Expected JSON payload:
-        {
-            "batch_id":    "<Zoho Creator record ID of the batch>",
-            "centre_ids":  "<comma-separated numeric centre IDs>",
-            "environment": "<Zoho app environment link name>"  (omit / leave blank for production)
-        }
+    Auth  : ?secret=<ADMIN_SECRET> query param
+    Env   : "environment" request header (thisapp.environment.linkname)
 
-    Auth: pass ADMIN_SECRET in the X-Webhook-Secret header.
+    Body (JSON):
+        { "batch_id": "<record ID>", "centre_ids": "<comma-separated IDs>" }
 
     Deluge snippet (Batch form → button script):
 
-        body = {
-            "batch_id"   : input.ID.toLong().toString(),
-            "centre_ids" : input.Centres.ID.toString(),
-            "environment": thisapp.environment.linkname
-        };
-        response = invokeurl
-        [
-            url    : "https://<your-app>.onrender.com/api/webhook/batch-started"
-            type   : POST
-            body   : body.toString()
-            headers: {"X-Webhook-Secret": "<ADMIN_SECRET>",
-                      "Content-Type": "application/json"}
-        ];
-
-    Note: for a multi-centre batch, join the IDs with a comma, e.g.
-        "centre_ids": input.Centres.ID.toString()  (Creator joins multi-select IDs with comma)
+        try
+        {
+            if(thisapp.environment.linkname == "development")
+            {
+                webhookUrl = "https://trrain-attendance-1.onrender.com/api/webhook/batch-started";
+            }
+            else
+            {
+                webhookUrl = "https://trrain-attendance.onrender.com/api/webhook/batch-started";
+            }
+            body = {
+                "batch_id"  : input.ID.toString(),
+                "centre_ids": input.Centres.ID.toString()
+            };
+            response = invokeurl
+            [
+                url    : webhookUrl + "?secret=<ADMIN_SECRET>"
+                type   : POST
+                body   : body.toString()
+                headers: {"environment": thisapp.environment.linkname,
+                          "Content-Type": "application/json"}
+            ];
+        }
+        catch (e)
+        {
+            res = insert into Logs
+            [
+                Added_User = zoho.loginuser
+                Exception  = e.tostring()
+                Module     = "Face Recognition Attendance Batch Start " + input.ID
+            ];
+        }
     """
     # ── Auth ──────────────────────────────────────────────────────────────────
-    secret = request.headers.get("X-Webhook-Secret", "")
+    secret = request.args.get("secret", "")
     if not _hmac.compare_digest(secret, ADMIN_SECRET):
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -2043,7 +2056,7 @@ def webhook_batch_started():
     body       = request.get_json(force=True) or {}
     batch_id   = (body.get("batch_id") or "").strip()
     centre_ids = (body.get("centre_ids") or "").strip()
-    env        = (body.get("environment") or "").strip().lower()
+    env        = (request.headers.get("environment") or "").strip().lower()
     if env == "production":
         env = ""
 
