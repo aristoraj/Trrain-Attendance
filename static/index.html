@@ -354,6 +354,43 @@
     .msg-banner.warning .msg-title { color: #92400E; }
     .msg-banner.info    .msg-title { color: #1E3A8A; }
 
+    /* ── Attendance result cards (check-in / check-out) ─────────────────────── */
+    .msg-banner.checkin-card,
+    .msg-banner.checkout-card {
+      flex-direction: column;
+      text-align: center;
+      padding: clamp(8px, 2.5vw, 16px) 14px;
+      gap: 0px;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .msg-banner.checkin-card  { background: #ECFDF5; border: 2px solid #6EE7B7; }
+    .msg-banner.checkout-card { background: #EFF6FF; border: 2px solid #93C5FD; }
+    .att-card-icon {
+      font-size: clamp(28px, 7vw, 40px);
+      line-height: 1; margin-bottom: clamp(3px, 1vw, 6px);
+    }
+    .checkin-card  .att-card-icon { color: #16A34A; }
+    .checkout-card .att-card-icon { color: #2563EB; }
+    .att-card-action {
+      font-size: clamp(12px, 3.2vw, 15px); font-weight: 800;
+      letter-spacing: 0.2px; margin-bottom: clamp(2px, 0.8vw, 5px);
+    }
+    .checkin-card  .att-card-action { color: #065F46; }
+    .checkout-card .att-card-action { color: #1E3A8A; }
+    .att-card-name {
+      font-size: clamp(16px, 4.5vw, 20px);
+      font-weight: 700; color: #111827;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%;
+    }
+    .att-card-reg  { font-size: clamp(11px, 2.8vw, 13px); color: #6B7280; margin-top: 1px; }
+    .att-card-time {
+      font-size: clamp(11px, 2.8vw, 13px); font-weight: 600; color: #374151;
+      margin-top: clamp(5px, 1.5vw, 9px); padding-top: clamp(4px, 1.2vw, 7px);
+      border-top: 1px solid rgba(0,0,0,0.09);
+      width: 100%;
+    }
+
     /* ── Bottom bar ──────────────────────────────────────────────────────────── */
     .bottom-bar {
       background: var(--surface);
@@ -534,17 +571,17 @@
   <div style="background:#fff;border:1px solid #E5D9CF;border-radius:16px;padding:40px 32px;
     max-width:420px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.06);">
     <div style="width:76px;height:76px;background:#FBF8F6;border:2px solid #E5D9CF;border-radius:50%;
-      display:flex;align-items:center;justify-content:center;margin:0 auto 22px;font-size:34px;">🔒</div>
-    <div style="font-size:19px;font-weight:700;color:#1A1A1A;margin-bottom:10px;">Feature Not Available Yet</div>
+      display:flex;align-items:center;justify-content:center;margin:0 auto 22px;font-size:34px;">📋</div>
+    <div style="font-size:19px;font-weight:700;color:#1A1A1A;margin-bottom:10px;">Feature Not Available at the Moment</div>
     <div style="font-size:14px;color:#7A6B62;line-height:1.65;margin-bottom:26px;">
-      Face Attendance has not been enabled for your centre.<br>
-      This feature is being rolled out in phases — your centre coordinator will notify you once it is activated.
+      Please use <strong>Zoho People</strong> to post your attendance daily.<br><br>
+      You will be notified by the admin team once the Live Face Recognition feature is available.
     </div>
     <div style="display:inline-flex;align-items:center;gap:7px;background:#FFF8E8;
       border:1px solid #E8C86A;color:#7A5200;border-radius:20px;padding:8px 18px;font-size:13px;font-weight:500;">
       <span style="width:8px;height:8px;background:var(--gold);border-radius:50%;
         animation:fg-pulse 1.8s infinite;display:inline-block;"></span>
-      Rollout in progress
+      Use Zoho People for now
     </div>
   </div>
 </div>
@@ -1669,15 +1706,48 @@ function showCheckoutSuccess(data) {
   const s = data.student;
   setFrameClass('verified');
   setStatus('ok', s.name + ' — checked out');
-  const conf    = data.confidence || 0;
-  const timeStr = data.checkout_time ? ' at ' + data.checkout_time : '';
-  const sub     = (s.roll_number ? s.roll_number + ' · ' : '') + conf + '% match · Checked Out ✓' + timeStr;
-  showBanner(esc(s.name), 'success', null, sub);
-  setTimeout(() => resetVerification(), 3000);
+  const timeStr = data.checkout_time ? _fmtServerTime(data.checkout_time) : _fmtNow();
+  showAttendanceCard('checkout', s.name, s.roll_number || '', timeStr);
+  setTimeout(() => resetVerification(), 4500);
 }
 
 
 // ── Result display ────────────────────────────────────────────────────────────
+
+function _fmtNow() {
+  const n = new Date();
+  const d = n.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const t = n.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
+  return d + '  •  ' + t;
+}
+
+function _fmtServerTime(hms) {
+  if (!hms) return _fmtNow();
+  const parts = hms.split(':').map(Number);
+  const h = parts[0], m = parts[1];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12  = h % 12 || 12;
+  const min  = String(m).padStart(2, '0');
+  const d    = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return d + '  •  ' + h12 + ':' + min + ' ' + ampm;
+}
+
+function showAttendanceCard(mode, name, regNo, timeStr) {
+  const el      = document.getElementById('msg-banner');
+  const isIn    = mode === 'checkin';
+  const iconCls = isIn ? 'bi-person-check-fill' : 'bi-box-arrow-right';
+  const action  = isIn ? 'Checked In Successfully!' : 'Checked Out Successfully!';
+  const cardCls = isIn ? 'checkin-card' : 'checkout-card';
+  const regPart = regNo ? '<div class="att-card-reg">Reg No: ' + esc(regNo) + '</div>' : '';
+  el.innerHTML =
+    '<div class="att-card-icon"><i class="bi ' + iconCls + '"></i></div>' +
+    '<div class="att-card-action">' + action + '</div>' +
+    '<div class="att-card-name">' + esc(name) + '</div>' +
+    regPart +
+    '<div class="att-card-time"><i class="bi bi-clock"></i>&nbsp; ' + timeStr + '</div>';
+  el.className = 'msg-banner show ' + cardCls;
+  spinnerEl.className = 'verify-spinner';
+}
 
 function showSuccess(data) {
   state.done = true;
@@ -1687,13 +1757,9 @@ function showSuccess(data) {
     document.getElementById('count-success').textContent = successCount;
   }
   setFrameClass('verified');
-  setStatus('ok', s.name + ' — attendance marked');
-  const conf  = data.confidence || 0;
-  const sub   = (s.roll_number ? s.roll_number + ' · ' : '') + conf + '% match · ' +
-                (data.attendance_posted ? 'Posted to Zoho ✓' : 'Identity verified');
-  showBanner(esc(s.name), 'success', null, sub);
-  // Auto-advance to next student after 3 seconds
-  setTimeout(() => resetVerification(), 3000);
+  setStatus('ok', s.name + ' — checked in');
+  showAttendanceCard('checkin', s.name, s.roll_number || '', _fmtNow());
+  setTimeout(() => resetVerification(), 4500);
 }
 
 function showDuplicate(data) {
@@ -1714,14 +1780,19 @@ function showNoMatch(message) {
 // ── Banner helpers ────────────────────────────────────────────────────────────
 
 function showBanner(title, type, iconOverride, sub) {
-  const el     = document.getElementById('msg-banner');
-  const icons  = { success: 'bi-check-circle-fill', danger: 'bi-x-circle-fill', warning: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill' };
-  const iconEl = document.getElementById('msg-icon');
-  iconEl.innerHTML = '<i class="bi ' + (icons[type] || icons.info) + '"></i>';
-  document.getElementById('msg-title').textContent = title || '';
-  document.getElementById('msg-sub').textContent   = sub   || '';
+  const el = document.getElementById('msg-banner');
+  // Restore default inner structure in case an attendance card replaced it
+  el.innerHTML =
+    '<div class="msg-icon" id="msg-icon"></div>' +
+    '<div class="msg-body">' +
+      '<div class="msg-title" id="msg-title"></div>' +
+      '<div class="msg-sub"   id="msg-sub"></div>' +
+    '</div>';
+  const icons = { success: 'bi-check-circle-fill', danger: 'bi-x-circle-fill', warning: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill' };
+  document.getElementById('msg-icon').innerHTML      = '<i class="bi ' + (icons[type] || icons.info) + '"></i>';
+  document.getElementById('msg-title').textContent   = title || '';
+  document.getElementById('msg-sub').textContent     = sub   || '';
   el.className = 'msg-banner show ' + (type || 'info');
-  // Hide spinner if showing
   spinnerEl.className = 'verify-spinner';
 }
 
