@@ -199,6 +199,18 @@ def _build_scope_key(centers: list = None, env: str = "") -> str:
     return f"{env}:{base}" if env and env != "production" else base
 
 
+def _parse_scope_key(scope_key: str) -> tuple:
+    """Parse a scope_key back into (centre_ids, env). Returns (None, env) for ALL scope."""
+    key = scope_key
+    env = ""
+    # Format: "C:id1,id2"  or  "env:C:id1,id2"
+    if ":" in key and not key.startswith("C:"):
+        env, key = key.split(":", 1)
+    if key.startswith("C:"):
+        return key[2:].split(","), env
+    return None, env  # ALL scope
+
+
 def _get_cache(centers: list = None, env: str = "") -> FaceCache:
     key = _build_scope_key(centers, env)
     with _scope_caches_lock:
@@ -253,37 +265,46 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
     """Background worker: load + cache students without blocking an HTTP request."""
     key = _build_scope_key(centers, env)
     try:
-        # Skip Zoho API fetch if in-memory cache is already warm — prevents
-        # wasting 5+ API calls on every widget open when students are loaded from DB.
-        existing = _get_cache(centers, env).get()
-        if existing:
-            logger.info(f"[BG] Cache already warm ({len(existing)} students) — skipping Zoho fetch.")
-            with _preloading_lock:
-                _preloading_keys.discard(key)
-            return
-
-        # ── Detect completed batches and remove their students BEFORE loading ────
-        # Get batch IDs that were Ongoing last time we scanned
-        prev_batch_ids = set(att_queue.get_known_batch_ids(key))
+        # ── Detect completed batches FIRST — even if cache is warm ───────────────
+        # Include both Ongoing and Hold batches so we don't accidentally delete
+        # held batches here. Hold batch lifecycle is managed by the nightly scheduler.
+        prev_batches = att_queue.get_known_batches_with_status(key)  # {batch_id: status}
 
         # Get current Ongoing batch IDs (triggers Zoho API only on cache miss)
         batch_ids, _batch_names = get_batch_ids_cached(centers, env=env) if centers else (None, [])
         curr_batch_ids = set(batch_ids) if batch_ids else set()
 
-        # Batches that were Ongoing before but are no longer Ongoing = completed/changed
-        removed_batches = prev_batch_ids - curr_batch_ids
+        # Only delete batches that were tracked as Ongoing but are no longer Ongoing
+        # AND are not in Hold state. Hold batches stay in DB; nightly scheduler handles them.
+        removed_batches = set()
+        for bid, stored_status in prev_batches.items():
+            if bid in curr_batch_ids:
+                continue  # still Ongoing
+            if stored_status == "Hold":
+                continue  # Hold: keep data, nightly scheduler will handle
+            removed_batches.add(bid)
+
         if removed_batches:
             logger.warning(
-                f"[BG] {len(removed_batches)} batch(es) no longer Ongoing for scope '{key}': "
-                f"{removed_batches} — removing their students from cache."
+                f"[BG] {len(removed_batches)} batch(es) completed for scope '{key}': "
+                f"{removed_batches} — removing their students and embeddings."
             )
             for rbid in removed_batches:
-                removed = att_queue.remove_students_by_batch(rbid, key)
+                s_count, e_count = att_queue.remove_students_by_batch(rbid, key)
                 att_queue.remove_batch_status(rbid, key)
-                # Also evict from in-memory cache so it rebuilds from updated DB
-                cache = _get_cache(centers, env)
-                cache.invalidate()
-                logger.info(f"[BG] Removed {removed} student(s) from scope '{key}' for batch {rbid}.")
+                _get_cache(centers, env).invalidate()
+                logger.info(
+                    f"[BG] Removed {s_count} student(s), {e_count} embedding(s) "
+                    f"from scope '{key}' for batch {rbid}."
+                )
+
+        # Skip Zoho API fetch if in-memory cache is already warm AND no batches changed
+        existing = _get_cache(centers, env).get()
+        if existing and not removed_batches:
+            logger.info(f"[BG] Cache already warm ({len(existing)} students) — skipping Zoho fetch.")
+            with _preloading_lock:
+                _preloading_keys.discard(key)
+            return
 
         # ── Skip Zoho fetch if scope is catalogued AND no batches changed ────────
         # Cache is cold here (warm case returned above). Restore from local DB so
@@ -744,6 +765,139 @@ def _auto_checkout_worker():
 
 
 threading.Thread(target=_auto_checkout_worker, daemon=True, name="auto-checkout").start()
+
+
+# ─── Nightly batch sync / completed-batch cleanup ────────────────────────────
+def _batch_sync_worker():
+    """
+    At 02:00 IST daily, check every known scope for batch status changes.
+    Runs after Zoho Creator updates batch statuses at ~01:00 IST.
+    - Ongoing → Hold  : block attendance, keep student data + embeddings in DB
+    - Hold → Ongoing  : unblock attendance, restore students to face cache
+    - Ongoing/Hold → other : permanently delete students + embeddings
+    """
+    logger.info("Batch sync scheduler started — will run at 02:00 IST daily")
+    while True:
+        now = datetime.now(_IST)
+        target = now.replace(hour=2, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        sleep_secs = (target - now).total_seconds()
+        logger.info(
+            f"Batch sync: next run in {sleep_secs / 3600:.1f}h "
+            f"({target.strftime('%Y-%m-%d %H:%M IST')})"
+        )
+        time.sleep(sleep_secs)
+        try:
+            _run_batch_sync()
+        except Exception as e:
+            logger.error(f"[BatchSync] Nightly run failed: {e}")
+
+
+def _run_batch_sync():
+    """
+    Check all known scopes for batch status changes and act accordingly:
+      Ongoing  → still Ongoing : no action
+      Ongoing  → Hold          : update DB status, evict from face cache (data kept)
+      Hold     → Ongoing       : update DB status, invalidate cache so next load restores them
+      Hold     → still Hold    : no action
+      Ongoing/Hold → other     : permanently delete students + embeddings from DB
+    """
+    scope_keys = att_queue.get_all_batch_status_scopes()
+    if not scope_keys:
+        logger.info("[BatchSync] No scopes with tracked batches — nothing to check.")
+        return
+
+    total_deleted_batches = total_deleted_students = total_deleted_embeddings = 0
+    total_held = total_restored = 0
+    logger.info(f"[BatchSync] Checking {len(scope_keys)} scope(s)...")
+
+    for scope_key in scope_keys:
+        centres, env = _parse_scope_key(scope_key)
+        if not centres:
+            continue  # skip ALL scope
+
+        try:
+            # Evict all batch ID caches so we get fresh data from Zoho
+            with _batch_ids_lock:
+                _batch_ids_cache.pop(scope_key, None)
+            att_queue.delete_daily_cache(f"batches:{scope_key}")
+            att_queue.delete_daily_cache(f"batch_names:{scope_key}")
+
+            known = att_queue.get_known_batches_with_status(scope_key)  # {batch_id: status}
+            if not known:
+                continue
+
+            # Fetch current Ongoing and Hold batch IDs from Zoho
+            curr_ongoing_ids = set(get_batch_ids_cached(centres, env=env)[0] or [])
+            try:
+                curr_hold_ids = set(zoho.get_hold_batch_ids(centres, env=env))
+            except Exception as he:
+                # If Hold fetch fails, default safe: treat unknown as Hold (don't delete)
+                logger.error(f"[BatchSync] Failed to fetch Hold batches for '{scope_key}': {he}")
+                curr_hold_ids = set(bid for bid, s in known.items() if s == "Hold")
+
+            cache_invalidated = False
+
+            for batch_id, stored_status in known.items():
+                if batch_id in curr_ongoing_ids:
+                    if stored_status == "Hold":
+                        # Hold → Ongoing: unblock attendance
+                        att_queue.update_batch_status_field(batch_id, scope_key, "Ongoing")
+                        cache_invalidated = True
+                        total_restored += 1
+                        logger.info(
+                            f"[BatchSync] Batch {batch_id} scope '{scope_key}': "
+                            f"Hold → Ongoing — will be restored to face cache."
+                        )
+                    # else: still Ongoing — no action
+
+                elif batch_id in curr_hold_ids:
+                    if stored_status == "Ongoing":
+                        # Ongoing → Hold: block attendance, keep data
+                        att_queue.update_batch_status_field(batch_id, scope_key, "Hold")
+                        cache_invalidated = True
+                        total_held += 1
+                        logger.warning(
+                            f"[BatchSync] Batch {batch_id} scope '{scope_key}': "
+                            f"Ongoing → Hold — students blocked from attendance."
+                        )
+                    # else: still Hold — no action
+
+                else:
+                    # Not Ongoing and not Hold → completed/dropped → delete permanently
+                    s, e = att_queue.remove_students_by_batch(batch_id, scope_key)
+                    att_queue.remove_batch_status(batch_id, scope_key)
+                    total_deleted_batches += 1
+                    total_deleted_students += s
+                    total_deleted_embeddings += e
+                    cache_invalidated = True
+                    logger.warning(
+                        f"[BatchSync] Batch {batch_id} scope '{scope_key}': "
+                        f"completed — deleted {s} student(s), {e} embedding(s)."
+                    )
+
+            if cache_invalidated:
+                # Invalidate face cache so next widget open gets the correct student set.
+                # load_students_from_db() already filters out Hold-status batches via JOIN,
+                # so the rebuilt cache will be accurate without a Zoho API call.
+                with _scope_caches_lock:
+                    cache = _scope_caches.get(scope_key)
+                    if cache:
+                        cache.invalidate()
+                # Keep catalogued flag — next load restores from DB (no Zoho fetch needed)
+
+        except Exception as e:
+            logger.error(f"[BatchSync] Error for scope '{scope_key}': {e}")
+
+    logger.info(
+        f"[BatchSync] Done — deleted {total_deleted_batches} batch(es) "
+        f"({total_deleted_students} students, {total_deleted_embeddings} embeddings); "
+        f"held {total_held} batch(es); restored {total_restored} batch(es) to Ongoing."
+    )
+
+
+threading.Thread(target=_batch_sync_worker, daemon=True, name="batch-sync").start()
 
 # Rebuild FaceCaches from local DB in a background thread (non-blocking startup)
 threading.Thread(target=_restore_face_caches_from_db, daemon=True, name="db-restore").start()
