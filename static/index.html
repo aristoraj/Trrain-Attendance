@@ -359,25 +359,34 @@
     .msg-banner.checkout-card {
       flex-direction: column;
       text-align: center;
-      padding: 20px 16px 18px;
-      gap: 2px;
+      padding: clamp(8px, 2.5vw, 16px) 14px;
+      gap: 0px;
+      overflow: hidden;
+      box-sizing: border-box;
     }
     .msg-banner.checkin-card  { background: #ECFDF5; border: 2px solid #6EE7B7; }
     .msg-banner.checkout-card { background: #EFF6FF; border: 2px solid #93C5FD; }
-    .att-card-icon { font-size: 48px; line-height: 1; margin-bottom: 8px; }
+    .att-card-icon {
+      font-size: clamp(28px, 7vw, 40px);
+      line-height: 1; margin-bottom: clamp(3px, 1vw, 6px);
+    }
     .checkin-card  .att-card-icon { color: #16A34A; }
     .checkout-card .att-card-icon { color: #2563EB; }
     .att-card-action {
-      font-size: 15px; font-weight: 800;
-      letter-spacing: 0.3px; margin-bottom: 6px;
+      font-size: clamp(12px, 3.2vw, 15px); font-weight: 800;
+      letter-spacing: 0.2px; margin-bottom: clamp(2px, 0.8vw, 5px);
     }
     .checkin-card  .att-card-action { color: #065F46; }
     .checkout-card .att-card-action { color: #1E3A8A; }
-    .att-card-name { font-size: 21px; font-weight: 700; color: #111827; }
-    .att-card-reg  { font-size: 12px; color: #6B7280; margin-top: 2px; }
+    .att-card-name {
+      font-size: clamp(16px, 4.5vw, 20px);
+      font-weight: 700; color: #111827;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%;
+    }
+    .att-card-reg  { font-size: clamp(11px, 2.8vw, 13px); color: #6B7280; margin-top: 1px; }
     .att-card-time {
-      font-size: 13px; font-weight: 600; color: #374151;
-      margin-top: 10px; padding-top: 8px;
+      font-size: clamp(11px, 2.8vw, 13px); font-weight: 600; color: #374151;
+      margin-top: clamp(5px, 1.5vw, 9px); padding-top: clamp(4px, 1.2vw, 7px);
       border-top: 1px solid rgba(0,0,0,0.09);
       width: 100%;
     }
