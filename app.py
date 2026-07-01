@@ -2276,6 +2276,23 @@ def load_students():
             _scope_caches[scope_key].set(students)
         logger.info(f"SDK seeded {len(students)} student(s) into scope '{scope_key}'")
 
+        # Persist to DB so cold starts restore without needing the SDK fetch again.
+        # Also record each batch as Ongoing so the Ongoing-batch guard works next time.
+        try:
+            batch_ids_seen = list({s.get("batch_id", "") for s in students if s.get("batch_id")})
+            if batch_ids_seen:
+                att_queue.save_batch_statuses(
+                    scope_key,
+                    [{"id": bid, "name": "", "status": "Ongoing"} for bid in batch_ids_seen],
+                )
+            att_queue.save_students_to_db(scope_key, students)
+            logger.info(
+                f"SDK load-students: persisted {len(students)} student(s) to DB "
+                f"for scope '{scope_key}' ({len(batch_ids_seen)} batch(es))."
+            )
+        except Exception as _db_err:
+            logger.warning(f"SDK load-students: DB persist failed (cache still warm): {_db_err}")
+
     # ── Background encoding for students missing Face_Embedding ───────────────
     if needs_encoding:
         with _scope_encoding_lock:
@@ -2291,6 +2308,9 @@ def load_students():
                 nr             = rec.get(FIELD_STUDENT_NAME) or ""
                 sname          = nr.get("display_value", "") if isinstance(nr, dict) else str(nr or "")
                 student_number = str(rec.get(FIELD_STUDENT_NUMBER) or "")
+                batch_raw      = rec.get(FIELD_STUDENT_BATCH) or ""
+                enc_batch_id   = (batch_raw.get("ID") if isinstance(batch_raw, dict)
+                                  else str(batch_raw)).strip()
 
                 photo_url = zoho._extract_photo_url(rec, sid, sname)
                 if photo_url:
@@ -2308,6 +2328,13 @@ def load_students():
                                         "student_number": student_number,
                                         "encodings":      [enc],
                                     })
+                                    # Persist newly encoded student to DB
+                                    att_queue.upsert_students_for_batch(
+                                        scope_key, enc_batch_id,
+                                        [{"id": sid, "name": sname,
+                                          "student_number": student_number,
+                                          "batch_id": enc_batch_id}],
+                                    )
                             except Exception:
                                 pass
 
