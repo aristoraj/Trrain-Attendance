@@ -2914,7 +2914,8 @@ def admin_reauth_page():
         return make_response("ZOHO_REDIRECT_URI is not configured — set it in Render env vars.", 500)
 
     state = secrets.token_urlsafe(16)
-    session["oauth_state"] = state
+    session["oauth_state"] = state          # cookie fallback
+    att_queue.set_global_setting("oauth_state", state)  # DB fallback for multi-worker / cross-service
 
     scope = "ZohoCreator.report.ALL,ZohoCreator.form.CREATE,ZohoCreator.report.READ"
     auth_url = (
@@ -2975,7 +2976,10 @@ def auth_callback():
         return _reauth_result(False, f"Zoho authorisation denied: {_html.escape(error)}", "")
 
     state = request.args.get("state", "")
-    if not state or state != session.pop("oauth_state", None):
+    cookie_state = session.pop("oauth_state", None)
+    db_state     = att_queue.get_global_setting("oauth_state")
+    att_queue.set_global_setting("oauth_state", "")  # consume it
+    if not state or (state != cookie_state and state != db_state):
         return make_response("Invalid or expired OAuth state — please try again from /admin/reauth.", 400)
 
     code = request.args.get("code", "").strip()
