@@ -354,6 +354,34 @@
     .msg-banner.warning .msg-title { color: #92400E; }
     .msg-banner.info    .msg-title { color: #1E3A8A; }
 
+    /* ── Attendance result cards (check-in / check-out) ─────────────────────── */
+    .msg-banner.checkin-card,
+    .msg-banner.checkout-card {
+      flex-direction: column;
+      text-align: center;
+      padding: 20px 16px 18px;
+      gap: 2px;
+    }
+    .msg-banner.checkin-card  { background: #ECFDF5; border: 2px solid #6EE7B7; }
+    .msg-banner.checkout-card { background: #EFF6FF; border: 2px solid #93C5FD; }
+    .att-card-icon { font-size: 48px; line-height: 1; margin-bottom: 8px; }
+    .checkin-card  .att-card-icon { color: #16A34A; }
+    .checkout-card .att-card-icon { color: #2563EB; }
+    .att-card-action {
+      font-size: 15px; font-weight: 800;
+      letter-spacing: 0.3px; margin-bottom: 6px;
+    }
+    .checkin-card  .att-card-action { color: #065F46; }
+    .checkout-card .att-card-action { color: #1E3A8A; }
+    .att-card-name { font-size: 21px; font-weight: 700; color: #111827; }
+    .att-card-reg  { font-size: 12px; color: #6B7280; margin-top: 2px; }
+    .att-card-time {
+      font-size: 13px; font-weight: 600; color: #374151;
+      margin-top: 10px; padding-top: 8px;
+      border-top: 1px solid rgba(0,0,0,0.09);
+      width: 100%;
+    }
+
     /* ── Bottom bar ──────────────────────────────────────────────────────────── */
     .bottom-bar {
       background: var(--surface);
@@ -1669,15 +1697,48 @@ function showCheckoutSuccess(data) {
   const s = data.student;
   setFrameClass('verified');
   setStatus('ok', s.name + ' — checked out');
-  const conf    = data.confidence || 0;
-  const timeStr = data.checkout_time ? ' at ' + data.checkout_time : '';
-  const sub     = (s.roll_number ? s.roll_number + ' · ' : '') + conf + '% match · Checked Out ✓' + timeStr;
-  showBanner(esc(s.name), 'success', null, sub);
-  setTimeout(() => resetVerification(), 3000);
+  const timeStr = data.checkout_time ? _fmtServerTime(data.checkout_time) : _fmtNow();
+  showAttendanceCard('checkout', s.name, s.roll_number || '', timeStr);
+  setTimeout(() => resetVerification(), 4500);
 }
 
 
 // ── Result display ────────────────────────────────────────────────────────────
+
+function _fmtNow() {
+  const n = new Date();
+  const d = n.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const t = n.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
+  return d + '  •  ' + t;
+}
+
+function _fmtServerTime(hms) {
+  if (!hms) return _fmtNow();
+  const parts = hms.split(':').map(Number);
+  const h = parts[0], m = parts[1];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12  = h % 12 || 12;
+  const min  = String(m).padStart(2, '0');
+  const d    = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return d + '  •  ' + h12 + ':' + min + ' ' + ampm;
+}
+
+function showAttendanceCard(mode, name, regNo, timeStr) {
+  const el      = document.getElementById('msg-banner');
+  const isIn    = mode === 'checkin';
+  const iconCls = isIn ? 'bi-person-check-fill' : 'bi-box-arrow-right';
+  const action  = isIn ? 'Checked In Successfully!' : 'Checked Out Successfully!';
+  const cardCls = isIn ? 'checkin-card' : 'checkout-card';
+  const regPart = regNo ? '<div class="att-card-reg">Reg No: ' + esc(regNo) + '</div>' : '';
+  el.innerHTML =
+    '<div class="att-card-icon"><i class="bi ' + iconCls + '"></i></div>' +
+    '<div class="att-card-action">' + action + '</div>' +
+    '<div class="att-card-name">' + esc(name) + '</div>' +
+    regPart +
+    '<div class="att-card-time"><i class="bi bi-clock"></i>&nbsp; ' + timeStr + '</div>';
+  el.className = 'msg-banner show ' + cardCls;
+  spinnerEl.className = 'verify-spinner';
+}
 
 function showSuccess(data) {
   state.done = true;
@@ -1687,13 +1748,9 @@ function showSuccess(data) {
     document.getElementById('count-success').textContent = successCount;
   }
   setFrameClass('verified');
-  setStatus('ok', s.name + ' — attendance marked');
-  const conf  = data.confidence || 0;
-  const sub   = (s.roll_number ? s.roll_number + ' · ' : '') + conf + '% match · ' +
-                (data.attendance_posted ? 'Posted to Zoho ✓' : 'Identity verified');
-  showBanner(esc(s.name), 'success', null, sub);
-  // Auto-advance to next student after 3 seconds
-  setTimeout(() => resetVerification(), 3000);
+  setStatus('ok', s.name + ' — checked in');
+  showAttendanceCard('checkin', s.name, s.roll_number || '', _fmtNow());
+  setTimeout(() => resetVerification(), 4500);
 }
 
 function showDuplicate(data) {
@@ -1714,14 +1771,19 @@ function showNoMatch(message) {
 // ── Banner helpers ────────────────────────────────────────────────────────────
 
 function showBanner(title, type, iconOverride, sub) {
-  const el     = document.getElementById('msg-banner');
-  const icons  = { success: 'bi-check-circle-fill', danger: 'bi-x-circle-fill', warning: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill' };
-  const iconEl = document.getElementById('msg-icon');
-  iconEl.innerHTML = '<i class="bi ' + (icons[type] || icons.info) + '"></i>';
-  document.getElementById('msg-title').textContent = title || '';
-  document.getElementById('msg-sub').textContent   = sub   || '';
+  const el = document.getElementById('msg-banner');
+  // Restore default inner structure in case an attendance card replaced it
+  el.innerHTML =
+    '<div class="msg-icon" id="msg-icon"></div>' +
+    '<div class="msg-body">' +
+      '<div class="msg-title" id="msg-title"></div>' +
+      '<div class="msg-sub"   id="msg-sub"></div>' +
+    '</div>';
+  const icons = { success: 'bi-check-circle-fill', danger: 'bi-x-circle-fill', warning: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill' };
+  document.getElementById('msg-icon').innerHTML      = '<i class="bi ' + (icons[type] || icons.info) + '"></i>';
+  document.getElementById('msg-title').textContent   = title || '';
+  document.getElementById('msg-sub').textContent     = sub   || '';
   el.className = 'msg-banner show ' + (type || 'info');
-  // Hide spinner if showing
   spinnerEl.className = 'verify-spinner';
 }
 

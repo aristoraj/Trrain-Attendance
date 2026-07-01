@@ -512,21 +512,60 @@ class AttendanceQueue:
             ).fetchall()
         return [r["batch_id"] for r in rows]
 
-    def remove_students_by_batch(self, batch_id: str, scope_key: str) -> int:
+    def get_known_batches_with_status(self, scope_key: str) -> dict:
+        """Return {batch_id: status} for all batches tracked for this scope."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT batch_id, status FROM batch_status WHERE scope_key=?"),
+                (scope_key,)
+            ).fetchall()
+        return {r["batch_id"]: r["status"] for r in rows}
+
+    def update_batch_status_field(self, batch_id: str, scope_key: str, status: str) -> None:
+        """Update the status column of an existing batch_status row (e.g. Ongoing → Hold)."""
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            conn.execute(
+                self._q(
+                    "UPDATE batch_status SET status=?, updated_at=? "
+                    "WHERE batch_id=? AND scope_key=?"
+                ),
+                (status, now, batch_id, scope_key)
+            )
+
+    def remove_students_by_batch(self, batch_id: str, scope_key: str) -> tuple:
         """
-        Remove all student_cache rows for a batch that is no longer Ongoing.
-        The face_embeddings rows are retained (in case the student re-enrols)
-        but they become unreachable for attendance matching without a student_cache row.
+        Permanently remove all student_cache rows AND face_embeddings for a batch
+        that is no longer Ongoing. Returns (removed_students, removed_embeddings).
         """
         with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT student_id FROM student_cache WHERE batch_id=? AND scope_key=?"),
+                (batch_id, scope_key)
+            ).fetchall()
+            student_ids = [r["student_id"] for r in rows]
+
+            removed_embeddings = 0
+            if student_ids:
+                placeholders = ",".join("?" * len(student_ids))
+                cur = conn.execute(
+                    self._q(f"DELETE FROM face_embeddings WHERE student_id IN ({placeholders})"),
+                    student_ids
+                )
+                removed_embeddings = cur.rowcount if hasattr(cur, "rowcount") else len(student_ids)
+
             cur = conn.execute(
                 self._q("DELETE FROM student_cache WHERE batch_id=? AND scope_key=?"),
                 (batch_id, scope_key)
             )
-            count = cur.rowcount if hasattr(cur, "rowcount") else 0
-        if count:
-            logger.info(f"Removed {count} student(s) for completed batch {batch_id} in scope '{scope_key}'.")
-        return count
+            removed_students = cur.rowcount if hasattr(cur, "rowcount") else len(student_ids)
+
+        if removed_students:
+            logger.info(
+                f"Removed {removed_students} student(s) and {removed_embeddings} embedding(s) "
+                f"for completed batch {batch_id} in scope '{scope_key}'."
+            )
+        return removed_students, removed_embeddings
 
     def remove_batch_status(self, batch_id: str, scope_key: str) -> None:
         """Remove the batch_status row once students have been cleaned up."""
@@ -1386,6 +1425,19 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute("SELECT DISTINCT scope_key FROM student_cache").fetchall()
         return [r["scope_key"] for r in rows]
+
+    def get_all_batch_status_scopes(self) -> list:
+        """Return all distinct scope_keys that have rows in batch_status."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT DISTINCT scope_key FROM batch_status")
+            ).fetchall()
+        return [r["scope_key"] for r in rows]
+
+    def delete_daily_cache(self, key: str) -> None:
+        """Delete a single daily_cache row by key (used to force a fresh Zoho fetch)."""
+        with self._db() as conn:
+            conn.execute(self._q("DELETE FROM daily_cache WHERE cache_key=?"), (key,))
 
     def upsert_student_in_scope(self, scope_key: str, student: dict) -> None:
         """Add or update a single student row in student_cache for the given scope key."""

@@ -322,6 +322,95 @@ class ZohoCreatorAPI:
         logger.info(f"Found {len(batch_ids)} ongoing batch(es) for centers {centers}")
         return batch_ids
 
+    def get_hold_batch_ids(self, centers: list, env: str = "") -> list[str]:
+        """
+        Return Zoho record IDs of batches with status 'Hold' for the given centers.
+        Uses same pagination and fallback pattern as get_ongoing_batch_ids.
+        On any error returns empty list (conservative — unknown = don't delete).
+        """
+        url = f"{self._base_url}/report/{ZOHO_BATCHES_REPORT}"
+        criteria = f'({FIELD_BATCH_STATUS}=="Hold")'
+        center_set = set(centers)
+        batch_ids: list[str] = []
+        page_start = 1
+        criteria_failed = False
+
+        while True:
+            resp = self._request(
+                "get", url, env=env,
+                params={"criteria": criteria, "from": page_start, "limit": 200},
+                timeout=15,
+            )
+            if resp.status_code == 404:
+                if page_start == 1:
+                    criteria_failed = True
+                    logger.warning(
+                        f"Hold batch criteria returned 404 (env={env or 'production'}) "
+                        f"— will retry without criteria filtering Python-side"
+                    )
+                break
+            resp.raise_for_status()
+            records = resp.json().get("data", [])
+            if not records:
+                break
+            for rec in records:
+                center_field = rec.get(FIELD_BATCH_CENTER)
+                if isinstance(center_field, dict):
+                    c_id   = str(center_field.get("ID") or "")
+                    c_name = str(center_field.get("display_value") or "")
+                elif isinstance(center_field, str):
+                    c_id, c_name = "", center_field.strip()
+                else:
+                    c_id = c_name = ""
+                if c_id in center_set or c_name in center_set:
+                    bid = rec.get("ID") or rec.get("id")
+                    if bid:
+                        batch_ids.append(str(bid))
+            if len(records) < 200:
+                break
+            page_start += 200
+
+        if criteria_failed and not batch_ids:
+            logger.info(
+                f"Retrying Hold batches without criteria, filtering Python-side "
+                f"(env={env or 'production'})"
+            )
+            page_start = 1
+            while True:
+                resp = self._request(
+                    "get", url, env=env,
+                    params={"from": page_start, "limit": 200},
+                    timeout=15,
+                )
+                if resp.status_code == 404:
+                    break
+                resp.raise_for_status()
+                records = resp.json().get("data", [])
+                if not records:
+                    break
+                for rec in records:
+                    status = str(rec.get(FIELD_BATCH_STATUS) or "").strip().lower()
+                    if status != "hold":
+                        continue
+                    center_field = rec.get(FIELD_BATCH_CENTER)
+                    if isinstance(center_field, dict):
+                        c_id   = str(center_field.get("ID") or "")
+                        c_name = str(center_field.get("display_value") or "")
+                    elif isinstance(center_field, str):
+                        c_id, c_name = "", center_field.strip()
+                    else:
+                        c_id = c_name = ""
+                    if c_id in center_set or c_name in center_set:
+                        bid = rec.get("ID") or rec.get("id")
+                        if bid and str(bid) not in batch_ids:
+                            batch_ids.append(str(bid))
+                if len(records) < 200:
+                    break
+                page_start += 200
+
+        logger.info(f"Found {len(batch_ids)} Hold batch(es) for centers {centers}")
+        return batch_ids
+
     # ─── Students ──────────────────────────────────────────────────────────────
 
     def get_students(self, centers: list = None, batch_ids: list = None, env: str = "",
