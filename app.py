@@ -1026,17 +1026,16 @@ threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-s
 def _run_meta_migration() -> None:
     """
     One-time startup migration: backfill meta_json (financial_year_id, centre_id, batch_id)
-    for all existing student_cache rows and populate centre_meta with zone IDs.
+    for existing student_cache rows and populate centre_meta with zone IDs.
 
-    Strategy: invalidate all "catalogued" flags so the next preload fetches fresh Zoho data
-    (which carries the lookup IDs we need), then trigger a fresh load per scope. Marks done
-    in global_settings so it never runs again on subsequent restarts.
+    Only processes Ongoing batch students (same filter as normal load) — not all students
+    in the centre. Marks done in global_settings so it never runs again.
     """
-    MIGRATION_KEY = "meta_migration_done_v1"
+    MIGRATION_KEY = "meta_migration_done_v2"
     if att_queue.get_global_setting(MIGRATION_KEY):
         return
 
-    logger.info("[MetaMigration] Starting one-time meta_json backfill...")
+    logger.info("[MetaMigration] Starting one-time meta_json backfill (Ongoing batches only)...")
     try:
         scope_keys = att_queue.get_all_scope_keys()
         if not scope_keys:
@@ -1044,30 +1043,35 @@ def _run_meta_migration() -> None:
             logger.info("[MetaMigration] No scopes found — marking done.")
             return
 
-        # 1. Invalidate catalogued flags so next load re-fetches Zoho data
-        for sk in scope_keys:
-            att_queue.clear_daily_cache(key_prefix=f"catalogued:{sk}")
-            logger.info(f"[MetaMigration] Invalidated catalogued flag for scope '{sk}'")
-
-        # 2. Trigger a fresh load per scope (fetches Zoho, saves meta_json + embeddings)
         for sk in scope_keys:
             try:
                 centre_ids, env = _parse_scope_key(sk)
                 if not centre_ids:
                     continue
+
                 # Sync zone data for centres in this scope
                 zoho.sync_centres_meta(centre_ids, env=env)
-                # Fresh load: fetches from Zoho, saves meta_json to student_cache
+
+                # Fetch only Ongoing batch IDs — same as normal load flow
+                batch_ids = zoho.get_ongoing_batch_ids(centre_ids, env=env)
+                if not batch_ids:
+                    logger.info(f"[MetaMigration] Scope '{sk}': no Ongoing batches — skipping student fetch")
+                    continue
+
+                # Invalidate catalogued flag so next widget open re-fetches fresh
+                att_queue.clear_daily_cache(key_prefix=f"catalogued:{sk}")
+
                 no_photo: list = []
-                students = zoho.get_students(centers=centre_ids, env=env,
-                                             no_photo_out=no_photo, fresh_load=True)
+                students = zoho.get_students(centers=centre_ids, batch_ids=batch_ids,
+                                             env=env, no_photo_out=no_photo, fresh_load=True)
                 if students:
                     att_queue.save_students_to_db(sk, students)
                 if no_photo:
                     att_queue.save_no_photo_students(sk, no_photo)
                 logger.info(
-                    f"[MetaMigration] Refreshed scope '{sk}': "
-                    f"{len(students or [])} with embedding, {len(no_photo)} no-photo"
+                    f"[MetaMigration] Scope '{sk}': "
+                    f"{len(students or [])} with embedding, {len(no_photo)} no-photo "
+                    f"({len(batch_ids)} Ongoing batch(es))"
                 )
             except Exception as _se:
                 logger.warning(f"[MetaMigration] Scope '{sk}' failed: {_se}")
