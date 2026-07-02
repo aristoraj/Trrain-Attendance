@@ -1066,7 +1066,7 @@ def _run_meta_migration() -> None:
     Only processes Ongoing batch students (same filter as normal load) — not all students
     in the centre. Marks done in global_settings so it never runs again.
     """
-    MIGRATION_KEY = "meta_migration_done_v2"
+    MIGRATION_KEY = "meta_migration_done_v3"
     if att_queue.get_global_setting(MIGRATION_KEY):
         return
 
@@ -1075,7 +1075,7 @@ def _run_meta_migration() -> None:
         scope_keys = att_queue.get_all_scope_keys()
         if not scope_keys:
             att_queue.set_global_setting(MIGRATION_KEY, "done")
-            logger.info("[MetaMigration] No scopes found — marking done.")
+            logger.info("[MetaMigration] No scopes found — marking done (v3).")
             return
 
         for sk in scope_keys:

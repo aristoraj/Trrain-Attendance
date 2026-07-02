@@ -659,8 +659,15 @@ class ZohoCreatorAPI:
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
         # Extract lookup IDs for the new attendance form
-        fy_raw = record.get(FIELD_STUDENT_FY) or {}
-        financial_year_id = str(fy_raw.get("ID") or "") if isinstance(fy_raw, dict) else ""
+        fy_raw = record.get(FIELD_STUDENT_FY)
+        logger.info(
+            f"[meta] student {student_id} '{name}' — "
+            f"FY raw: {fy_raw!r} | type: {type(fy_raw).__name__}"
+        )
+        if isinstance(fy_raw, dict):
+            financial_year_id = str(fy_raw.get("ID") or "")
+        else:
+            financial_year_id = ""
         centre_raw = record.get(FIELD_STUDENT_CENTER) or {}
         centre_id = str(centre_raw.get("ID") or "") if isinstance(centre_raw, dict) else ""
         batch_raw = record.get(FIELD_STUDENT_BATCH) or {}
