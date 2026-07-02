@@ -49,7 +49,6 @@ FIELD_STUDENT_EMBEDDING = os.environ.get("FIELD_STUDENT_EMBEDDING", "Face_Embedd
 FIELD_ATT_TRAINEE_REG  = os.environ.get("FIELD_ATT_TRAINEE_REG",  "Trainee_Regstration") # lookup
 FIELD_ATT_DATE         = os.environ.get("FIELD_ATT_DATE",         "Attendance_Date")
 FIELD_ATT_STATUS       = os.environ.get("FIELD_ATT_STATUS",       "Attendance_Status")   # dropdown: Present
-FIELD_ATT_FINANCIAL_YR = os.environ.get("FIELD_ATT_FINANCIAL_YR", "Financial_Year")       # lookup
 FIELD_ATT_ZONE         = os.environ.get("FIELD_ATT_ZONE",         "Zone")                 # lookup
 FIELD_ATT_CENTRE       = os.environ.get("FIELD_ATT_CENTRE",       "Centres")              # lookup
 FIELD_ATT_BATCH        = os.environ.get("FIELD_ATT_BATCH",        "Batches")              # lookup
@@ -105,9 +104,6 @@ FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Centre_Na
 # Field link name of the Center lookup in the student database
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 
-# ─── Financial Year Master (lookup table populated from Zoho at startup) ─────
-ZOHO_FY_MASTER_REPORT = os.environ.get("ZOHO_FY_MASTER_REPORT", "All_Financial_Year_Masters")
-FIELD_FY_STRING       = os.environ.get("FIELD_FY_STRING",        "Financial_Year")
 
 # ─── User Management (feature-flag gate) ─────────────────────────────────────
 # Report that holds one record per Zoho user with feature-flag fields.

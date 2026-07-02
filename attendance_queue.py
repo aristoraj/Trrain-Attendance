@@ -942,7 +942,8 @@ class AttendanceQueue:
             self._create_webhook_sync_log_table(conn)
             self._create_checkin_state_table(conn)
             self._create_global_settings_table(conn)
-            self._create_financial_year_master_table(conn)
+            # Drop financial_year_master if it exists from a prior deployment
+            conn.execute("DROP TABLE IF EXISTS financial_year_master")
 
     def _rebuild_dedup_from_db(self):
         today = datetime.now(_IST).strftime("%d-%b-%Y")
@@ -1552,51 +1553,6 @@ class AttendanceQueue:
                     VALUES (?, ?, ?)
                 """), (key, value, now))
 
-    # ── Financial Year Master ─────────────────────────────────────────────────
-
-    def _create_financial_year_master_table(self, conn):
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS financial_year_master (
-                fy_id          TEXT PRIMARY KEY,
-                financial_year TEXT NOT NULL,
-                updated_at     TEXT NOT NULL
-            )
-        """)
-
-    def upsert_financial_year(self, fy_id: str, financial_year: str) -> None:
-        now = datetime.now().isoformat()
-        with self._db() as conn:
-            if self._is_postgres:
-                conn.execute(self._q("""
-                    INSERT INTO financial_year_master (fy_id, financial_year, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(fy_id) DO UPDATE
-                        SET financial_year=excluded.financial_year,
-                            updated_at=excluded.updated_at
-                """), (fy_id, financial_year, now))
-            else:
-                conn.execute(self._q("""
-                    INSERT OR REPLACE INTO financial_year_master (fy_id, financial_year, updated_at)
-                    VALUES (?, ?, ?)
-                """), (fy_id, financial_year, now))
-
-    def get_financial_year_id(self, financial_year_str: str) -> str:
-        """Return the Zoho record ID for a given FY string, or '' if not found."""
-        with self._db() as conn:
-            row = conn.execute(
-                self._q("SELECT fy_id FROM financial_year_master WHERE financial_year=?"),
-                (financial_year_str,)
-            ).fetchone()
-        return row["fy_id"] if row else ""
-
-    def get_all_financial_years(self) -> list:
-        """Return all rows as list of dicts with fy_id and financial_year."""
-        with self._db() as conn:
-            rows = conn.execute(
-                self._q("SELECT fy_id, financial_year FROM financial_year_master ORDER BY financial_year")
-            ).fetchall()
-        return [{"fy_id": r["fy_id"], "financial_year": r["financial_year"]} for r in rows]
-
     # ── Centre meta (zone IDs for attendance form) ────────────────────────────
 
     def upsert_centre_meta(self, centre_id: str, zone_id: str, zone_name: str) -> None:
@@ -1632,7 +1588,7 @@ class AttendanceQueue:
         return ("", "")
 
     def get_student_meta(self, student_id: str, scope_key: str) -> dict:
-        """Return parsed meta_json dict for a student (financial_year, centre_id, batch_id)."""
+        """Return parsed meta_json dict for a student (centre_id, batch_id)."""
         import json as _json
         with self._db() as conn:
             row = conn.execute(
@@ -1880,11 +1836,6 @@ class AttendanceQueue:
             capture_jpeg  = row["capture_jpeg"]  if "capture_jpeg"  in row.keys() else None
             # Fetch lookup IDs from student_cache for new attendance form
             student_meta = self.get_student_meta_any_scope(student_id)
-            fy_str = student_meta.pop("financial_year", "")
-            if fy_str:
-                fy_id = self.get_financial_year_id(fy_str)
-                if fy_id:
-                    student_meta["financial_year_id"] = fy_id
             logger.info(
                 f"Queue #{rec_id}: posting {name} | "
                 f"checkin_time='{checkin_time or 'NOT SET'}' | "

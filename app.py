@@ -47,7 +47,7 @@ from config import (
     ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
     FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
-    FIELD_ATT_FINANCIAL_YR, FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
+    FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
     FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE,
     FIELD_CHECK_IN, FIELD_CHECK_OUT,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
@@ -1058,25 +1058,6 @@ def _recover_interrupted_syncs() -> None:
 threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-sync-recovery").start()
 
 
-def _populate_financial_year_master() -> None:
-    """
-    Fetch all records from the Financial_Year_Master Zoho form at startup and
-    persist them to the local financial_year_master table. Tries production first,
-    falls back to development (the report may not be deployed to production).
-    """
-    try:
-        fy_records = zoho.fetch_financial_years(env="")
-        if not fy_records:
-            logger.info("[FYMaster] Production returned 0 records — retrying with development env.")
-            fy_records = zoho.fetch_financial_years(env="development")
-        for row in fy_records:
-            att_queue.upsert_financial_year(row["fy_id"], row["financial_year"])
-        logger.info(f"[FYMaster] Populated {len(fy_records)} financial year record(s).")
-    except Exception as e:
-        logger.error(f"[FYMaster] Failed to populate financial_year_master: {e}")
-
-
-threading.Thread(target=_populate_financial_year_master, daemon=True, name="fy-master-load").start()
 
 
 def _warmup_face_model():
@@ -2244,7 +2225,6 @@ def api_config():
             "att_trainee_reg":    FIELD_ATT_TRAINEE_REG,
             "att_date":           FIELD_ATT_DATE,
             "att_status":         FIELD_ATT_STATUS,
-            "att_financial_yr":   FIELD_ATT_FINANCIAL_YR,
             "att_zone":           FIELD_ATT_ZONE,
             "att_centre":         FIELD_ATT_CENTRE,
             "att_batch":          FIELD_ATT_BATCH,

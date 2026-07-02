@@ -22,9 +22,8 @@ from config import (
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
-    ZOHO_FY_MASTER_REPORT, FIELD_FY_STRING,
     FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
-    FIELD_ATT_FINANCIAL_YR, FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
+    FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
     FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE, FIELD_ATT_CAPTURE,
     FIELD_CHECK_IN, FIELD_CHECK_OUT,
 )
@@ -639,21 +638,12 @@ class ZohoCreatorAPI:
 
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
-        # Extract lookup IDs and FY string for the attendance form
-        fy_raw = record.get("Financial_Year")
-        if isinstance(fy_raw, dict):
-            financial_year = str(fy_raw.get("display_value") or "").strip()
-        elif isinstance(fy_raw, str):
-            financial_year = fy_raw.strip()
-        else:
-            financial_year = ""
+        # Extract lookup IDs for the attendance form
         centre_raw = record.get(FIELD_STUDENT_CENTER) or {}
         centre_id = str(centre_raw.get("ID") or "") if isinstance(centre_raw, dict) else ""
         batch_raw = record.get(FIELD_STUDENT_BATCH) or {}
         batch_id  = str(batch_raw.get("ID") or batch_raw) if isinstance(batch_raw, dict) else str(batch_raw or "")
         _meta: dict = {}
-        if financial_year:
-            _meta["financial_year"] = financial_year
         if centre_id:
             _meta["centre_id"] = centre_id
         if batch_id:
@@ -1000,7 +990,7 @@ class ZohoCreatorAPI:
         env:               str = "",
         checkin_time:      str = None,
         action_field:      str = "",    # kept for backward compat; new form has no Action_field
-        meta:              dict = None, # {financial_year_id, centre_id, batch_id}
+        meta:              dict = None, # {centre_id, batch_id}
     ) -> dict:
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
@@ -1018,12 +1008,8 @@ class ZohoCreatorAPI:
             data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
 
         if meta:
-            if meta.get("financial_year_id"):
-                data_payload[FIELD_ATT_FINANCIAL_YR] = meta["financial_year_id"]
             if meta.get("centre_id"):
                 data_payload[FIELD_ATT_CENTRE] = meta["centre_id"]
-            if meta.get("zone_id"):
-                data_payload[FIELD_ATT_ZONE] = meta["zone_id"]
             if meta.get("batch_id"):
                 data_payload[FIELD_ATT_BATCH] = meta["batch_id"]
 
@@ -1370,38 +1356,6 @@ class ZohoCreatorAPI:
             f"updated={updated}, failed={failed}, skipped={skipped}"
         )
         return {"updated": updated, "failed": failed, "skipped": skipped}
-
-    # ─── Financial Year Master ────────────────────────────────────────────────
-
-    def fetch_financial_years(self, env: str = "") -> list:
-        """Fetch all records from Financial_Year_Master and return [{fy_id, financial_year}]."""
-        url = f"{self._base_url}/report/{ZOHO_FY_MASTER_REPORT}"
-        results = []
-        page = 1
-        while True:
-            try:
-                resp = self._request(
-                    "get", url, env=env,
-                    params={"limit": 200, "page": page},
-                    timeout=15,
-                )
-                resp.raise_for_status()
-                data = resp.json().get("data", [])
-                if not data:
-                    break
-                for rec in data:
-                    fy_id = str(rec.get("ID") or "").strip()
-                    fy_str = str(rec.get(FIELD_FY_STRING) or "").strip()
-                    if fy_id and fy_str:
-                        results.append({"fy_id": fy_id, "financial_year": fy_str})
-                if len(data) < 200:
-                    break
-                page += 1
-            except Exception as e:
-                logger.warning(f"fetch_financial_years: failed on page {page}: {e}")
-                break
-        logger.info(f"fetch_financial_years: loaded {len(results)} FY records")
-        return results
 
     # ─── Utility ───────────────────────────────────────────────────────────────
 
