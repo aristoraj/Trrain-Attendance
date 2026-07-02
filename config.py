@@ -106,7 +106,7 @@ FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Centre_Na
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 
 # ─── Financial Year Master (lookup table populated from Zoho at startup) ─────
-ZOHO_FY_MASTER_REPORT = os.environ.get("ZOHO_FY_MASTER_REPORT", "Financial_Year_Master")
+ZOHO_FY_MASTER_REPORT = os.environ.get("ZOHO_FY_MASTER_REPORT", "All_Financial_Year_Masters")
 FIELD_FY_STRING       = os.environ.get("FIELD_FY_STRING",        "Financial_Year")
 
 # ─── User Management (feature-flag gate) ─────────────────────────────────────
