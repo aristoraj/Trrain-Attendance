@@ -951,6 +951,41 @@ def _run_batch_sync():
                         f"completed — deleted {s} student(s), {e} embedding(s)."
                     )
 
+            # ── New Ongoing batches (not yet tracked) ────────────────────────
+            # Any batch in curr_ongoing_ids that isn't in `known` is brand new.
+            # Fetch its students now so they're in DB with full meta_json before
+            # the centre opens the widget in the morning.
+            new_batch_ids = [bid for bid in curr_ongoing_ids if bid not in known]
+            if new_batch_ids:
+                logger.info(
+                    f"[BatchSync] {len(new_batch_ids)} new Ongoing batch(es) for scope "
+                    f"'{scope_key}': {new_batch_ids} — fetching students now"
+                )
+                att_queue.save_batch_statuses(
+                    scope_key,
+                    [{"id": bid, "name": "", "status": "Ongoing"} for bid in new_batch_ids],
+                )
+                for bid in new_batch_ids:
+                    try:
+                        no_photo: list = []
+                        new_students = zoho.get_students(
+                            centers=centres, batch_ids=[bid], env=env,
+                            no_photo_out=no_photo, fresh_load=True,
+                        )
+                        if new_students:
+                            att_queue.upsert_students_for_batch(scope_key, bid, new_students)
+                            cache_invalidated = True
+                            logger.info(
+                                f"[BatchSync] Batch {bid}: loaded {len(new_students)} "
+                                f"student(s) with meta_json into DB."
+                            )
+                        if no_photo:
+                            att_queue.save_no_photo_students(scope_key, no_photo)
+                    except Exception as _be:
+                        logger.warning(
+                            f"[BatchSync] Failed to load students for new batch {bid}: {_be}"
+                        )
+
             if cache_invalidated:
                 # Invalidate face cache so next widget open gets the correct student set.
                 # load_students_from_db() already filters out Hold-status batches via JOIN,
