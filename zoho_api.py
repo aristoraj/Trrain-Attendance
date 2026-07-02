@@ -1394,8 +1394,11 @@ class ZohoCreatorAPI:
                 resp = self._request("get", url, env=attempt_env, params={"limit": 200}, timeout=10)
                 resp.raise_for_status()
                 body = resp.json()
-                logger.info(f"_fetch_zones_map: raw response keys={list(body.keys())} code={body.get('code')} len(data)={len(body.get('data') or [])}")
-                for rec in (body.get("data") or []):
+                data = body.get("data") or []
+                logger.info(f"_fetch_zones_map: raw response keys={list(body.keys())} code={body.get('code')} len(data)={len(data)}")
+                if data:
+                    logger.info(f"_fetch_zones_map: first record sample = {data[0]}")
+                for rec in data:
                     zone_id   = str(rec.get("ID") or "").strip()
                     zone_name = str(rec.get(FIELD_ZONE_NAME) or "").strip()
                     if zone_id and zone_name:
