@@ -765,6 +765,8 @@ def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> N
             f"[BatchWebhook] Syncing batch {batch_id} for scope '{scope_key}' "
             f"(env={env or 'production'})..."
         )
+        # Ensure zone data is current for these centres before saving students
+        zoho.sync_centres_meta(centers, env=env)
         no_photo: list = []
         students = zoho.get_students(
             centers=centers, batch_ids=[batch_id], env=env,
@@ -965,6 +967,8 @@ def _run_batch_sync():
                     scope_key,
                     [{"id": bid, "name": "", "status": "Ongoing"} for bid in new_batch_ids],
                 )
+                # Ensure zone data is current before loading students for new batches
+                zoho.sync_centres_meta(centres, env=env)
                 for bid in new_batch_ids:
                     try:
                         no_photo: list = []
