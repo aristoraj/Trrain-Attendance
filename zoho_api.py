@@ -1435,27 +1435,37 @@ class ZohoCreatorAPI:
         url_base = f"{self._base_url}/report/{ZOHO_CENTRES_REPORT}"
         resolved = 0
         for cid in pending:
-            try:
-                resp = self._request("get", f"{url_base}/{cid}", env=env, timeout=10)
-                resp.raise_for_status()
-                raw = resp.json().get("data", {})
-                rec  = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
-                zone_raw  = rec.get(FIELD_CENTRE_ZONE)
-                zone_name = zone_raw.strip() if isinstance(zone_raw, str) else (
-                    str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+            rec = {}
+            envs_to_try = [env, "development"] if env != "development" else ["development"]
+            for attempt_env in envs_to_try:
+                try:
+                    resp = self._request("get", f"{url_base}/{cid}", env=attempt_env, timeout=10)
+                    if resp.status_code == 404:
+                        logger.debug(f"sync_centres_meta: centre {cid} not found in env='{attempt_env or 'production'}' — trying next")
+                        continue
+                    resp.raise_for_status()
+                    raw = resp.json().get("data", {})
+                    rec = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
+                    break
+                except Exception as e:
+                    logger.warning(f"sync_centres_meta: failed for centre {cid} (env='{attempt_env or 'production'}'): {e}")
+            if not rec:
+                logger.warning(f"sync_centres_meta: centre {cid} not found in any env — skipping")
+                continue
+            zone_raw  = rec.get(FIELD_CENTRE_ZONE)
+            zone_name = zone_raw.strip() if isinstance(zone_raw, str) else (
+                str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+            )
+            zone_id = zones_map.get(zone_name, "")
+            if zone_id:
+                self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
+                resolved += 1
+                logger.info(f"sync_centres_meta: centre {cid} → zone='{zone_name}' id={zone_id}")
+            else:
+                logger.warning(
+                    f"sync_centres_meta: centre {cid} zone '{zone_name}' not in zones_map "
+                    f"(available: {list(zones_map.keys())})"
                 )
-                zone_id = zones_map.get(zone_name, "")
-                if zone_id:
-                    self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
-                    resolved += 1
-                    logger.info(f"sync_centres_meta: centre {cid} → zone='{zone_name}' id={zone_id}")
-                else:
-                    logger.warning(
-                        f"sync_centres_meta: centre {cid} zone '{zone_name}' not in zones_map "
-                        f"(available: {list(zones_map.keys())})"
-                    )
-            except Exception as e:
-                logger.warning(f"sync_centres_meta: failed for centre {cid}: {e}")
 
         logger.info(f"sync_centres_meta: resolved {resolved}/{len(pending)} centre(s)")
 
