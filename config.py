@@ -102,15 +102,12 @@ ZOHO_CENTRES_REPORT      = os.environ.get("ZOHO_CENTRES_REPORT",      "All_Centr
 FIELD_CENTRE_LOGIN_EMAIL = os.environ.get("FIELD_CENTRE_LOGIN_EMAIL", "Email")
 # Field link name of the centre display name in the Centres form
 FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Centre_Name")
-# Field link name of the Zone lookup in the Centres form (used for attendance Zone lookup)
-FIELD_CENTRE_ZONE        = os.environ.get("FIELD_CENTRE_ZONE",        "Select_Zone")
-# Zones report and name field (used to resolve zone name → zone record ID)
-ZOHO_ZONES_REPORT        = os.environ.get("ZOHO_ZONES_REPORT",        "All_Zones")
-FIELD_ZONE_NAME          = os.environ.get("FIELD_ZONE_NAME",           "Name")
 # Field link name of the Center lookup in the student database
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
-# Field link name of the Financial Year lookup in the student database
-FIELD_STUDENT_FY     = os.environ.get("FIELD_STUDENT_FY",     "Financial_Year")
+
+# ─── Financial Year Master (lookup table populated from Zoho at startup) ─────
+ZOHO_FY_MASTER_REPORT = os.environ.get("ZOHO_FY_MASTER_REPORT", "Financial_Year_Master")
+FIELD_FY_STRING       = os.environ.get("FIELD_FY_STRING",        "Financial_Year")
 
 # ─── User Management (feature-flag gate) ─────────────────────────────────────
 # Report that holds one record per Zoho user with feature-flag fields.

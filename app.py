@@ -765,8 +765,6 @@ def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> N
             f"[BatchWebhook] Syncing batch {batch_id} for scope '{scope_key}' "
             f"(env={env or 'production'})..."
         )
-        # Ensure zone data is current for these centres before saving students
-        zoho.sync_centres_meta(centers, env=env)
         no_photo: list = []
         students = zoho.get_students(
             centers=centers, batch_ids=[batch_id], env=env,
@@ -967,8 +965,6 @@ def _run_batch_sync():
                     scope_key,
                     [{"id": bid, "name": "", "status": "Ongoing"} for bid in new_batch_ids],
                 )
-                # Ensure zone data is current before loading students for new batches
-                zoho.sync_centres_meta(centres, env=env)
                 for bid in new_batch_ids:
                     try:
                         no_photo: list = []
@@ -1062,66 +1058,22 @@ def _recover_interrupted_syncs() -> None:
 threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-sync-recovery").start()
 
 
-def _run_meta_migration() -> None:
+def _populate_financial_year_master() -> None:
     """
-    One-time startup migration: backfill meta_json (financial_year_id, centre_id, batch_id)
-    for existing student_cache rows and populate centre_meta with zone IDs.
-
-    Only processes Ongoing batch students (same filter as normal load) — not all students
-    in the centre. Marks done in global_settings so it never runs again.
+    Fetch all records from the Financial_Year_Master Zoho form at startup and
+    persist them to the local financial_year_master table. This is a lightweight
+    read (one small report) and replaces the old meta-migration approach.
     """
-    MIGRATION_KEY = "meta_migration_done_v3"
-    if att_queue.get_global_setting(MIGRATION_KEY):
-        return
-
-    logger.info("[MetaMigration] Starting one-time meta_json backfill (Ongoing batches only)...")
     try:
-        scope_keys = att_queue.get_all_scope_keys()
-        if not scope_keys:
-            att_queue.set_global_setting(MIGRATION_KEY, "done")
-            logger.info("[MetaMigration] No scopes found — marking done (v3).")
-            return
-
-        for sk in scope_keys:
-            try:
-                centre_ids, env = _parse_scope_key(sk)
-                if not centre_ids:
-                    continue
-
-                # Sync zone data for centres in this scope
-                zoho.sync_centres_meta(centre_ids, env=env)
-
-                # Fetch only Ongoing batch IDs — same as normal load flow
-                batch_ids = zoho.get_ongoing_batch_ids(centre_ids, env=env)
-                if not batch_ids:
-                    logger.info(f"[MetaMigration] Scope '{sk}': no Ongoing batches — skipping student fetch")
-                    continue
-
-                # Invalidate catalogued flag so next widget open re-fetches fresh
-                att_queue.clear_daily_cache(key_prefix=f"catalogued:{sk}")
-
-                no_photo: list = []
-                students = zoho.get_students(centers=centre_ids, batch_ids=batch_ids,
-                                             env=env, no_photo_out=no_photo, fresh_load=True)
-                if students:
-                    att_queue.save_students_to_db(sk, students)
-                if no_photo:
-                    att_queue.save_no_photo_students(sk, no_photo)
-                logger.info(
-                    f"[MetaMigration] Scope '{sk}': "
-                    f"{len(students or [])} with embedding, {len(no_photo)} no-photo "
-                    f"({len(batch_ids)} Ongoing batch(es))"
-                )
-            except Exception as _se:
-                logger.warning(f"[MetaMigration] Scope '{sk}' failed: {_se}")
-
-        att_queue.set_global_setting(MIGRATION_KEY, "done")
-        logger.info("[MetaMigration] Completed — meta_json backfill done.")
+        fy_records = zoho.fetch_financial_years(env="")
+        for row in fy_records:
+            att_queue.upsert_financial_year(row["fy_id"], row["financial_year"])
+        logger.info(f"[FYMaster] Populated {len(fy_records)} financial year record(s).")
     except Exception as e:
-        logger.error(f"[MetaMigration] Migration error: {e}")
+        logger.error(f"[FYMaster] Failed to populate financial_year_master: {e}")
 
 
-threading.Thread(target=_run_meta_migration, daemon=True, name="meta-migration").start()
+threading.Thread(target=_populate_financial_year_master, daemon=True, name="fy-master-load").start()
 
 
 def _warmup_face_model():
