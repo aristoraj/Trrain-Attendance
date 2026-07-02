@@ -1005,6 +1005,15 @@ def _run_batch_sync():
         f"held {total_held} batch(es); restored {total_restored} batch(es) to Ongoing."
     )
 
+    # Sync zone data for any new or previously-unsynced centres
+    try:
+        centre_ids = att_queue.get_ongoing_centre_ids()
+        if centre_ids:
+            logger.info(f"[BatchSync] Syncing zone data for {len(centre_ids)} ongoing centre(s)...")
+            zoho.sync_centres_meta(centre_ids, env="")
+    except Exception as e:
+        logger.error(f"[BatchSync] Zone sync failed: {e}")
+
 
 threading.Thread(target=_batch_sync_worker, daemon=True, name="batch-sync").start()
 
