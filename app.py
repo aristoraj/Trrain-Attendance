@@ -1061,11 +1061,14 @@ threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-s
 def _populate_financial_year_master() -> None:
     """
     Fetch all records from the Financial_Year_Master Zoho form at startup and
-    persist them to the local financial_year_master table. This is a lightweight
-    read (one small report) and replaces the old meta-migration approach.
+    persist them to the local financial_year_master table. Tries production first,
+    falls back to development (the report may not be deployed to production).
     """
     try:
         fy_records = zoho.fetch_financial_years(env="")
+        if not fy_records:
+            logger.info("[FYMaster] Production returned 0 records — retrying with development env.")
+            fy_records = zoho.fetch_financial_years(env="development")
         for row in fy_records:
             att_queue.upsert_financial_year(row["fy_id"], row["financial_year"])
         logger.info(f"[FYMaster] Populated {len(fy_records)} financial year record(s).")
