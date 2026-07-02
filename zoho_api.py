@@ -1385,20 +1385,25 @@ class ZohoCreatorAPI:
     # ─── Zone helpers ─────────────────────────────────────────────────────────
 
     def _fetch_zones_map(self, env: str = "") -> dict:
-        """Fetch All_Zones once and return {zone_name: zone_id}."""
+        """Fetch All_Zones once and return {zone_name: zone_id}.
+        Falls back to development env if production returns nothing."""
         url = f"{self._base_url}/report/{ZOHO_ZONES_REPORT}"
         zones: dict = {}
-        try:
-            resp = self._request("get", url, env=env, params={"limit": 200}, timeout=10)
-            resp.raise_for_status()
-            for rec in resp.json().get("data", []):
-                zone_id   = str(rec.get("ID") or "").strip()
-                zone_name = str(rec.get(FIELD_ZONE_NAME) or "").strip()
-                if zone_id and zone_name:
-                    zones[zone_name] = zone_id
-            logger.info(f"_fetch_zones_map: {len(zones)} zone(s) loaded")
-        except Exception as e:
-            logger.warning(f"_fetch_zones_map: failed: {e}")
+        for attempt_env in ([env, "development"] if env != "development" else [env]):
+            try:
+                resp = self._request("get", url, env=attempt_env, params={"limit": 200}, timeout=10)
+                resp.raise_for_status()
+                for rec in resp.json().get("data", []):
+                    zone_id   = str(rec.get("ID") or "").strip()
+                    zone_name = str(rec.get(FIELD_ZONE_NAME) or "").strip()
+                    if zone_id and zone_name:
+                        zones[zone_name] = zone_id
+                if zones:
+                    logger.info(f"_fetch_zones_map: {len(zones)} zone(s) loaded (env='{attempt_env or 'production'}')")
+                    break
+                logger.info(f"_fetch_zones_map: 0 zones from env='{attempt_env or 'production'}' — trying next")
+            except Exception as e:
+                logger.warning(f"_fetch_zones_map: failed (env='{attempt_env or 'production'}'): {e}")
         return zones
 
     def sync_centres_meta(self, centre_ids: list, env: str = "") -> None:
