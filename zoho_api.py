@@ -19,11 +19,12 @@ from config import (
     ZOHO_BATCHES_REPORT, FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
     FIELD_BATCH_DISPLAY, FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
     ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
+    FIELD_CENTRE_ZONE, ZOHO_ZONES_REPORT, FIELD_ZONE_NAME,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
     FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
-    FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
+    FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
     FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE, FIELD_ATT_CAPTURE,
     FIELD_CHECK_IN, FIELD_CHECK_OUT,
 )
@@ -145,6 +146,8 @@ class ZohoCreatorAPI:
                 return []
 
             centers: list[str] = []
+            zone_names: dict = {}  # {rec_id: zone_name} collected for batch resolution
+
             for rec in records:
                 # Zoho system record ID (matches student Centre_Name lookup ID)
                 rec_id = rec.get("ID") or rec.get("id")
@@ -158,6 +161,26 @@ class ZohoCreatorAPI:
                 name = str(name_raw).strip() if name_raw else ""
                 if name:
                     centers.append(name)
+
+                # Collect zone name — Select_Zone returns a plain string in All_Centres
+                if rec_id and self._embedding_cache:
+                    zone_raw  = rec.get(FIELD_CENTRE_ZONE)
+                    zone_name = zone_raw.strip() if isinstance(zone_raw, str) else (
+                        str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+                    )
+                    if zone_name:
+                        zone_names[str(rec_id)] = zone_name
+
+            # Resolve zone names → IDs in one zones fetch (only if needed)
+            if zone_names and self._embedding_cache:
+                zones_map = self._fetch_zones_map(env=env)
+                for cid, zone_name in zone_names.items():
+                    zone_id = zones_map.get(zone_name, "")
+                    if zone_id:
+                        try:
+                            self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
+                        except Exception as _ze:
+                            logger.warning(f"get_user_centers: could not save centre_meta for {cid}: {_ze}")
 
             logger.info(f"User {email} found in centres: {centers}")
             return centers
@@ -1010,6 +1033,8 @@ class ZohoCreatorAPI:
         if meta:
             if meta.get("centre_id"):
                 data_payload[FIELD_ATT_CENTRE] = meta["centre_id"]
+            if meta.get("zone_id"):
+                data_payload[FIELD_ATT_ZONE] = meta["zone_id"]
             if meta.get("batch_id"):
                 data_payload[FIELD_ATT_BATCH] = meta["batch_id"]
 
@@ -1356,6 +1381,73 @@ class ZohoCreatorAPI:
             f"updated={updated}, failed={failed}, skipped={skipped}"
         )
         return {"updated": updated, "failed": failed, "skipped": skipped}
+
+    # ─── Zone helpers ─────────────────────────────────────────────────────────
+
+    def _fetch_zones_map(self, env: str = "") -> dict:
+        """Fetch All_Zones once and return {zone_name: zone_id}."""
+        url = f"{self._base_url}/report/{ZOHO_ZONES_REPORT}"
+        zones: dict = {}
+        try:
+            resp = self._request("get", url, env=env, params={"limit": 200}, timeout=10)
+            resp.raise_for_status()
+            for rec in resp.json().get("data", []):
+                zone_id   = str(rec.get("ID") or "").strip()
+                zone_name = str(rec.get(FIELD_ZONE_NAME) or "").strip()
+                if zone_id and zone_name:
+                    zones[zone_name] = zone_id
+            logger.info(f"_fetch_zones_map: {len(zones)} zone(s) loaded")
+        except Exception as e:
+            logger.warning(f"_fetch_zones_map: failed: {e}")
+        return zones
+
+    def sync_centres_meta(self, centre_ids: list, env: str = "") -> None:
+        """
+        Populate centre_meta with zone IDs for the given centre IDs.
+
+        Uses direct record lookup GET /report/All_Centres/{record_id} — one call
+        per centre, but only for centres not already synced. This avoids the broken
+        criteria-filter approach (ID== criteria never matched on All_Centres).
+        """
+        if not centre_ids or not self._embedding_cache:
+            return
+
+        pending = self._embedding_cache.get_unsynced_centre_ids(centre_ids)
+        if not pending:
+            logger.info(f"sync_centres_meta: all {len(centre_ids)} centre(s) already have zone data.")
+            return
+
+        zones_map = self._fetch_zones_map(env=env)
+        if not zones_map:
+            logger.warning("sync_centres_meta: no zones loaded — skipping.")
+            return
+
+        url_base = f"{self._base_url}/report/{ZOHO_CENTRES_REPORT}"
+        resolved = 0
+        for cid in pending:
+            try:
+                resp = self._request("get", f"{url_base}/{cid}", env=env, timeout=10)
+                resp.raise_for_status()
+                raw = resp.json().get("data", {})
+                rec  = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
+                zone_raw  = rec.get(FIELD_CENTRE_ZONE)
+                zone_name = zone_raw.strip() if isinstance(zone_raw, str) else (
+                    str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+                )
+                zone_id = zones_map.get(zone_name, "")
+                if zone_id:
+                    self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
+                    resolved += 1
+                    logger.info(f"sync_centres_meta: centre {cid} → zone='{zone_name}' id={zone_id}")
+                else:
+                    logger.warning(
+                        f"sync_centres_meta: centre {cid} zone '{zone_name}' not in zones_map "
+                        f"(available: {list(zones_map.keys())})"
+                    )
+            except Exception as e:
+                logger.warning(f"sync_centres_meta: failed for centre {cid}: {e}")
+
+        logger.info(f"sync_centres_meta: resolved {resolved}/{len(pending)} centre(s)")
 
     # ─── Utility ───────────────────────────────────────────────────────────────
 

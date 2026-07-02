@@ -1058,6 +1058,25 @@ def _recover_interrupted_syncs() -> None:
 threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-sync-recovery").start()
 
 
+def _populate_centre_meta() -> None:
+    """
+    At startup, seed centre_meta with zone IDs for all centres that have
+    ongoing batch students in the local DB.  Uses direct record lookup
+    (GET /report/All_Centres/{id}) — one call per unsynced centre — instead
+    of the old broken criteria-filter approach.
+    """
+    try:
+        centre_ids = att_queue.get_ongoing_centre_ids()
+        if not centre_ids:
+            logger.info("[CentreMeta] No ongoing centres in DB — skipping zone sync.")
+            return
+        logger.info(f"[CentreMeta] Syncing zone data for {len(centre_ids)} centre(s)...")
+        zoho.sync_centres_meta(centre_ids, env="")
+    except Exception as e:
+        logger.error(f"[CentreMeta] Failed to populate centre_meta: {e}")
+
+
+threading.Thread(target=_populate_centre_meta, daemon=True, name="centre-meta-load").start()
 
 
 def _warmup_face_model():

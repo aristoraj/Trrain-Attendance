@@ -1587,6 +1587,42 @@ class AttendanceQueue:
             return (row["zone_id"] or "", row["zone_name"] or "")
         return ("", "")
 
+    def get_unsynced_centre_ids(self, centre_ids: list) -> list:
+        """Return subset of centre_ids that have no zone_id in centre_meta yet."""
+        if not centre_ids:
+            return []
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT centre_id FROM centre_meta WHERE zone_id != ''")
+            ).fetchall()
+        synced = {r["centre_id"] for r in rows}
+        return [c for c in centre_ids if c not in synced]
+
+    def get_ongoing_centre_ids(self) -> list:
+        """
+        Return distinct centre IDs from student_cache for all scopes that have
+        at least one Ongoing batch. Used to seed centre_meta at startup.
+        """
+        import json as _json
+        centre_ids: set = set()
+        with self._db() as conn:
+            rows = conn.execute(self._q("""
+                SELECT DISTINCT sc.meta_json
+                FROM student_cache sc
+                WHERE sc.scope_key IN (
+                    SELECT DISTINCT scope_key FROM batch_status WHERE status='Ongoing'
+                )
+            """)).fetchall()
+        for row in rows:
+            try:
+                meta = _json.loads(row["meta_json"] or "{}")
+                cid  = meta.get("centre_id", "")
+                if cid:
+                    centre_ids.add(cid)
+            except Exception:
+                pass
+        return list(centre_ids)
+
     def get_student_meta(self, student_id: str, scope_key: str) -> dict:
         """Return parsed meta_json dict for a student (centre_id, batch_id)."""
         import json as _json
@@ -1836,6 +1872,10 @@ class AttendanceQueue:
             capture_jpeg  = row["capture_jpeg"]  if "capture_jpeg"  in row.keys() else None
             # Fetch lookup IDs from student_cache for new attendance form
             student_meta = self.get_student_meta_any_scope(student_id)
+            if student_meta.get("centre_id"):
+                zone_id, _ = self.get_zone_for_centre(student_meta["centre_id"])
+                if zone_id:
+                    student_meta["zone_id"] = zone_id
             logger.info(
                 f"Queue #{rec_id}: posting {name} | "
                 f"checkin_time='{checkin_time or 'NOT SET'}' | "
