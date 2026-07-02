@@ -19,6 +19,7 @@ from config import (
     ZOHO_BATCHES_REPORT, FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
     FIELD_BATCH_DISPLAY, FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
     ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME, FIELD_CENTRE_ZONE,
+    ZOHO_ZONES_REPORT, FIELD_ZONE_NAME,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER, FIELD_STUDENT_FY,
@@ -145,6 +146,7 @@ class ZohoCreatorAPI:
                 return []
 
             centers: list[str] = []
+            zones_map = self.get_zones_map(env=env)
             for rec in records:
                 # Zoho system record ID (matches student Centre_Name lookup ID)
                 rec_id = rec.get("ID") or rec.get("id")
@@ -161,22 +163,23 @@ class ZohoCreatorAPI:
 
                 # Store zone data for attendance lookup IDs
                 if rec_id and self._embedding_cache:
-                    zone_raw = rec.get(FIELD_CENTRE_ZONE) or {}
-                    logger.debug(
-                        f"get_user_centers: centre {rec_id} zone field '{FIELD_CENTRE_ZONE}' "
-                        f"→ {zone_raw!r} | all keys: {list(rec.keys())}"
-                    )
-                    zone_id   = str(zone_raw.get("ID") or "")   if isinstance(zone_raw, dict) else ""
-                    zone_name = str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+                    zone_raw  = rec.get(FIELD_CENTRE_ZONE)
+                    zone_name = self._extract_zone_name(zone_raw)
+                    zone_id   = ""
+                    if isinstance(zone_raw, dict):
+                        zone_id = str(zone_raw.get("ID") or "").strip()
+                    if not zone_id and zone_name and zones_map:
+                        zone_id = zones_map.get(zone_name, "")
                     if zone_id:
                         try:
                             self._embedding_cache.upsert_centre_meta(str(rec_id), zone_id, zone_name)
+                            logger.info(f"get_user_centers: centre {rec_id} → zone_id={zone_id} ({zone_name})")
                         except Exception as _ze:
                             logger.warning(f"Could not save centre_meta for {rec_id}: {_ze}")
                     else:
                         logger.warning(
-                            f"get_user_centers: no zone found for centre {rec_id} "
-                            f"using field '{FIELD_CENTRE_ZONE}' — zone will be blank on attendance"
+                            f"get_user_centers: no zone resolved for centre {rec_id} "
+                            f"(raw={zone_raw!r}, zones_map={list(zones_map.keys())})"
                         )
 
             logger.info(f"User {email} found in centres: {centers}")
@@ -1392,6 +1395,34 @@ class ZohoCreatorAPI:
         )
         return {"updated": updated, "failed": failed, "skipped": skipped}
 
+    # ─── Zone helpers ─────────────────────────────────────────────────────────
+
+    def get_zones_map(self, env: str = "") -> dict:
+        """Fetch All_Zones and return {zone_display_name: zone_record_id}."""
+        url = f"{self._base_url}/report/{ZOHO_ZONES_REPORT}"
+        zones: dict = {}
+        try:
+            resp = self._request("get", url, env=env, params={"limit": 200}, timeout=10)
+            resp.raise_for_status()
+            for rec in resp.json().get("data", []):
+                zone_id   = str(rec.get("ID") or "").strip()
+                zone_name = str(rec.get(FIELD_ZONE_NAME) or "").strip()
+                if zone_id and zone_name:
+                    zones[zone_name] = zone_id
+            logger.info(f"get_zones_map: {len(zones)} zones loaded: {list(zones.keys())}")
+        except Exception as e:
+            logger.warning(f"get_zones_map: failed to fetch All_Zones: {e}")
+        return zones
+
+    @staticmethod
+    def _extract_zone_name(zone_raw) -> str:
+        """Return zone display name from a Zoho field value (dict or plain string)."""
+        if isinstance(zone_raw, dict):
+            return str(zone_raw.get("display_value") or "").strip()
+        if isinstance(zone_raw, str):
+            return zone_raw.strip()
+        return ""
+
     # ─── Centre meta sync ─────────────────────────────────────────────────────
 
     def sync_centres_meta(self, centre_ids: list, env: str = "") -> None:
@@ -1401,6 +1432,7 @@ class ZohoCreatorAPI:
         """
         if not centre_ids or not self._embedding_cache:
             return
+        zones_map = self.get_zones_map(env=env)
         url = f"{self._base_url}/report/{ZOHO_CENTRES_REPORT}"
         for cid in centre_ids:
             try:
@@ -1415,20 +1447,21 @@ class ZohoCreatorAPI:
                     logger.warning(f"sync_centres_meta: no record found for centre {cid}")
                     continue
                 rec = records[0]
-                zone_raw  = rec.get(FIELD_CENTRE_ZONE) or {}
-                logger.debug(
-                    f"sync_centres_meta: centre {cid} zone field '{FIELD_CENTRE_ZONE}' "
-                    f"→ {zone_raw!r} | all keys: {list(rec.keys())}"
-                )
-                zone_id   = str(zone_raw.get("ID") or "")   if isinstance(zone_raw, dict) else ""
-                zone_name = str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+                zone_raw  = rec.get(FIELD_CENTRE_ZONE)
+                zone_name = self._extract_zone_name(zone_raw)
+                # Direct ID from a lookup dict; fall back to name→ID map if it's text/dropdown
+                zone_id = ""
+                if isinstance(zone_raw, dict):
+                    zone_id = str(zone_raw.get("ID") or "").strip()
+                if not zone_id and zone_name and zones_map:
+                    zone_id = zones_map.get(zone_name, "")
                 if zone_id:
                     self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
-                    logger.info(f"sync_centres_meta: centre {cid} → zone {zone_id} ({zone_name})")
+                    logger.info(f"sync_centres_meta: centre {cid} → zone_id={zone_id} ({zone_name})")
                 else:
                     logger.warning(
-                        f"sync_centres_meta: no zone found for centre {cid} "
-                        f"using field '{FIELD_CENTRE_ZONE}' — available keys: {list(rec.keys())}"
+                        f"sync_centres_meta: no zone resolved for centre {cid} "
+                        f"(field='{FIELD_CENTRE_ZONE}', raw={zone_raw!r}, zones_map={list(zones_map.keys())})"
                     )
             except Exception as e:
                 logger.warning(f"sync_centres_meta: could not fetch zone for centre {cid}: {e}")
