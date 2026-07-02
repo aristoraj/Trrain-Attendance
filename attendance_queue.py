@@ -247,10 +247,11 @@ class AttendanceQueue:
             "CREATE INDEX IF NOT EXISTS idx_sc_scope "
             "ON student_cache(scope_key)"
         )
-        # Migrate existing rows to add has_embedding and batch_id columns
+        # Migrate existing rows to add has_embedding, batch_id, and meta_json columns
         for col, definition in [
             ("has_embedding", "BOOLEAN NOT NULL DEFAULT FALSE"),
             ("batch_id",      "TEXT    NOT NULL DEFAULT ''"),
+            ("meta_json",     "TEXT    NOT NULL DEFAULT '{}'"),
         ]:
             if self._is_postgres:
                 conn.execute(f"SAVEPOINT add_{col}")
@@ -269,6 +270,17 @@ class AttendanceQueue:
             "CREATE INDEX IF NOT EXISTS idx_sc_batch "
             "ON student_cache(batch_id, scope_key)"
         )
+
+    def _create_centre_meta_table(self, conn):
+        """Store zone IDs per centre so attendance records can include Zone lookup."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS centre_meta (
+                centre_id  TEXT PRIMARY KEY,
+                zone_id    TEXT NOT NULL DEFAULT '',
+                zone_name  TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+        """)
 
     def _create_webhook_sync_log_table(self, conn):
         """
@@ -924,6 +936,7 @@ class AttendanceQueue:
             self._create_embeddings_table(conn)
             self._migrate_photo_url_column(conn)
             self._create_student_cache_table(conn)
+            self._create_centre_meta_table(conn)
             self._create_daily_caches_table(conn)
             self._create_batch_status_table(conn)
             self._create_webhook_sync_log_table(conn)
@@ -1337,17 +1350,17 @@ class AttendanceQueue:
     def save_students_to_db(self, scope_key: str, students: list) -> None:
         """
         Persist student metadata for a scope key so cold starts can skip Zoho API calls.
-        Embeddings are already stored in face_embeddings; this stores id/name/number only.
+        Embeddings are already stored in face_embeddings; this stores id/name/number/meta only.
         """
         now = datetime.now().isoformat()
         with self._db() as conn:
             conn.execute(self._q("DELETE FROM student_cache WHERE scope_key=?"), (scope_key,))
             for s in students:
                 conn.execute(self._q("""
-                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, batch_id, meta_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
-                       True, s.get("batch_id", ""), now))
+                       True, s.get("batch_id", ""), s.get("meta_json", "{}"), now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
 
     def upsert_students_for_batch(self, scope_key: str, batch_id: str, students: list) -> None:
@@ -1360,26 +1373,28 @@ class AttendanceQueue:
         now = datetime.now().isoformat()
         with self._db() as conn:
             for s in students:
+                meta_json = s.get("meta_json", "{}")
                 if self._is_postgres:
                     conn.execute(self._q("""
                         INSERT INTO student_cache
-                            (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                            (student_id, scope_key, name, student_number, has_embedding, batch_id, meta_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(student_id, scope_key) DO UPDATE
                             SET name=excluded.name,
                                 student_number=excluded.student_number,
                                 has_embedding=excluded.has_embedding,
                                 batch_id=excluded.batch_id,
+                                meta_json=excluded.meta_json,
                                 updated_at=excluded.updated_at
                     """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
-                           True, batch_id, now))
+                           True, batch_id, meta_json, now))
                 else:
                     conn.execute(self._q("""
                         INSERT OR REPLACE INTO student_cache
-                            (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                            (student_id, scope_key, name, student_number, has_embedding, batch_id, meta_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
-                           True, batch_id, now))
+                           True, batch_id, meta_json, now))
         logger.info(f"Upserted {len(students)} student(s) for batch {batch_id} in scope '{scope_key}'.")
 
     def save_no_photo_students(self, scope_key: str, students: list) -> None:
@@ -1395,11 +1410,11 @@ class AttendanceQueue:
         with self._db() as conn:
             for s in students:
                 conn.execute(self._q("""
-                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, batch_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO student_cache (student_id, scope_key, name, student_number, has_embedding, batch_id, meta_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(student_id, scope_key) DO NOTHING
                 """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
-                       False, s.get("batch_id", ""), now))
+                       False, s.get("batch_id", ""), s.get("meta_json", "{}"), now))
         logger.info(f"Stored {len(students)} no-photo students for scope '{scope_key}'.")
 
     def is_scope_fully_catalogued(self, scope_key: str) -> bool:
@@ -1535,6 +1550,76 @@ class AttendanceQueue:
                     INSERT OR REPLACE INTO global_settings (key, value, updated_at)
                     VALUES (?, ?, ?)
                 """), (key, value, now))
+
+    # ── Centre meta (zone IDs for attendance form) ────────────────────────────
+
+    def upsert_centre_meta(self, centre_id: str, zone_id: str, zone_name: str) -> None:
+        """Persist zone data for a centre so attendance posting can include Zone lookup."""
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            if self._is_postgres:
+                conn.execute(self._q("""
+                    INSERT INTO centre_meta (centre_id, zone_id, zone_name, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(centre_id) DO UPDATE
+                        SET zone_id=excluded.zone_id,
+                            zone_name=excluded.zone_name,
+                            updated_at=excluded.updated_at
+                """), (centre_id, zone_id, zone_name, now))
+            else:
+                conn.execute(self._q("""
+                    INSERT OR REPLACE INTO centre_meta (centre_id, zone_id, zone_name, updated_at)
+                    VALUES (?, ?, ?, ?)
+                """), (centre_id, zone_id, zone_name, now))
+
+    def get_zone_for_centre(self, centre_id: str) -> tuple:
+        """Return (zone_id, zone_name) for a centre, or ('', '') if not cached."""
+        if not centre_id:
+            return ("", "")
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT zone_id, zone_name FROM centre_meta WHERE centre_id=?"),
+                (centre_id,)
+            ).fetchone()
+        if row:
+            return (row["zone_id"] or "", row["zone_name"] or "")
+        return ("", "")
+
+    def get_student_meta(self, student_id: str, scope_key: str) -> dict:
+        """Return parsed meta_json dict for a student (financial_year_id, centre_id, batch_id)."""
+        import json as _json
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT meta_json, batch_id FROM student_cache WHERE student_id=? AND scope_key=?"),
+                (student_id, scope_key)
+            ).fetchone()
+        if not row:
+            return {}
+        try:
+            meta = _json.loads(row["meta_json"] or "{}")
+        except Exception:
+            meta = {}
+        if row["batch_id"] and not meta.get("batch_id"):
+            meta["batch_id"] = row["batch_id"]
+        return meta
+
+    def get_student_meta_any_scope(self, student_id: str) -> dict:
+        """Return parsed meta_json for a student from any scope (used by the drain worker)."""
+        import json as _json
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT meta_json, batch_id FROM student_cache WHERE student_id=? LIMIT 1"),
+                (student_id,)
+            ).fetchone()
+        if not row:
+            return {}
+        try:
+            meta = _json.loads(row["meta_json"] or "{}")
+        except Exception:
+            meta = {}
+        if row["batch_id"] and not meta.get("batch_id"):
+            meta["batch_id"] = row["batch_id"]
+        return meta
 
     def upsert_student_in_scope(self, scope_key: str, student: dict) -> None:
         """Add or update a single student row in student_cache for the given scope key."""
@@ -1747,11 +1832,17 @@ class AttendanceQueue:
             action_field  = row["action_field"]  if "action_field"  in row.keys() else ""
             checkin_time  = row["checkin_time"]  if "checkin_time"  in row.keys() else ""
             capture_jpeg  = row["capture_jpeg"]  if "capture_jpeg"  in row.keys() else None
+            # Fetch lookup IDs from student_cache for new attendance form
+            student_meta = self.get_student_meta_any_scope(student_id)
+            if student_meta.get("centre_id"):
+                zone_id, _ = self.get_zone_for_centre(student_meta["centre_id"])
+                if zone_id:
+                    student_meta["zone_id"] = zone_id
             logger.info(
                 f"Queue #{rec_id}: posting {name} | "
                 f"checkin_time='{checkin_time or 'NOT SET'}' | "
-                f"action='{action_field or 'NOT SET'}' | "
-                f"photo={'yes' if capture_jpeg else 'no'} | env='{environment}'"
+                f"photo={'yes' if capture_jpeg else 'no'} | env='{environment}' | "
+                f"has_meta={'yes' if student_meta else 'no'}"
             )
             try:
                 result = self._zoho.post_attendance(
@@ -1759,8 +1850,8 @@ class AttendanceQueue:
                     student_name=name,
                     verification_type="face_blink_verified",
                     env=environment,
-                    action_field=action_field,
                     checkin_time=checkin_time,
+                    meta=student_meta or None,
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)

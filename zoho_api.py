@@ -4,6 +4,7 @@ Handles OAuth token refresh, fetching student records with photos,
 and posting attendance records.
 """
 
+import json
 import logging
 import os
 import threading
@@ -21,9 +22,10 @@ from config import (
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
     FIELD_STUDENT_CENTER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
-    FIELD_CHECK_IN, FIELD_CHECK_OUT, FIELD_AUTO_CHECKOUT, FIELD_ATT_CAPTURE,
-    FIELD_ACTION,
+    FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
+    FIELD_ATT_FINANCIAL_YR, FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
+    FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE,
+    FIELD_CHECK_IN, FIELD_CHECK_OUT,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
 
@@ -156,6 +158,17 @@ class ZohoCreatorAPI:
                 name = str(name_raw).strip() if name_raw else ""
                 if name:
                     centers.append(name)
+
+                # Store zone data for attendance lookup IDs
+                if rec_id and self._embedding_cache:
+                    zone_raw = rec.get("Select_Zone") or {}
+                    zone_id   = str(zone_raw.get("ID") or "")   if isinstance(zone_raw, dict) else ""
+                    zone_name = str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+                    if zone_id:
+                        try:
+                            self._embedding_cache.upsert_centre_meta(str(rec_id), zone_id, zone_name)
+                        except Exception as _ze:
+                            logger.warning(f"Could not save centre_meta for {rec_id}: {_ze}")
 
             logger.info(f"User {email} found in centres: {centers}")
             return centers
@@ -636,6 +649,22 @@ class ZohoCreatorAPI:
 
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
+        # Extract lookup IDs for the new attendance form
+        fy_raw = record.get("Financial_Year") or {}
+        financial_year_id = str(fy_raw.get("ID") or "") if isinstance(fy_raw, dict) else ""
+        centre_raw = record.get(FIELD_STUDENT_CENTER) or {}
+        centre_id = str(centre_raw.get("ID") or "") if isinstance(centre_raw, dict) else ""
+        batch_raw = record.get(FIELD_STUDENT_BATCH) or {}
+        batch_id  = str(batch_raw.get("ID") or batch_raw) if isinstance(batch_raw, dict) else str(batch_raw or "")
+        _meta: dict = {}
+        if financial_year_id:
+            _meta["financial_year_id"] = financial_year_id
+        if centre_id:
+            _meta["centre_id"] = centre_id
+        if batch_id:
+            _meta["batch_id"] = batch_id
+        meta_json = json.dumps(_meta) if _meta else "{}"
+
         def _build_encodings(enrollment_json: str) -> list:
             """enrollment embedding + any verified_N live captures from local DB."""
             encodings = []
@@ -671,6 +700,7 @@ class ZohoCreatorAPI:
                         "student_number": student_number,
                         "name":           name,
                         "encodings":      encodings,
+                        "meta_json":      meta_json,
                     }
 
         # ── 2. Creator Face_Embedding field (source of truth) ─────────────────
@@ -695,6 +725,7 @@ class ZohoCreatorAPI:
                         "student_number": student_number,
                         "name":           name,
                         "encodings":      encodings,
+                        "meta_json":      meta_json,
                     }
             except Exception as e:
                 logger.warning(f"Bad Creator embedding for '{name}': {e} — falling back to photo")
@@ -747,6 +778,7 @@ class ZohoCreatorAPI:
             "student_number": student_number,
             "name":           name,
             "encodings":      [encoding],
+            "meta_json":      meta_json,
         }
 
     def _extract_photo_url(self, record: dict, student_id: str, name: str) -> str:
@@ -945,7 +977,7 @@ class ZohoCreatorAPI:
 
             records = resp.json().get("data", [])
             for rec in records:
-                rec_student = rec.get(FIELD_ATT_STUDENT)
+                rec_student = rec.get(FIELD_ATT_TRAINEE_REG)
                 if isinstance(rec_student, dict):
                     rec_sid = (
                         rec_student.get("ID")
@@ -971,26 +1003,42 @@ class ZohoCreatorAPI:
         student_name:      str,
         verification_type: str = "face_blink_verified",
         env:               str = "",
-        checkin_time:      str = None,   # "HH:MM" — stored in Check_In field when provided
-        action_field:      str = "",     # "Blink" | "Smile" — stored in Action_field
+        checkin_time:      str = None,
+        action_field:      str = "",    # kept for backward compat; new form has no Action_field
+        meta:              dict = None, # {financial_year_id, centre_id, zone_id, batch_id}
     ) -> dict:
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
 
         data_payload = {
-            FIELD_ATT_STUDENT: student_id,
-            FIELD_ATT_DATE:    now.strftime("%d-%b-%Y"),
-            FIELD_ATT_STATUS:  "Present",
+            FIELD_ATT_DATE:        now.strftime("%d-%b-%Y"),
+            FIELD_ATT_STATUS:      "Present",
+            FIELD_ATT_TRAINEE_REG: student_id,
+            FIELD_ATT_CHECKED_OUT: "No",
+            FIELD_ATT_SOURCE:      "Live Face Recognition",
+            FIELD_ATT_VALUE:       1,
         }
-        if action_field:
-            data_payload[FIELD_ACTION] = action_field
         if checkin_time:
-            # Zoho Time fields require HH:MM:SS; queue stores HH:MM — kept last in payload
+            # Zoho Time fields require HH:MM:SS; queue stores HH:MM:SS already
             data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
+
+        if meta:
+            if meta.get("financial_year_id"):
+                data_payload[FIELD_ATT_FINANCIAL_YR] = meta["financial_year_id"]
+            if meta.get("centre_id"):
+                data_payload[FIELD_ATT_CENTRE] = meta["centre_id"]
+            if meta.get("zone_id"):
+                data_payload[FIELD_ATT_ZONE] = meta["zone_id"]
+            if meta.get("batch_id"):
+                data_payload[FIELD_ATT_BATCH] = meta["batch_id"]
 
         try:
             payload = {"data": data_payload}
-            logger.info(f"Posting attendance — {student_name} | payload fields: {list(data_payload.keys())} | values: Check_In={data_payload.get(FIELD_CHECK_IN, 'NOT SET')}, Action={data_payload.get(FIELD_ACTION, 'NOT SET')}")
+            logger.info(
+                f"Posting attendance — {student_name} | payload fields: {list(data_payload.keys())} | "
+                f"Check_In={data_payload.get(FIELD_CHECK_IN, 'NOT SET')} | "
+                f"has_meta={'yes' if meta else 'no'}"
+            )
             resp = self._request("post", url, env=env, json=payload, timeout=15)
             resp.raise_for_status()
 
@@ -1022,7 +1070,7 @@ class ZohoCreatorAPI:
         """
         url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
         criteria = (
-            f'({FIELD_ATT_STUDENT}.ID=="{student_id}"'
+            f'({FIELD_ATT_TRAINEE_REG}.ID=="{student_id}"'
             f'&&{FIELD_ATT_DATE}=="{date_str}")'
         )
         logger.info(f"[Checkout] find_attendance_record: env='{env}', date='{date_str}', student='{student_id}'")
@@ -1050,12 +1098,12 @@ class ZohoCreatorAPI:
         # Zoho Time fields require HH:MM:SS; caller may pass HH:MM
         zoho_checkout = checkout_time + ":00" if len(checkout_time) == 5 else checkout_time
         data_payload = {
-            FIELD_AUTO_CHECKOUT: "Yes",
-            FIELD_CHECK_OUT:     zoho_checkout,
+            FIELD_ATT_CHECKED_OUT: "Yes",
+            FIELD_CHECK_OUT:       zoho_checkout,
         }
         logger.info(
             f"Checkout PATCH — record_id={zoho_rec_id} | "
-            f"payload: {FIELD_CHECK_OUT}={zoho_checkout}, {FIELD_AUTO_CHECKOUT}=Yes | env='{env}'"
+            f"payload: {FIELD_CHECK_OUT}={zoho_checkout}, {FIELD_ATT_CHECKED_OUT}=Yes | env='{env}'"
         )
         try:
             resp = self._request("patch", url, env=env, json={"data": data_payload}, timeout=15)
@@ -1071,15 +1119,13 @@ class ZohoCreatorAPI:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def patch_checkin_fields(self, zoho_rec_id: str, checkin_time: str, action_field: str, env: str = "") -> bool:
+    def patch_checkin_fields(self, zoho_rec_id: str, checkin_time: str, action_field: str = "", env: str = "") -> bool:
         """
-        PATCH Check_In and Action_field onto an existing attendance record.
+        PATCH Check_In onto an existing attendance record.
         Used when the record was created thin (e.g. by the SDK) and our drain
-        later fills in the missing fields.
+        later fills in the missing field. action_field kept for compat; new form has no Action_field.
         """
         data_payload = {}
-        if action_field:
-            data_payload[FIELD_ACTION] = action_field
         if checkin_time:
             # Zoho Time fields require HH:MM:SS; queue stores HH:MM — kept last in payload
             data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
@@ -1094,7 +1140,7 @@ class ZohoCreatorAPI:
             if zoho_code is not None and zoho_code != 3000:
                 logger.error(f"patch_checkin_fields error {zoho_code} for record {zoho_rec_id}: {result.get('message', '')}")
                 return False
-            logger.info(f"Patched Check_In='{checkin_time}' Action='{action_field}' onto record {zoho_rec_id}")
+            logger.info(f"Patched Check_In='{checkin_time}' onto record {zoho_rec_id}")
             return True
         except Exception as e:
             logger.error(f"patch_checkin_fields failed for {zoho_rec_id}: {e}")
@@ -1146,55 +1192,47 @@ class ZohoCreatorAPI:
         return out
 
     def ensure_checkin_fields(self, zoho_rec_id: str, checkin_time: str,
-                              action_field: str, env: str = "",
+                              action_field: str = "", env: str = "",
                               settle_delay: float = 0.6) -> bool:
         """
-        GUARANTEE that Check_In and Action_field are populated on a record.
+        GUARANTEE that Check_In is populated on a record.
 
-        Zoho can accept a create/patch (code=3000) and silently drop a Time or
-        dropdown value, producing a "thin" record. This method reads the record
-        back; if a wanted field is empty it re-PATCHes (trying each time-format
-        variant) and re-verifies, up to a bounded number of attempts. A short
-        settle delay lets any on-edit Zoho workflow finish before we verify.
+        Zoho can accept a create/patch (code=3000) and silently drop a Time field,
+        producing a "thin" record. This method reads the record back; if Check_In
+        is empty it re-PATCHes (trying each time-format variant) and re-verifies,
+        up to a bounded number of attempts. action_field kept for compat; new form
+        has no Action_field.
 
-        Returns True only when the wanted fields are CONFIRMED present in Zoho.
-        Returns False if they could not be made to stick — the caller should log
-        loudly rather than mark the record silently done. Does NOT create new
-        records, so it can never produce duplicates.
+        Returns True only when Check_In is CONFIRMED present in Zoho.
+        Returns False if it could not be made to stick — caller should log loudly.
+        Does NOT create new records, so it can never produce duplicates.
         """
         if not zoho_rec_id:
             return False
         want_checkin = bool((checkin_time or "").strip())
-        want_action  = bool((action_field or "").strip())
-        if not (want_checkin or want_action):
+        if not want_checkin:
             return True
 
-        def _present(rec: dict):
-            ci_ok = (not want_checkin) or bool(str(rec.get(FIELD_CHECK_IN) or "").strip())
-            ac_ok = (not want_action)  or bool(str(rec.get(FIELD_ACTION)   or "").strip())
-            return ci_ok, ac_ok
+        def _ci_present(rec: dict) -> bool:
+            return bool(str(rec.get(FIELD_CHECK_IN) or "").strip())
 
         rec = self.get_attendance_fields(zoho_rec_id, env)
-        ci_ok, ac_ok = _present(rec)
-        if ci_ok and ac_ok:
+        ci_ok = _ci_present(rec)
+        if ci_ok:
             return True
 
         url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
         for attempt, tval in enumerate(self._time_variants(checkin_time) or [None]):
-            payload = {}
-            if want_action and not ac_ok:
-                payload[FIELD_ACTION] = action_field        # dropdown first — survives any cascade
-            if want_checkin and not ci_ok and tval:
-                payload[FIELD_CHECK_IN] = tval
-            if not payload:
+            if not tval:
                 break
+            payload = {FIELD_CHECK_IN: tval}
             try:
                 resp = self._request("patch", url, env=env, json={"data": payload}, timeout=15)
                 resp.raise_for_status()
                 code = resp.json().get("code")
                 logger.info(
                     f"ensure_checkin_fields repair #{attempt + 1} record={zoho_rec_id} "
-                    f"fields={list(payload.keys())} checkin_try={tval!r} code={code}"
+                    f"checkin_try={tval!r} code={code}"
                 )
             except Exception as e:
                 logger.warning(
@@ -1202,14 +1240,14 @@ class ZohoCreatorAPI:
                 )
             time.sleep(settle_delay)
             rec = self.get_attendance_fields(zoho_rec_id, env)
-            ci_ok, ac_ok = _present(rec)
-            if ci_ok and ac_ok:
+            ci_ok = _ci_present(rec)
+            if ci_ok:
                 logger.info(f"ensure_checkin_fields CONFIRMED record={zoho_rec_id} (try {tval!r})")
                 return True
 
         logger.error(
             f"ensure_checkin_fields could NOT confirm record {zoho_rec_id} — "
-            f"Check_In present={ci_ok}, Action present={ac_ok}. Record is THIN."
+            f"Check_In present={ci_ok}. Record is THIN."
         )
         return False
 
@@ -1220,8 +1258,8 @@ class ZohoCreatorAPI:
         """
         url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
         data_payload = {
-            FIELD_CHECK_OUT:     "",
-            FIELD_AUTO_CHECKOUT: "",
+            FIELD_CHECK_OUT:      "",
+            FIELD_ATT_CHECKED_OUT: "",
         }
         logger.info(f"Clear checkout PATCH — record_id={zoho_rec_id} | env='{env}'")
         try:
@@ -1240,30 +1278,11 @@ class ZohoCreatorAPI:
 
     def _upload_capture_photo(self, record_id: str, jpeg_bytes: bytes,
                                student_name: str, env: str = "") -> None:
-        """
-        Upload live capture JPEG to an existing attendance record. Best-effort — never raises.
-        Two-step required: plain JSON POST creates the record, this call attaches the photo.
-        """
-        upload_url = (
-            f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
-            f"/{record_id}/{FIELD_ATT_CAPTURE}/upload"
+        """No-op: Attendance_form has no photo upload field."""
+        logger.debug(
+            f"Live capture upload skipped — Attendance_form has no photo field "
+            f"(record={record_id}, student={student_name})"
         )
-        logger.info(
-            f"Live capture upload starting — record_id={record_id} | "
-            f"student={student_name} | size={len(jpeg_bytes)}B | env='{env}'"
-        )
-        try:
-            headers = self._headers(env=env, include_content_type=False)
-            files   = {"file": ("capture.jpg", jpeg_bytes, "image/jpeg")}
-            resp    = requests.post(upload_url, headers=headers, files=files, timeout=20)
-            resp.raise_for_status()
-            result  = resp.json()
-            if result.get("code") == 3000:
-                logger.info(f"Live capture uploaded for {student_name} (record {record_id})")
-            else:
-                logger.warning(f"Live capture upload unexpected code={result.get('code')} for {student_name}")
-        except Exception as e:
-            logger.warning(f"Live capture upload failed for {student_name} ({record_id}): {e}")
 
     # ─── 10 PM Auto-Checkout Sweep ────────────────────────────────────────────
 
@@ -1316,7 +1335,7 @@ class ZohoCreatorAPI:
             try:
                 resp = self._request(
                     "patch", patch_url, env=env,
-                    json={"data": {FIELD_AUTO_CHECKOUT: "No"}},
+                    json={"data": {FIELD_ATT_CHECKED_OUT: "No"}},
                     timeout=15,
                 )
                 result = resp.json() if resp.status_code == 200 else {}
@@ -1337,6 +1356,40 @@ class ZohoCreatorAPI:
             f"updated={updated}, failed={failed}, skipped={skipped}"
         )
         return {"updated": updated, "failed": failed, "skipped": skipped}
+
+    # ─── Centre meta sync ─────────────────────────────────────────────────────
+
+    def sync_centres_meta(self, centre_ids: list, env: str = "") -> None:
+        """
+        Fetch zone data for given centre IDs from All_Centres and persist to centre_meta.
+        Called once at startup migration so zone IDs are available for attendance posting.
+        """
+        if not centre_ids or not self._embedding_cache:
+            return
+        url = f"{self._base_url}/report/{ZOHO_CENTRES_REPORT}"
+        for cid in centre_ids:
+            try:
+                resp = self._request(
+                    "get", url, env=env,
+                    params={"criteria": f'(ID=="{cid}")', "limit": 1},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                records = resp.json().get("data", [])
+                if not records:
+                    logger.warning(f"sync_centres_meta: no record found for centre {cid}")
+                    continue
+                rec = records[0]
+                zone_raw  = rec.get("Select_Zone") or {}
+                zone_id   = str(zone_raw.get("ID") or "")   if isinstance(zone_raw, dict) else ""
+                zone_name = str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
+                if zone_id:
+                    self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
+                    logger.info(f"sync_centres_meta: centre {cid} → zone {zone_id} ({zone_name})")
+                else:
+                    logger.warning(f"sync_centres_meta: no zone found for centre {cid}")
+            except Exception as e:
+                logger.warning(f"sync_centres_meta: could not fetch zone for centre {cid}: {e}")
 
     # ─── Utility ───────────────────────────────────────────────────────────────
 

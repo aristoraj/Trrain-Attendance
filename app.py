@@ -46,8 +46,10 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT, ZOHO_REDIRECT_URI,
     ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ACTION, FIELD_CHECK_IN,
-    FIELD_CHECK_OUT, FIELD_AUTO_CHECKOUT,
+    FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
+    FIELD_ATT_FINANCIAL_YR, FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
+    FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE,
+    FIELD_CHECK_IN, FIELD_CHECK_OUT,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
     FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
@@ -1019,6 +1021,65 @@ def _recover_interrupted_syncs() -> None:
 
 
 threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-sync-recovery").start()
+
+
+def _run_meta_migration() -> None:
+    """
+    One-time startup migration: backfill meta_json (financial_year_id, centre_id, batch_id)
+    for all existing student_cache rows and populate centre_meta with zone IDs.
+
+    Strategy: invalidate all "catalogued" flags so the next preload fetches fresh Zoho data
+    (which carries the lookup IDs we need), then trigger a fresh load per scope. Marks done
+    in global_settings so it never runs again on subsequent restarts.
+    """
+    MIGRATION_KEY = "meta_migration_done_v1"
+    if att_queue.get_global_setting(MIGRATION_KEY):
+        return
+
+    logger.info("[MetaMigration] Starting one-time meta_json backfill...")
+    try:
+        scope_keys = att_queue.get_all_scope_keys()
+        if not scope_keys:
+            att_queue.set_global_setting(MIGRATION_KEY, "done")
+            logger.info("[MetaMigration] No scopes found — marking done.")
+            return
+
+        # 1. Invalidate catalogued flags so next load re-fetches Zoho data
+        for sk in scope_keys:
+            att_queue.clear_daily_cache(key_prefix=f"catalogued:{sk}")
+            logger.info(f"[MetaMigration] Invalidated catalogued flag for scope '{sk}'")
+
+        # 2. Trigger a fresh load per scope (fetches Zoho, saves meta_json + embeddings)
+        for sk in scope_keys:
+            try:
+                centre_ids, env = _parse_scope_key(sk)
+                if not centre_ids:
+                    continue
+                # Sync zone data for centres in this scope
+                zoho.sync_centres_meta(centre_ids, env=env)
+                # Fresh load: fetches from Zoho, saves meta_json to student_cache
+                no_photo: list = []
+                students = zoho.get_students(centers=centre_ids, env=env,
+                                             no_photo_out=no_photo, fresh_load=True)
+                if students:
+                    att_queue.save_students_to_db(sk, students)
+                if no_photo:
+                    att_queue.save_no_photo_students(sk, no_photo)
+                logger.info(
+                    f"[MetaMigration] Refreshed scope '{sk}': "
+                    f"{len(students or [])} with embedding, {len(no_photo)} no-photo"
+                )
+            except Exception as _se:
+                logger.warning(f"[MetaMigration] Scope '{sk}' failed: {_se}")
+
+        att_queue.set_global_setting(MIGRATION_KEY, "done")
+        logger.info("[MetaMigration] Completed — meta_json backfill done.")
+    except Exception as e:
+        logger.error(f"[MetaMigration] Migration error: {e}")
+
+
+threading.Thread(target=_run_meta_migration, daemon=True, name="meta-migration").start()
+
 
 def _warmup_face_model():
     try:
@@ -2182,13 +2243,18 @@ def api_config():
             "student_embedding": FIELD_STUDENT_EMBEDDING,
             "student_name":      FIELD_STUDENT_NAME,
             "student_number":    FIELD_STUDENT_NUMBER,
-            "att_student":       FIELD_ATT_STUDENT,
-            "att_date":          FIELD_ATT_DATE,
-            "att_status":        FIELD_ATT_STATUS,
-            "att_action":        FIELD_ACTION,
+            "att_trainee_reg":    FIELD_ATT_TRAINEE_REG,
+            "att_date":           FIELD_ATT_DATE,
+            "att_status":         FIELD_ATT_STATUS,
+            "att_financial_yr":   FIELD_ATT_FINANCIAL_YR,
+            "att_zone":           FIELD_ATT_ZONE,
+            "att_centre":         FIELD_ATT_CENTRE,
+            "att_batch":          FIELD_ATT_BATCH,
+            "att_checked_out":    FIELD_ATT_CHECKED_OUT,
+            "att_source":         FIELD_ATT_SOURCE,
+            "att_value":          FIELD_ATT_VALUE,
             "att_check_in":       FIELD_CHECK_IN,
             "att_check_out":      FIELD_CHECK_OUT,
-            "att_auto_checkout":  FIELD_AUTO_CHECKOUT,
             "centre_email":       FIELD_CENTRE_LOGIN_EMAIL,
             "centre_name":       FIELD_CENTRE_NAME,
             "user_email":        FIELD_USER_MGMT_EMAIL,

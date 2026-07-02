@@ -32,8 +32,8 @@ ZOHO_REDIRECT_URI  = os.environ.get("ZOHO_REDIRECT_URI", "")
 
 # Report / form link names
 ZOHO_STUDENT_REPORT   = os.environ.get("ZOHO_STUDENT_REPORT",   "CV_Management")
-ZOHO_ATTENDANCE_FORM  = os.environ.get("ZOHO_ATTENDANCE_FORM",  "Face_Attendance")
-ZOHO_ATTENDANCE_REPORT = os.environ.get("ZOHO_ATTENDANCE_REPORT", "All_Face_Attendances")
+ZOHO_ATTENDANCE_FORM  = os.environ.get("ZOHO_ATTENDANCE_FORM",  "Attendance_form")
+ZOHO_ATTENDANCE_REPORT = os.environ.get("ZOHO_ATTENDANCE_REPORT", "Attendance_form_Report")
 
 # ─── Student Database field names ─────────────────────────────────────────────
 FIELD_STUDENT_ID        = "ID"   # Zoho system record ID — always present
@@ -45,15 +45,19 @@ FIELD_STUDENT_PHOTO     = os.environ.get("FIELD_STUDENT_PHOTO",     "Upload_Phot
 # Add this field in Zoho Creator: Student Database → Multi Line field → link name: Face_Embedding
 FIELD_STUDENT_EMBEDDING = os.environ.get("FIELD_STUDENT_EMBEDDING", "Face_Embedding")
 
-# ─── Attendance form field names ──────────────────────────────────────────────
-FIELD_ATT_STUDENT    = os.environ.get("FIELD_ATT_STUDENT",    "Trainee")           # lookup
-FIELD_ATT_DATE       = os.environ.get("FIELD_ATT_DATE",       "Date_field")
-FIELD_ATT_STATUS     = os.environ.get("FIELD_ATT_STATUS",     "Attendance")        # dropdown
-FIELD_CHECK_IN       = os.environ.get("FIELD_CHECK_IN",       "Check_In")          # time field
-FIELD_CHECK_OUT      = os.environ.get("FIELD_CHECK_OUT",      "Check_Out")         # time field
-FIELD_AUTO_CHECKOUT  = os.environ.get("FIELD_AUTO_CHECKOUT",  "Auto_Checkout")     # dropdown: Yes/No
-FIELD_ATT_CAPTURE    = os.environ.get("FIELD_ATT_CAPTURE",    "Live_Captured_Image") # file upload
-FIELD_ACTION         = os.environ.get("FIELD_ACTION",         "Action_field")      # Blink / Smile
+# ─── Attendance form field names (Attendance_form) ────────────────────────────
+FIELD_ATT_TRAINEE_REG  = os.environ.get("FIELD_ATT_TRAINEE_REG",  "Trainee_Regstration") # lookup
+FIELD_ATT_DATE         = os.environ.get("FIELD_ATT_DATE",         "Attendance_Date")
+FIELD_ATT_STATUS       = os.environ.get("FIELD_ATT_STATUS",       "Attendance_Status")   # dropdown: Present
+FIELD_ATT_FINANCIAL_YR = os.environ.get("FIELD_ATT_FINANCIAL_YR", "Financial_Year")       # lookup
+FIELD_ATT_ZONE         = os.environ.get("FIELD_ATT_ZONE",         "Zone")                 # lookup
+FIELD_ATT_CENTRE       = os.environ.get("FIELD_ATT_CENTRE",       "Centres")              # lookup
+FIELD_ATT_BATCH        = os.environ.get("FIELD_ATT_BATCH",        "Batches")              # lookup
+FIELD_ATT_CHECKED_OUT  = os.environ.get("FIELD_ATT_CHECKED_OUT",  "Checked_out")          # dropdown: Yes/No
+FIELD_ATT_SOURCE       = os.environ.get("FIELD_ATT_SOURCE",       "Source")               # fixed text
+FIELD_ATT_VALUE        = os.environ.get("FIELD_ATT_VALUE",        "Value")                # fixed integer
+FIELD_CHECK_IN         = os.environ.get("FIELD_CHECK_IN",         "Check_In")             # time field
+FIELD_CHECK_OUT        = os.environ.get("FIELD_CHECK_OUT",        "Check_Out")            # time field
 
 # ─── Zoho Creator Environment ────────────────────────────────────────────────
 # Overridden per-request by envUrlFragment from the Widget SDK.
