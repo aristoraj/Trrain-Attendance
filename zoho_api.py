@@ -18,13 +18,13 @@ from config import (
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
     ZOHO_BATCHES_REPORT, FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH,
     FIELD_BATCH_DISPLAY, FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
-    ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
+    ZOHO_CENTRES_REPORT, FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME, FIELD_CENTRE_ZONE,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_EMBEDDING,
-    FIELD_STUDENT_CENTER,
+    FIELD_STUDENT_CENTER, FIELD_STUDENT_FY,
     FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
     FIELD_ATT_FINANCIAL_YR, FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
-    FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE,
+    FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE, FIELD_ATT_CAPTURE,
     FIELD_CHECK_IN, FIELD_CHECK_OUT,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
@@ -161,7 +161,11 @@ class ZohoCreatorAPI:
 
                 # Store zone data for attendance lookup IDs
                 if rec_id and self._embedding_cache:
-                    zone_raw = rec.get("Select_Zone") or {}
+                    zone_raw = rec.get(FIELD_CENTRE_ZONE) or {}
+                    logger.debug(
+                        f"get_user_centers: centre {rec_id} zone field '{FIELD_CENTRE_ZONE}' "
+                        f"→ {zone_raw!r} | all keys: {list(rec.keys())}"
+                    )
                     zone_id   = str(zone_raw.get("ID") or "")   if isinstance(zone_raw, dict) else ""
                     zone_name = str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
                     if zone_id:
@@ -169,6 +173,11 @@ class ZohoCreatorAPI:
                             self._embedding_cache.upsert_centre_meta(str(rec_id), zone_id, zone_name)
                         except Exception as _ze:
                             logger.warning(f"Could not save centre_meta for {rec_id}: {_ze}")
+                    else:
+                        logger.warning(
+                            f"get_user_centers: no zone found for centre {rec_id} "
+                            f"using field '{FIELD_CENTRE_ZONE}' — zone will be blank on attendance"
+                        )
 
             logger.info(f"User {email} found in centres: {centers}")
             return centers
@@ -650,7 +659,7 @@ class ZohoCreatorAPI:
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
         # Extract lookup IDs for the new attendance form
-        fy_raw = record.get("Financial_Year") or {}
+        fy_raw = record.get(FIELD_STUDENT_FY) or {}
         financial_year_id = str(fy_raw.get("ID") or "") if isinstance(fy_raw, dict) else ""
         centre_raw = record.get(FIELD_STUDENT_CENTER) or {}
         centre_id = str(centre_raw.get("ID") or "") if isinstance(centre_raw, dict) else ""
@@ -1278,11 +1287,30 @@ class ZohoCreatorAPI:
 
     def _upload_capture_photo(self, record_id: str, jpeg_bytes: bytes,
                                student_name: str, env: str = "") -> None:
-        """No-op: Attendance_form has no photo upload field."""
-        logger.debug(
-            f"Live capture upload skipped — Attendance_form has no photo field "
-            f"(record={record_id}, student={student_name})"
+        """Upload live capture JPEG to the Live_Captured_Image field. Best-effort — never raises."""
+        upload_url = (
+            f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}"
+            f"/{record_id}/{FIELD_ATT_CAPTURE}/upload"
         )
+        logger.info(
+            f"Live capture upload starting — record_id={record_id} | "
+            f"student={student_name} | size={len(jpeg_bytes)}B | env='{env}'"
+        )
+        try:
+            headers = self._headers(env=env, include_content_type=False)
+            files   = {"file": ("capture.jpg", jpeg_bytes, "image/jpeg")}
+            resp    = requests.post(upload_url, headers=headers, files=files, timeout=20)
+            resp.raise_for_status()
+            result  = resp.json()
+            if result.get("code") == 3000:
+                logger.info(f"Live capture uploaded for {student_name} (record {record_id})")
+            else:
+                logger.warning(
+                    f"Live capture upload unexpected code={result.get('code')} "
+                    f"msg={result.get('message', '')!r} for {student_name}"
+                )
+        except Exception as e:
+            logger.warning(f"Live capture upload failed for {student_name} ({record_id}): {e}")
 
     # ─── 10 PM Auto-Checkout Sweep ────────────────────────────────────────────
 
@@ -1380,14 +1408,21 @@ class ZohoCreatorAPI:
                     logger.warning(f"sync_centres_meta: no record found for centre {cid}")
                     continue
                 rec = records[0]
-                zone_raw  = rec.get("Select_Zone") or {}
+                zone_raw  = rec.get(FIELD_CENTRE_ZONE) or {}
+                logger.debug(
+                    f"sync_centres_meta: centre {cid} zone field '{FIELD_CENTRE_ZONE}' "
+                    f"→ {zone_raw!r} | all keys: {list(rec.keys())}"
+                )
                 zone_id   = str(zone_raw.get("ID") or "")   if isinstance(zone_raw, dict) else ""
                 zone_name = str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
                 if zone_id:
                     self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
                     logger.info(f"sync_centres_meta: centre {cid} → zone {zone_id} ({zone_name})")
                 else:
-                    logger.warning(f"sync_centres_meta: no zone found for centre {cid}")
+                    logger.warning(
+                        f"sync_centres_meta: no zone found for centre {cid} "
+                        f"using field '{FIELD_CENTRE_ZONE}' — available keys: {list(rec.keys())}"
+                    )
             except Exception as e:
                 logger.warning(f"sync_centres_meta: could not fetch zone for centre {cid}: {e}")
 

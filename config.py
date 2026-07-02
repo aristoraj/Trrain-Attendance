@@ -56,6 +56,7 @@ FIELD_ATT_BATCH        = os.environ.get("FIELD_ATT_BATCH",        "Batches")    
 FIELD_ATT_CHECKED_OUT  = os.environ.get("FIELD_ATT_CHECKED_OUT",  "Checked_out")          # dropdown: Yes/No
 FIELD_ATT_SOURCE       = os.environ.get("FIELD_ATT_SOURCE",       "Source")               # fixed text
 FIELD_ATT_VALUE        = os.environ.get("FIELD_ATT_VALUE",        "Value")                # fixed integer
+FIELD_ATT_CAPTURE      = os.environ.get("FIELD_ATT_CAPTURE",      "Live_Captured_Image")  # image upload field
 FIELD_CHECK_IN         = os.environ.get("FIELD_CHECK_IN",         "Check_In")             # time field
 FIELD_CHECK_OUT        = os.environ.get("FIELD_CHECK_OUT",        "Check_Out")            # time field
 
@@ -101,8 +102,12 @@ ZOHO_CENTRES_REPORT      = os.environ.get("ZOHO_CENTRES_REPORT",      "All_Centr
 FIELD_CENTRE_LOGIN_EMAIL = os.environ.get("FIELD_CENTRE_LOGIN_EMAIL", "Email")
 # Field link name of the centre display name in the Centres form
 FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Centre_Name")
+# Field link name of the Zone lookup in the Centres form (used for attendance Zone lookup)
+FIELD_CENTRE_ZONE        = os.environ.get("FIELD_CENTRE_ZONE",        "Select_Zone")
 # Field link name of the Center lookup in the student database
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
+# Field link name of the Financial Year lookup in the student database
+FIELD_STUDENT_FY     = os.environ.get("FIELD_STUDENT_FY",     "Financial_Year")
 
 # ─── User Management (feature-flag gate) ─────────────────────────────────────
 # Report that holds one record per Zoho user with feature-flag fields.
