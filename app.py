@@ -46,13 +46,16 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER, ZOHO_ENVIRONMENT, ZOHO_REDIRECT_URI,
     ZOHO_APP_NAME, ZOHO_ATTENDANCE_FORM, ZOHO_BATCHES_REPORT, ZOHO_CENTRES_REPORT,
     FIELD_STUDENT_EMBEDDING, FIELD_STUDENT_NAME, FIELD_STUDENT_NUMBER,
-    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ACTION, FIELD_CHECK_IN,
-    FIELD_CHECK_OUT, FIELD_AUTO_CHECKOUT,
+    FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
+    FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
+    FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE,
+    FIELD_CHECK_IN, FIELD_CHECK_OUT,
     FIELD_CENTRE_LOGIN_EMAIL, FIELD_CENTRE_NAME,
     FIELD_BATCH_STATUS, FIELD_BATCH_CENTER, FIELD_STUDENT_BATCH, FIELD_BATCH_DISPLAY,
     FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
     FIELD_STUDENT_CENTER,
     ZOHO_USER_MGMT_REPORT, FIELD_USER_MGMT_EMAIL, FIELD_USER_FACE_FEATURE,
+    ATTENDANCE_CUTOFF_TIME, ENABLE_LIVE_PHOTO_PATCH,
 )
 from face_utils import (
     FaceCache, decode_base64_image,
@@ -145,6 +148,16 @@ def require_session(f):
 zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
+
+# ── Global face-recognition live flag ────────────────────────────────────────
+# Loaded from DB on startup; updated in-memory by /api/webhook/environment-changed.
+# True  → "Live Face Recognition" is active for all users.
+# False → widget shows "feature not available" message to everyone.
+_face_recognition_live: bool = (
+    att_queue.get_global_setting("face_recognition_live", "false") == "true"
+)
+_face_recognition_live_lock = threading.Lock()
+logger.info(f"Global face-recognition flag on startup: {'LIVE' if _face_recognition_live else 'OFF'}")
 
 @app.before_request
 def _ensure_drain_alive():
@@ -741,6 +754,68 @@ _keepalive_thread = threading.Thread(target=_keepalive_worker, daemon=True)
 _keepalive_thread.start()
 
 
+# ─── Batch-started webhook background worker ─────────────────────────────────
+def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> None:
+    """
+    Triggered by /api/webhook/batch-started.
+    Fetches students for a newly-started batch from Zoho and merges them into the
+    local DB and face cache immediately — without waiting for the nightly scheduler.
+    """
+    try:
+        logger.info(
+            f"[BatchWebhook] Syncing batch {batch_id} for scope '{scope_key}' "
+            f"(env={env or 'production'})..."
+        )
+        no_photo: list = []
+        students = zoho.get_students(
+            centers=centers, batch_ids=[batch_id], env=env,
+            no_photo_out=no_photo, fresh_load=True,
+        )
+
+        # Upsert batch_status as Ongoing (insert if new, overwrite if Hold/other)
+        att_queue.save_batch_statuses(
+            scope_key, [{"id": batch_id, "name": "", "status": "Ongoing"}]
+        )
+
+        if students:
+            # Non-destructive upsert — doesn't wipe other batches in the same scope
+            att_queue.upsert_students_for_batch(scope_key, batch_id, students)
+
+        if no_photo:
+            att_queue.save_no_photo_students(scope_key, no_photo)
+            logger.info(f"[BatchWebhook] {len(no_photo)} student(s) have no photo yet for batch {batch_id}.")
+
+        # Rebuild in-memory face cache from DB so new students are live immediately
+        raw = att_queue.load_students_from_db(scope_key)
+        if raw:
+            decoded = []
+            for s in raw:
+                encs = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+                encs = [e for e in encs if e is not None]
+                if encs:
+                    decoded.append({
+                        "id":             s["id"],
+                        "name":           s["name"],
+                        "student_number": s["student_number"],
+                        "encodings":      encs,
+                    })
+            if decoded:
+                _get_cache(centers, env).set(decoded)
+                logger.info(
+                    f"[BatchWebhook] Face cache rebuilt — {len(decoded)} student(s) live "
+                    f"for scope '{scope_key}'."
+                )
+
+        if not students and not no_photo:
+            logger.warning(
+                f"[BatchWebhook] No students found for batch {batch_id}. "
+                "Check that the batch has trainees with photos in Zoho Creator."
+            )
+
+    except Exception as e:
+        logger.error(f"[BatchWebhook] Failed to sync batch {batch_id}: {e}")
+
+
 # ─── 10 PM auto-checkout scheduler ───────────────────────────────────────────
 def _auto_checkout_worker():
     """At 22:00 IST daily, mark unchecked-out attendance records with Auto_Checkout=No."""
@@ -794,6 +869,60 @@ def _batch_sync_worker():
             logger.error(f"[BatchSync] Nightly run failed: {e}")
 
 
+_batch_sync_lock = threading.Lock()
+
+
+def _global_student_discovery(source: str = "nightly") -> None:
+    """
+    Scan every globally-ongoing batch (no centre filter) and launch student
+    sync for any centre not yet tracked in the local DB.  Runs after the
+    per-scope status checks so it only touches genuinely new centres.
+    """
+    try:
+        logger.info(f"[GlobalSync] Starting global centre discovery (source={source})...")
+        all_batches = zoho.get_all_ongoing_batches(env="")
+        if not all_batches:
+            logger.info("[GlobalSync] No ongoing batches found globally.")
+            return
+
+        # Group batch_ids by centre_id (skip batches with no centre resolved)
+        centre_to_batches: dict = {}
+        for b in all_batches:
+            cid = b["centre_id"]
+            if cid:
+                centre_to_batches.setdefault(cid, []).append(b["batch_id"])
+
+        if not centre_to_batches:
+            logger.info("[GlobalSync] No centre IDs resolved from ongoing batches.")
+            return
+
+        known_scopes = set(att_queue.get_all_batch_status_scopes())
+
+        new_count = 0
+        for cid, batch_ids in centre_to_batches.items():
+            scope_key = _build_scope_key([cid], "")
+            if scope_key in known_scopes:
+                continue
+            logger.info(
+                f"[GlobalSync] Centre {cid}: {len(batch_ids)} ongoing batch(es) not yet in DB — loading students"
+            )
+            threading.Thread(
+                target=_load_students_bg,
+                args=([cid], ""),
+                daemon=True,
+                name=f"global-disc-{cid}",
+            ).start()
+            new_count += 1
+
+        logger.info(
+            f"[GlobalSync] Discovery complete — {new_count} new centre(s) queued for sync."
+            if new_count else
+            "[GlobalSync] All ongoing centres already tracked in DB."
+        )
+    except Exception as e:
+        logger.error(f"[GlobalSync] Discovery failed (source={source}): {e}")
+
+
 def _run_batch_sync():
     """
     Check all known scopes for batch status changes and act accordingly:
@@ -803,9 +932,20 @@ def _run_batch_sync():
       Hold     → still Hold    : no action
       Ongoing/Hold → other     : permanently delete students + embeddings from DB
     """
+    if not _batch_sync_lock.acquire(blocking=False):
+        logger.info("[BatchSync] Already running — skipping concurrent trigger.")
+        return
+    try:
+        _run_batch_sync_inner()
+    finally:
+        _batch_sync_lock.release()
+
+
+def _run_batch_sync_inner():
     scope_keys = att_queue.get_all_batch_status_scopes()
     if not scope_keys:
-        logger.info("[BatchSync] No scopes with tracked batches — nothing to check.")
+        logger.info("[BatchSync] No scopes with tracked batches — running global discovery only.")
+        _global_student_discovery("nightly")
         return
 
     total_deleted_batches = total_deleted_students = total_deleted_embeddings = 0
@@ -877,6 +1017,41 @@ def _run_batch_sync():
                         f"completed — deleted {s} student(s), {e} embedding(s)."
                     )
 
+            # ── New Ongoing batches (not yet tracked) ────────────────────────
+            # Any batch in curr_ongoing_ids that isn't in `known` is brand new.
+            # Fetch its students now so they're in DB with full meta_json before
+            # the centre opens the widget in the morning.
+            new_batch_ids = [bid for bid in curr_ongoing_ids if bid not in known]
+            if new_batch_ids:
+                logger.info(
+                    f"[BatchSync] {len(new_batch_ids)} new Ongoing batch(es) for scope "
+                    f"'{scope_key}': {new_batch_ids} — fetching students now"
+                )
+                att_queue.save_batch_statuses(
+                    scope_key,
+                    [{"id": bid, "name": "", "status": "Ongoing"} for bid in new_batch_ids],
+                )
+                for bid in new_batch_ids:
+                    try:
+                        no_photo: list = []
+                        new_students = zoho.get_students(
+                            centers=centres, batch_ids=[bid], env=env,
+                            no_photo_out=no_photo, fresh_load=True,
+                        )
+                        if new_students:
+                            att_queue.upsert_students_for_batch(scope_key, bid, new_students)
+                            cache_invalidated = True
+                            logger.info(
+                                f"[BatchSync] Batch {bid}: loaded {len(new_students)} "
+                                f"student(s) with meta_json into DB."
+                            )
+                        if no_photo:
+                            att_queue.save_no_photo_students(scope_key, no_photo)
+                    except Exception as _be:
+                        logger.warning(
+                            f"[BatchSync] Failed to load students for new batch {bid}: {_be}"
+                        )
+
             if cache_invalidated:
                 # Invalidate face cache so next widget open gets the correct student set.
                 # load_students_from_db() already filters out Hold-status batches via JOIN,
@@ -896,8 +1071,50 @@ def _run_batch_sync():
         f"held {total_held} batch(es); restored {total_restored} batch(es) to Ongoing."
     )
 
+    # Sync zone data for any new or previously-unsynced centres
+    try:
+        centre_ids = att_queue.get_ongoing_centre_ids()
+        if centre_ids:
+            logger.info(f"[BatchSync] Syncing zone data for {len(centre_ids)} ongoing centre(s)...")
+            zoho.sync_centres_meta(centre_ids, env="")
+    except Exception as e:
+        logger.error(f"[BatchSync] Zone sync failed: {e}")
+
+    # Global discovery: find any centre with ongoing batches that is not yet in DB
+    _global_student_discovery("nightly")
+
 
 threading.Thread(target=_batch_sync_worker, daemon=True, name="batch-sync").start()
+
+
+# ─── Weekly DB cleanup — every Sunday 02:00 IST ───────────────────────────────
+def _weekly_cleanup_worker():
+    logger.info("Weekly cleanup scheduler started — will run at 02:00 IST every Sunday")
+    while True:
+        now        = datetime.now(_IST)
+        days_ahead = (6 - now.weekday()) % 7          # 6 = Sunday
+        if days_ahead == 0 and (now.hour, now.minute) >= (2, 0):
+            days_ahead = 7                             # past this Sunday's 2 AM — wait for next
+        target     = (now + timedelta(days=days_ahead)).replace(
+            hour=2, minute=0, second=0, microsecond=0
+        )
+        sleep_secs = (target - now).total_seconds()
+        logger.info(
+            f"Weekly cleanup: next run in {sleep_secs / 3600:.1f}h "
+            f"({target.strftime('%Y-%m-%d %H:%M IST')})"
+        )
+        time.sleep(sleep_secs)
+        try:
+            result = att_queue.cleanup_old_records(days=7)
+            logger.info(
+                f"[WeeklyCleanup] Done — freed queue: {result['queue_deleted']} row(s), "
+                f"checkin_state: {result['checkin_deleted']} row(s)."
+            )
+        except Exception as e:
+            logger.error(f"[WeeklyCleanup] Failed: {e}")
+
+
+threading.Thread(target=_weekly_cleanup_worker, daemon=True, name="weekly-cleanup").start()
 
 # Rebuild FaceCaches from local DB in a background thread (non-blocking startup)
 threading.Thread(target=_restore_face_caches_from_db, daemon=True, name="db-restore").start()
@@ -948,6 +1165,28 @@ def _recover_interrupted_syncs() -> None:
 
 threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-sync-recovery").start()
 
+
+def _populate_centre_meta() -> None:
+    """
+    At startup, seed centre_meta with zone IDs for all centres that have
+    ongoing batch students in the local DB.  Uses direct record lookup
+    (GET /report/All_Centres/{id}) — one call per unsynced centre — instead
+    of the old broken criteria-filter approach.
+    """
+    try:
+        centre_ids = att_queue.get_ongoing_centre_ids()
+        if not centre_ids:
+            logger.info("[CentreMeta] No ongoing centres in DB — skipping zone sync.")
+            return
+        logger.info(f"[CentreMeta] Syncing zone data for {len(centre_ids)} centre(s)...")
+        zoho.sync_centres_meta(centre_ids, env="")
+    except Exception as e:
+        logger.error(f"[CentreMeta] Failed to populate centre_meta: {e}")
+
+
+threading.Thread(target=_populate_centre_meta, daemon=True, name="centre-meta-load").start()
+
+
 def _warmup_face_model():
     try:
         from face_utils import _get_face_app
@@ -992,6 +1231,18 @@ def health():
             "failed":  queue_status["failed"],
         },
     })
+
+
+@app.route("/api/attendance-window")
+def attendance_window():
+    """Return whether attendance capture is currently open (before IST cutoff)."""
+    try:
+        cutoff_h, cutoff_m = (int(p) for p in ATTENDANCE_CUTOFF_TIME.split(":"))
+    except (ValueError, AttributeError):
+        cutoff_h, cutoff_m = 16, 50
+    now_ist = datetime.now(_IST)
+    is_open = (now_ist.hour, now_ist.minute) < (cutoff_h, cutoff_m)
+    return jsonify({"open": is_open, "cutoff": f"{cutoff_h:02d}:{cutoff_m:02d}"})
 
 
 @app.route("/api/cache/status")
@@ -1381,6 +1632,18 @@ def verify():
                 "success": False,
                 "error": "Liveness check failed. Please blink naturally in front of the camera.",
             }), 400
+
+        # Block after attendance cutoff time
+        try:
+            cutoff_h, cutoff_m = (int(p) for p in ATTENDANCE_CUTOFF_TIME.split(":"))
+        except (ValueError, AttributeError):
+            cutoff_h, cutoff_m = 16, 50
+        now_ist = datetime.now(_IST)
+        if (now_ist.hour, now_ist.minute) >= (cutoff_h, cutoff_m):
+            return jsonify({
+                "success": False,
+                "error": f"Attendance is closed for today (cutoff {cutoff_h:02d}:{cutoff_m:02d} IST).",
+            }), 403
 
         user_email        = data.get("user_email") or None
         env               = _resolve_env(data.get("zoho_environment"))
@@ -1837,47 +2100,268 @@ def create_session():
     return jsonify({"session_token": token, "has_access": has_access, "expires_in": _SESSION_TTL})
 
 
-# ─── Feature-access check ─────────────────────────────────────────────────────
-_feature_cache: dict[str, tuple[bool, float]] = {}
-_feature_cache_lock = threading.Lock()
-_FEATURE_CACHE_TTL = 86400   # 24h — webhook evicts on toggle so polling every 10 min is unnecessary
+# ─── Feature-access check (global flag) ──────────────────────────────────────
 
-
-def _get_feature_access(email: str, env: str = "") -> bool:
-    """Core logic: returns True if email has Face_Recognition_Feature enabled."""
-    cache_key = f"{env}:{email}"
-    with _feature_cache_lock:
-        cached = _feature_cache.get(cache_key)
-    if cached and (time.time() - cached[1]) < _FEATURE_CACHE_TTL:
-        return cached[0]
-    url      = f"{zoho._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
-    criteria = f'({FIELD_USER_MGMT_EMAIL}=="{email}" && {FIELD_USER_FACE_FEATURE}==true)'
-    try:
-        resp      = zoho._request("get", url, env=env,
-                                  params={"criteria": criteria, "limit": 1}, timeout=10)
-        resp_json = resp.json()
-        if resp_json.get("code") == 4000:
-            logger.warning(f"Feature-access: Zoho API limit for {email} — failing open")
-            return True
-        records    = resp_json.get("data", [])
-        has_access = isinstance(records, list) and len(records) > 0
-        with _feature_cache_lock:
-            _feature_cache[cache_key] = (has_access, time.time())
-        logger.info(f"Feature-access: {email} → {'enabled' if has_access else 'disabled'}")
-        return has_access
-    except Exception as e:
-        logger.warning(f"Feature-access check failed for {email}: {e} — failing open")
-        return True
+def _get_feature_access(email: str = "", env: str = "") -> bool:
+    """Returns True if Face Recognition is globally enabled via the Environment form."""
+    return _face_recognition_live
 
 
 @app.route("/api/feature-access")
 @require_session
 def feature_access():
-    """Check Face_Recognition_Feature flag. Requires session auth (use /api/session for initial check)."""
-    email = request.session_email
-    env   = request.session_env
-    has_access = _get_feature_access(email, env)
-    return jsonify({"has_access": has_access})
+    """Return global face-recognition live status. Requires session auth."""
+    return jsonify({"has_access": _face_recognition_live})
+
+
+# ─── Environment form webhook ─────────────────────────────────────────────────
+
+@app.route("/api/webhook/environment-changed", methods=["POST"])
+@limiter.limit("10 per minute")
+def webhook_environment_changed():
+    """
+    Called by a Zoho Creator Deluge workflow on submit of the Environment form.
+    Sets the global face-recognition ON/OFF flag based on Attendance_Capturing_Method.
+
+    Expected JSON payload:
+        {
+            "Attendance_Capturing_Method": "Live Face Recognition" | "Zoho People",
+            "Environment":                 "<environment display name>",
+            "zoho_environment":            "<env link name>"  (optional)
+        }
+
+    Auth: pass ADMIN_SECRET in the X-Webhook-Secret request header.
+
+    Deluge snippet (Environment form → On Add / On Edit):
+
+        body = {
+            "Attendance_Capturing_Method": input.Attendance_Capturing_Method.toString(),
+            "Environment":                 input.Environment.toString(),
+            "zoho_environment":            thisapp.environment.linkname
+        };
+        response = invokeurl
+        [
+            url  : "https://<your-app>.onrender.com/api/webhook/environment-changed"
+            type : POST
+            body : body.toString()
+            headers: {
+                "X-Webhook-Secret": "<ADMIN_SECRET>",
+                "Content-Type": "application/json"
+            }
+        ];
+    """
+    global _face_recognition_live
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    body             = request.get_json(force=True) or {}
+    method           = (body.get("Attendance_Capturing_Method") or "").strip()
+    environment_name = (body.get("Environment") or "").strip()
+
+    if not method:
+        return jsonify({"error": "Attendance_Capturing_Method is required"}), 400
+
+    is_live = method.lower() == "live face recognition"
+
+    # ── Update in-memory flag + persist to DB ─────────────────────────────────
+    with _face_recognition_live_lock:
+        _face_recognition_live = is_live
+
+    att_queue.set_global_setting("face_recognition_live", "true" if is_live else "false")
+    if environment_name:
+        att_queue.set_global_setting("environment_name", environment_name)
+
+    logger.info(
+        f"[EnvWebhook] Attendance_Capturing_Method='{method}' "
+        f"environment='{environment_name}' → face recognition "
+        f"{'ENABLED globally' if is_live else 'DISABLED globally'}."
+    )
+
+    # When turning ON, immediately sync all ongoing batches and their students
+    # across every centre — no need to wait for the 02:00 IST nightly scheduler.
+    if is_live:
+        threading.Thread(
+            target=_run_batch_sync,
+            daemon=True,
+            name="env-webhook-batch-sync",
+        ).start()
+        logger.info("[EnvWebhook] Background global batch+student sync triggered.")
+
+    return jsonify({
+        "success":               True,
+        "face_recognition_live": is_live,
+        "method":                method,
+        "environment":           environment_name,
+        "sync_triggered":        is_live,
+    })
+
+
+@app.route("/api/webhook/batch-started", methods=["POST"])
+@limiter.limit("30 per minute")
+def webhook_batch_started():
+    """
+    Called by a Zoho Creator button action when a batch is started (status → Ongoing).
+    Immediately fetches and caches trainees for that batch so they can mark attendance
+    the same day — without waiting for the 02:00 IST nightly scheduler.
+
+    Expected JSON payload:
+        {
+            "batch_id":    "<Zoho Creator record ID of the batch>",
+            "centre_ids":  "<comma-separated numeric centre IDs>",
+            "environment": "<Zoho app environment link name>"  (omit / leave blank for production)
+        }
+
+    Auth: pass ADMIN_SECRET in the X-Webhook-Secret header.
+
+    Deluge snippet (Batch form → button script):
+
+        body = {
+            "batch_id"   : input.ID.toLong().toString(),
+            "centre_ids" : input.Centres.ID.toString(),
+            "environment": thisapp.environment.linkname
+        };
+        response = invokeurl
+        [
+            url    : "https://<your-app>.onrender.com/api/webhook/batch-started"
+            type   : POST
+            body   : body.toString()
+            headers: {"X-Webhook-Secret": "<ADMIN_SECRET>",
+                      "Content-Type": "application/json"}
+        ];
+
+    Note: for a multi-centre batch, join the IDs with a comma, e.g.
+        "centre_ids": input.Centres.ID.toString()  (Creator joins multi-select IDs with comma)
+    """
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    body       = request.get_json(force=True) or {}
+    batch_id   = (body.get("batch_id") or "").strip()
+    centre_ids = (body.get("centre_ids") or "").strip()
+    env        = (body.get("environment") or "").strip().lower()
+    if env == "production":
+        env = ""
+
+    if not batch_id:
+        return jsonify({"error": "batch_id is required"}), 400
+
+    centers   = [c.strip() for c in centre_ids.split(",") if c.strip()] if centre_ids else []
+    scope_key = _build_scope_key(centers, env)
+
+    logger.info(
+        f"[BatchWebhook] Received batch-started: batch_id='{batch_id}' "
+        f"centres={centers} env='{env or 'production'}' scope='{scope_key}'"
+    )
+
+    threading.Thread(
+        target=_sync_batch_now,
+        args=(batch_id, centers, env, scope_key),
+        daemon=True,
+        name=f"batch-sync-{batch_id[:8]}",
+    ).start()
+
+    return jsonify({
+        "success":   True,
+        "batch_id":  batch_id,
+        "scope_key": scope_key,
+        "message":   "Batch sync started — trainees will be available within ~30 seconds.",
+    }), 202
+
+
+@app.route("/api/webhook/student-removed", methods=["POST"])
+@limiter.limit("30 per minute")
+def webhook_student_removed():
+    """
+    Called when a trainee drops out. Removes the student from the local DB
+    (student_cache + face_embeddings) and evicts them from all warm in-memory
+    face caches so they can no longer mark attendance immediately.
+
+    Auth  : ?secret=<ADMIN_SECRET> query param
+    Env   : "environment" request header (thisapp.environment.linkname)
+
+    Body (JSON):
+        { "student_id": "<Zoho Creator record ID of the trainee>",
+          "centre_id":  "<numeric centre ID>" }
+
+    Deluge snippet (CV_Management form → On Delete / button script):
+
+        try
+        {
+            if(thisapp.environment.linkname == "development")
+            {
+                webhookUrl = "https://trrain-attendance-1.onrender.com/api/webhook/student-removed";
+            }
+            else
+            {
+                webhookUrl = "https://trrain-attendance.onrender.com/api/webhook/student-removed";
+            }
+            body = {"student_id": input.ID.toString(),
+                    "centre_id" : input.Centre_Name.ID.toString()};
+            response = invokeurl
+            [
+                url    : webhookUrl + "?secret=<ADMIN_SECRET>"
+                type   : POST
+                body   : body.toString()
+                headers: {"environment": thisapp.environment.linkname,
+                          "Content-Type": "application/json"}
+            ];
+        }
+        catch (e)
+        {
+            res = insert into Logs
+            [
+                Added_User = zoho.loginuser
+                Exception  = e.tostring()
+                Module     = "Face Recognition Attendance Remove Trainee " + input.ID
+            ];
+        }
+    """
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if not _hmac.compare_digest(secret, ADMIN_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    body       = request.get_json(force=True) or {}
+    student_id = (body.get("student_id") or "").strip()
+
+    if not student_id:
+        return jsonify({"error": "student_id is required"}), 400
+
+    # ── Remove from DB (all scopes) ───────────────────────────────────────────
+    s_count, e_count = att_queue.remove_student_by_id(student_id)
+
+    # ── Evict from all warm in-memory caches ──────────────────────────────────
+    evicted = 0
+    with _scope_caches_lock:
+        for cache in _scope_caches.values():
+            students = cache.get()
+            if students is None:
+                continue
+            before = len(students)
+            students[:] = [s for s in students if s["id"] != student_id]
+            evicted += before - len(students)
+
+    logger.info(
+        f"[StudentRemoved] student_id='{student_id}' — "
+        f"DB: {s_count} cache row(s), {e_count} embedding(s) deleted; "
+        f"in-memory: evicted from {evicted} scope cache(s)."
+    )
+
+    return jsonify({
+        "success":            True,
+        "student_id":         student_id,
+        "db_rows_deleted":    s_count,
+        "embeddings_deleted": e_count,
+        "caches_evicted":     evicted,
+    })
 
 
 # ─── SDK data-loading endpoints ───────────────────────────────────────────────
@@ -1900,13 +2384,17 @@ def api_config():
             "student_embedding": FIELD_STUDENT_EMBEDDING,
             "student_name":      FIELD_STUDENT_NAME,
             "student_number":    FIELD_STUDENT_NUMBER,
-            "att_student":       FIELD_ATT_STUDENT,
-            "att_date":          FIELD_ATT_DATE,
-            "att_status":        FIELD_ATT_STATUS,
-            "att_action":        FIELD_ACTION,
+            "att_trainee_reg":    FIELD_ATT_TRAINEE_REG,
+            "att_date":           FIELD_ATT_DATE,
+            "att_status":         FIELD_ATT_STATUS,
+            "att_zone":           FIELD_ATT_ZONE,
+            "att_centre":         FIELD_ATT_CENTRE,
+            "att_batch":          FIELD_ATT_BATCH,
+            "att_checked_out":    FIELD_ATT_CHECKED_OUT,
+            "att_source":         FIELD_ATT_SOURCE,
+            "att_value":          FIELD_ATT_VALUE,
             "att_check_in":       FIELD_CHECK_IN,
             "att_check_out":      FIELD_CHECK_OUT,
-            "att_auto_checkout":  FIELD_AUTO_CHECKOUT,
             "centre_email":       FIELD_CENTRE_LOGIN_EMAIL,
             "centre_name":       FIELD_CENTRE_NAME,
             "user_email":        FIELD_USER_MGMT_EMAIL,
@@ -1994,6 +2482,23 @@ def load_students():
             _scope_caches[scope_key].set(students)
         logger.info(f"SDK seeded {len(students)} student(s) into scope '{scope_key}'")
 
+        # Persist to DB so cold starts restore without needing the SDK fetch again.
+        # Also record each batch as Ongoing so the Ongoing-batch guard works next time.
+        try:
+            batch_ids_seen = list({s.get("batch_id", "") for s in students if s.get("batch_id")})
+            if batch_ids_seen:
+                att_queue.save_batch_statuses(
+                    scope_key,
+                    [{"id": bid, "name": "", "status": "Ongoing"} for bid in batch_ids_seen],
+                )
+            att_queue.save_students_to_db(scope_key, students)
+            logger.info(
+                f"SDK load-students: persisted {len(students)} student(s) to DB "
+                f"for scope '{scope_key}' ({len(batch_ids_seen)} batch(es))."
+            )
+        except Exception as _db_err:
+            logger.warning(f"SDK load-students: DB persist failed (cache still warm): {_db_err}")
+
     # ── Background encoding for students missing Face_Embedding ───────────────
     if needs_encoding:
         with _scope_encoding_lock:
@@ -2009,6 +2514,9 @@ def load_students():
                 nr             = rec.get(FIELD_STUDENT_NAME) or ""
                 sname          = nr.get("display_value", "") if isinstance(nr, dict) else str(nr or "")
                 student_number = str(rec.get(FIELD_STUDENT_NUMBER) or "")
+                batch_raw      = rec.get(FIELD_STUDENT_BATCH) or ""
+                enc_batch_id   = (batch_raw.get("ID") if isinstance(batch_raw, dict)
+                                  else str(batch_raw)).strip()
 
                 photo_url = zoho._extract_photo_url(rec, sid, sname)
                 if photo_url:
@@ -2026,6 +2534,13 @@ def load_students():
                                         "student_number": student_number,
                                         "encodings":      [enc],
                                     })
+                                    # Persist newly encoded student to DB
+                                    att_queue.upsert_students_for_batch(
+                                        scope_key, enc_batch_id,
+                                        [{"id": sid, "name": sname,
+                                          "student_number": student_number,
+                                          "batch_id": enc_batch_id}],
+                                    )
                             except Exception:
                                 pass
 
@@ -2858,7 +3373,8 @@ def admin_reauth_page():
         return make_response("ZOHO_REDIRECT_URI is not configured — set it in Render env vars.", 500)
 
     state = secrets.token_urlsafe(16)
-    session["oauth_state"] = state
+    session["oauth_state"] = state          # cookie fallback
+    att_queue.set_global_setting("oauth_state", state)  # DB fallback for multi-worker / cross-service
 
     scope = "ZohoCreator.report.ALL,ZohoCreator.form.CREATE,ZohoCreator.report.READ"
     auth_url = (
@@ -2919,7 +3435,10 @@ def auth_callback():
         return _reauth_result(False, f"Zoho authorisation denied: {_html.escape(error)}", "")
 
     state = request.args.get("state", "")
-    if not state or state != session.pop("oauth_state", None):
+    cookie_state = session.pop("oauth_state", None)
+    db_state     = att_queue.get_global_setting("oauth_state")
+    att_queue.set_global_setting("oauth_state", "")  # consume it
+    if not state or (state != cookie_state and state != db_state):
         return make_response("Invalid or expired OAuth state — please try again from /admin/reauth.", 400)
 
     code = request.args.get("code", "").strip()

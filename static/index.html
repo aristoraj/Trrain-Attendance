@@ -448,7 +448,8 @@
       flex-direction: column; align-items: center; justify-content: center;
       padding: 24px 16px;
     }
-    #no-batches-screen {
+    #no-batches-screen,
+    #attendance-closed-screen {
       position: fixed; inset: 0; z-index: 9998;
       background: #FBF8F6;
       display: none;
@@ -579,14 +580,8 @@
       display:flex;align-items:center;justify-content:center;margin:0 auto 22px;font-size:34px;">📋</div>
     <div style="font-size:19px;font-weight:700;color:#1A1A1A;margin-bottom:10px;">Feature Not Available at the Moment</div>
     <div style="font-size:14px;color:#7A6B62;line-height:1.65;margin-bottom:26px;">
-      Please use <strong>Zoho People</strong> to post your attendance daily.<br><br>
-      You will be notified by the admin team once the Live Face Recognition feature is available.
-    </div>
-    <div style="display:inline-flex;align-items:center;gap:7px;background:#FFF8E8;
-      border:1px solid #E8C86A;color:#7A5200;border-radius:20px;padding:8px 18px;font-size:13px;font-weight:500;">
-      <span style="width:8px;height:8px;background:var(--gold);border-radius:50%;
-        animation:fg-pulse 1.8s infinite;display:inline-block;"></span>
-      Use Zoho People for now
+      Please continue using <strong>Zoho People</strong> to mark your attendance today.<br><br>
+      From tomorrow onwards, the new attendance system will be available for attendance marking.
     </div>
   </div>
 </div>
@@ -616,6 +611,18 @@
     <div class="dl-sub">
       There are no ongoing batches assigned to your centre right now.<br>
       Please come back when a new batch has started.
+    </div>
+  </div>
+</div>
+
+<!-- Attendance closed screen: shown after daily cutoff time -->
+<div id="attendance-closed-screen">
+  <div class="dl-card">
+    <div class="dl-icon">🕔</div>
+    <div class="dl-title">Attendance Closed for Today</div>
+    <div class="dl-sub" id="attendance-closed-sub">
+      Attendance capture has ended for today.<br>
+      Please return tomorrow morning.
     </div>
   </div>
 </div>
@@ -986,6 +993,18 @@ async function initDataLoadingScreen() {
   retryArea.style.display = 'none';
   _loadingAttempts  = 0;
   _loadingStartTime = Date.now();
+
+  // 0. Attendance window check — if past cutoff, show closed screen and stop.
+  try {
+    const win = await fetch('/api/attendance-window').then(r => r.json());
+    if (!win.open) {
+      dlScreen.style.display = 'none';
+      const closedSub = document.getElementById('attendance-closed-sub');
+      if (closedSub) closedSub.textContent = `Attendance capture closed at ${win.cutoff} IST. Please return tomorrow morning.`;
+      document.getElementById('attendance-closed-screen').style.display = 'flex';
+      return;
+    }
+  } catch (_) {}
 
   // 1. Immediate cache check — if the enable webhook pre-loaded data, go straight
   //    to camera without waiting for a full poll cycle.

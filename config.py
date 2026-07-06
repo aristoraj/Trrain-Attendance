@@ -32,8 +32,8 @@ ZOHO_REDIRECT_URI  = os.environ.get("ZOHO_REDIRECT_URI", "")
 
 # Report / form link names
 ZOHO_STUDENT_REPORT   = os.environ.get("ZOHO_STUDENT_REPORT",   "CV_Management")
-ZOHO_ATTENDANCE_FORM  = os.environ.get("ZOHO_ATTENDANCE_FORM",  "Face_Attendance")
-ZOHO_ATTENDANCE_REPORT = os.environ.get("ZOHO_ATTENDANCE_REPORT", "All_Face_Attendances")
+ZOHO_ATTENDANCE_FORM  = os.environ.get("ZOHO_ATTENDANCE_FORM",  "Attendance_form")
+ZOHO_ATTENDANCE_REPORT = os.environ.get("ZOHO_ATTENDANCE_REPORT", "Attendance_form_Report")
 
 # ─── Student Database field names ─────────────────────────────────────────────
 FIELD_STUDENT_ID        = "ID"   # Zoho system record ID — always present
@@ -45,15 +45,19 @@ FIELD_STUDENT_PHOTO     = os.environ.get("FIELD_STUDENT_PHOTO",     "Upload_Phot
 # Add this field in Zoho Creator: Student Database → Multi Line field → link name: Face_Embedding
 FIELD_STUDENT_EMBEDDING = os.environ.get("FIELD_STUDENT_EMBEDDING", "Face_Embedding")
 
-# ─── Attendance form field names ──────────────────────────────────────────────
-FIELD_ATT_STUDENT    = os.environ.get("FIELD_ATT_STUDENT",    "Trainee")           # lookup
-FIELD_ATT_DATE       = os.environ.get("FIELD_ATT_DATE",       "Date_field")
-FIELD_ATT_STATUS     = os.environ.get("FIELD_ATT_STATUS",     "Attendance")        # dropdown
-FIELD_CHECK_IN       = os.environ.get("FIELD_CHECK_IN",       "Check_In")          # time field
-FIELD_CHECK_OUT      = os.environ.get("FIELD_CHECK_OUT",      "Check_Out")         # time field
-FIELD_AUTO_CHECKOUT  = os.environ.get("FIELD_AUTO_CHECKOUT",  "Auto_Checkout")     # dropdown: Yes/No
-FIELD_ATT_CAPTURE    = os.environ.get("FIELD_ATT_CAPTURE",    "Live_Captured_Image") # file upload
-FIELD_ACTION         = os.environ.get("FIELD_ACTION",         "Action_field")      # Blink / Smile
+# ─── Attendance form field names (Attendance_form) ────────────────────────────
+FIELD_ATT_TRAINEE_REG  = os.environ.get("FIELD_ATT_TRAINEE_REG",  "Trainee_Regstration") # lookup
+FIELD_ATT_DATE         = os.environ.get("FIELD_ATT_DATE",         "Attendance_Date")
+FIELD_ATT_STATUS       = os.environ.get("FIELD_ATT_STATUS",       "Attendance_Status")   # dropdown: Present
+FIELD_ATT_ZONE         = os.environ.get("FIELD_ATT_ZONE",         "Zone")                 # lookup
+FIELD_ATT_CENTRE       = os.environ.get("FIELD_ATT_CENTRE",       "Centres")              # lookup
+FIELD_ATT_BATCH        = os.environ.get("FIELD_ATT_BATCH",        "Batches")              # lookup
+FIELD_ATT_CHECKED_OUT  = os.environ.get("FIELD_ATT_CHECKED_OUT",  "Checked_out")          # dropdown: Yes/No
+FIELD_ATT_SOURCE       = os.environ.get("FIELD_ATT_SOURCE",       "Source")               # fixed text
+FIELD_ATT_VALUE        = os.environ.get("FIELD_ATT_VALUE",        "Value")                # fixed integer
+FIELD_ATT_CAPTURE      = os.environ.get("FIELD_ATT_CAPTURE",      "Live_Captured_Image")  # image upload field
+FIELD_CHECK_IN         = os.environ.get("FIELD_CHECK_IN",         "Check_In")             # time field
+FIELD_CHECK_OUT        = os.environ.get("FIELD_CHECK_OUT",        "Check_Out")            # time field
 
 # ─── Zoho Creator Environment ────────────────────────────────────────────────
 # Overridden per-request by envUrlFragment from the Widget SDK.
@@ -97,8 +101,14 @@ ZOHO_CENTRES_REPORT      = os.environ.get("ZOHO_CENTRES_REPORT",      "All_Centr
 FIELD_CENTRE_LOGIN_EMAIL = os.environ.get("FIELD_CENTRE_LOGIN_EMAIL", "Email")
 # Field link name of the centre display name in the Centres form
 FIELD_CENTRE_NAME        = os.environ.get("FIELD_CENTRE_NAME",        "Centre_Name")
+# Field link name of the Zone lookup in the Centres form
+FIELD_CENTRE_ZONE        = os.environ.get("FIELD_CENTRE_ZONE",        "Select_Zone")
+# Zones report and name field (used to resolve zone name → zone record ID)
+ZOHO_ZONES_REPORT        = os.environ.get("ZOHO_ZONES_REPORT",        "All_Zones")
+FIELD_ZONE_NAME          = os.environ.get("FIELD_ZONE_NAME",           "Zone_Name")
 # Field link name of the Center lookup in the student database
 FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
+
 
 # ─── User Management (feature-flag gate) ─────────────────────────────────────
 # Report that holds one record per Zoho user with feature-flag fields.
@@ -106,6 +116,13 @@ FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Centre_Name")
 ZOHO_USER_MGMT_REPORT     = os.environ.get("ZOHO_USER_MGMT_REPORT",     "All_Users")
 FIELD_USER_MGMT_EMAIL     = os.environ.get("FIELD_USER_MGMT_EMAIL",     "Zoho_ID")
 FIELD_USER_FACE_FEATURE   = os.environ.get("FIELD_USER_FACE_FEATURE",   "Face_Recognition_Feature")
+
+# ─── Attendance Window ────────────────────────────────────────────────────────
+# After this HH:MM time (IST), the widget shows "Attendance Closed" and /api/verify is blocked.
+ATTENDANCE_CUTOFF_TIME = os.environ.get("ATTENDANCE_CUTOFF_TIME", "16:50")
+
+# Set to "false" to skip the live-capture photo patch after attendance POST.
+ENABLE_LIVE_PHOTO_PATCH = os.environ.get("ENABLE_LIVE_PHOTO_PATCH", "true").lower() == "true"
 
 # ─── App Settings ─────────────────────────────────────────────────────────────
 try:
