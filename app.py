@@ -1086,6 +1086,36 @@ def _run_batch_sync_inner():
 
 threading.Thread(target=_batch_sync_worker, daemon=True, name="batch-sync").start()
 
+
+# ─── Weekly DB cleanup — every Sunday 02:00 IST ───────────────────────────────
+def _weekly_cleanup_worker():
+    logger.info("Weekly cleanup scheduler started — will run at 02:00 IST every Sunday")
+    while True:
+        now        = datetime.now(_IST)
+        days_ahead = (6 - now.weekday()) % 7          # 6 = Sunday
+        if days_ahead == 0 and (now.hour, now.minute) >= (2, 0):
+            days_ahead = 7                             # past this Sunday's 2 AM — wait for next
+        target     = (now + timedelta(days=days_ahead)).replace(
+            hour=2, minute=0, second=0, microsecond=0
+        )
+        sleep_secs = (target - now).total_seconds()
+        logger.info(
+            f"Weekly cleanup: next run in {sleep_secs / 3600:.1f}h "
+            f"({target.strftime('%Y-%m-%d %H:%M IST')})"
+        )
+        time.sleep(sleep_secs)
+        try:
+            result = att_queue.cleanup_old_records(days=7)
+            logger.info(
+                f"[WeeklyCleanup] Done — freed queue: {result['queue_deleted']} row(s), "
+                f"checkin_state: {result['checkin_deleted']} row(s)."
+            )
+        except Exception as e:
+            logger.error(f"[WeeklyCleanup] Failed: {e}")
+
+
+threading.Thread(target=_weekly_cleanup_worker, daemon=True, name="weekly-cleanup").start()
+
 # Rebuild FaceCaches from local DB in a background thread (non-blocking startup)
 threading.Thread(target=_restore_face_caches_from_db, daemon=True, name="db-restore").start()
 

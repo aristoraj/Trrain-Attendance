@@ -573,6 +573,34 @@ class AttendanceQueue:
             )
         return removed_students, removed_embeddings
 
+    def cleanup_old_records(self, days: int = 7) -> dict:
+        """
+        Weekly housekeeping: delete settled attendance_queue rows (POSTED/FAILED)
+        and old checkin_state rows older than `days` days.
+        Returns {"queue_deleted": int, "checkin_deleted": int}.
+        """
+        cutoff_dt   = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q(
+                    "DELETE FROM attendance_queue "
+                    "WHERE status IN ('POSTED', 'FAILED') AND updated_at < ?"
+                ),
+                (cutoff_dt,),
+            )
+            queue_deleted = cur.rowcount if hasattr(cur, "rowcount") else 0
+            cur = conn.execute(
+                self._q("DELETE FROM checkin_state WHERE date_str < ?"),
+                (cutoff_date,),
+            )
+            checkin_deleted = cur.rowcount if hasattr(cur, "rowcount") else 0
+        logger.info(
+            f"[WeeklyCleanup] Deleted {queue_deleted} queue record(s) "
+            f"and {checkin_deleted} checkin_state record(s) older than {days} days."
+        )
+        return {"queue_deleted": queue_deleted, "checkin_deleted": checkin_deleted}
+
     def remove_students_by_batch(self, batch_id: str, scope_key: str) -> tuple:
         """
         Permanently remove all student_cache rows AND face_embeddings for a batch
