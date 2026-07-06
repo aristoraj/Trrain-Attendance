@@ -55,6 +55,7 @@ from config import (
     FIELD_BATCH_START_DATE, FIELD_BATCH_END_DATE,
     FIELD_STUDENT_CENTER,
     ZOHO_USER_MGMT_REPORT, FIELD_USER_MGMT_EMAIL, FIELD_USER_FACE_FEATURE,
+    ATTENDANCE_CUTOFF_TIME, ENABLE_LIVE_PHOTO_PATCH,
 )
 from face_utils import (
     FaceCache, decode_base64_image,
@@ -1134,6 +1135,18 @@ def health():
     })
 
 
+@app.route("/api/attendance-window")
+def attendance_window():
+    """Return whether attendance capture is currently open (before IST cutoff)."""
+    try:
+        cutoff_h, cutoff_m = (int(p) for p in ATTENDANCE_CUTOFF_TIME.split(":"))
+    except (ValueError, AttributeError):
+        cutoff_h, cutoff_m = 16, 50
+    now_ist = datetime.now(_IST)
+    is_open = (now_ist.hour, now_ist.minute) < (cutoff_h, cutoff_m)
+    return jsonify({"open": is_open, "cutoff": f"{cutoff_h:02d}:{cutoff_m:02d}"})
+
+
 @app.route("/api/cache/status")
 @require_session
 @limiter.limit("60 per minute")
@@ -1521,6 +1534,18 @@ def verify():
                 "success": False,
                 "error": "Liveness check failed. Please blink naturally in front of the camera.",
             }), 400
+
+        # Block after attendance cutoff time
+        try:
+            cutoff_h, cutoff_m = (int(p) for p in ATTENDANCE_CUTOFF_TIME.split(":"))
+        except (ValueError, AttributeError):
+            cutoff_h, cutoff_m = 16, 50
+        now_ist = datetime.now(_IST)
+        if (now_ist.hour, now_ist.minute) >= (cutoff_h, cutoff_m):
+            return jsonify({
+                "success": False,
+                "error": f"Attendance is closed for today (cutoff {cutoff_h:02d}:{cutoff_m:02d} IST).",
+            }), 403
 
         user_email        = data.get("user_email") or None
         env               = _resolve_env(data.get("zoho_environment"))

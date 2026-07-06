@@ -117,6 +117,13 @@ ZOHO_USER_MGMT_REPORT     = os.environ.get("ZOHO_USER_MGMT_REPORT",     "All_Use
 FIELD_USER_MGMT_EMAIL     = os.environ.get("FIELD_USER_MGMT_EMAIL",     "Zoho_ID")
 FIELD_USER_FACE_FEATURE   = os.environ.get("FIELD_USER_FACE_FEATURE",   "Face_Recognition_Feature")
 
+# ─── Attendance Window ────────────────────────────────────────────────────────
+# After this HH:MM time (IST), the widget shows "Attendance Closed" and /api/verify is blocked.
+ATTENDANCE_CUTOFF_TIME = os.environ.get("ATTENDANCE_CUTOFF_TIME", "16:50")
+
+# Set to "false" to skip the live-capture photo patch after attendance POST.
+ENABLE_LIVE_PHOTO_PATCH = os.environ.get("ENABLE_LIVE_PHOTO_PATCH", "true").lower() == "true"
+
 # ─── App Settings ─────────────────────────────────────────────────────────────
 try:
     PORT = int(os.environ.get("PORT", 5000))

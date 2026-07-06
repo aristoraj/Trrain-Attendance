@@ -32,6 +32,8 @@ DB_PATH = os.environ.get(
 )
 DATABASE_URL = os.environ.get("DATABASE_URL")   # Render managed PostgreSQL
 MAX_ATTEMPTS = 5
+
+from config import ENABLE_LIVE_PHOTO_PATCH
 WORKER_POLL_INTERVAL = 2
 FAILED_RESURRECTION_INTERVAL = 600   # seconds between auto-retry sweeps of FAILED records
 
@@ -1939,7 +1941,7 @@ class AttendanceQueue:
                                 f"confirmed on Zoho record '{zoho_id}' for {name} after repair. "
                                 f"Needs manual review."
                             )
-                    if zoho_id and capture_jpeg:
+                    if zoho_id and capture_jpeg and ENABLE_LIVE_PHOTO_PATCH:
                         import threading as _threading
                         _threading.Thread(
                             target=self._zoho._upload_capture_photo,
@@ -1970,7 +1972,7 @@ class AttendanceQueue:
                             )
                         self.record_checkin(student_id, name, row["date_str"], environment, existing_id,
                                             checkin_time_hhmm=checkin_time)
-                        if capture_jpeg:
+                        if capture_jpeg and ENABLE_LIVE_PHOTO_PATCH:
                             import threading as _threading
                             _threading.Thread(
                                 target=self._zoho._upload_capture_photo,
@@ -2006,7 +2008,7 @@ class AttendanceQueue:
                             student_id, name, row["date_str"], environment, existing_id,
                             checkin_time_hhmm=checkin_time,
                         )
-                        if capture_jpeg:
+                        if capture_jpeg and ENABLE_LIVE_PHOTO_PATCH:
                             import threading as _threading
                             _threading.Thread(
                                 target=self._zoho._upload_capture_photo,

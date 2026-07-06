@@ -448,7 +448,8 @@
       flex-direction: column; align-items: center; justify-content: center;
       padding: 24px 16px;
     }
-    #no-batches-screen {
+    #no-batches-screen,
+    #attendance-closed-screen {
       position: fixed; inset: 0; z-index: 9998;
       background: #FBF8F6;
       display: none;
@@ -616,6 +617,18 @@
     <div class="dl-sub">
       There are no ongoing batches assigned to your centre right now.<br>
       Please come back when a new batch has started.
+    </div>
+  </div>
+</div>
+
+<!-- Attendance closed screen: shown after daily cutoff time -->
+<div id="attendance-closed-screen">
+  <div class="dl-card">
+    <div class="dl-icon">🕔</div>
+    <div class="dl-title">Attendance Closed for Today</div>
+    <div class="dl-sub" id="attendance-closed-sub">
+      Attendance capture has ended for today.<br>
+      Please return tomorrow morning.
     </div>
   </div>
 </div>
@@ -986,6 +999,18 @@ async function initDataLoadingScreen() {
   retryArea.style.display = 'none';
   _loadingAttempts  = 0;
   _loadingStartTime = Date.now();
+
+  // 0. Attendance window check — if past cutoff, show closed screen and stop.
+  try {
+    const win = await fetch('/api/attendance-window').then(r => r.json());
+    if (!win.open) {
+      dlScreen.style.display = 'none';
+      const closedSub = document.getElementById('attendance-closed-sub');
+      if (closedSub) closedSub.textContent = `Attendance capture closed at ${win.cutoff} IST. Please return tomorrow morning.`;
+      document.getElementById('attendance-closed-screen').style.display = 'flex';
+      return;
+    }
+  } catch (_) {}
 
   // 1. Immediate cache check — if the enable webhook pre-loaded data, go straight
   //    to camera without waiting for a full poll cycle.
