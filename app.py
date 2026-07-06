@@ -869,6 +869,60 @@ def _batch_sync_worker():
             logger.error(f"[BatchSync] Nightly run failed: {e}")
 
 
+_batch_sync_lock = threading.Lock()
+
+
+def _global_student_discovery(source: str = "nightly") -> None:
+    """
+    Scan every globally-ongoing batch (no centre filter) and launch student
+    sync for any centre not yet tracked in the local DB.  Runs after the
+    per-scope status checks so it only touches genuinely new centres.
+    """
+    try:
+        logger.info(f"[GlobalSync] Starting global centre discovery (source={source})...")
+        all_batches = zoho.get_all_ongoing_batches(env="")
+        if not all_batches:
+            logger.info("[GlobalSync] No ongoing batches found globally.")
+            return
+
+        # Group batch_ids by centre_id (skip batches with no centre resolved)
+        centre_to_batches: dict = {}
+        for b in all_batches:
+            cid = b["centre_id"]
+            if cid:
+                centre_to_batches.setdefault(cid, []).append(b["batch_id"])
+
+        if not centre_to_batches:
+            logger.info("[GlobalSync] No centre IDs resolved from ongoing batches.")
+            return
+
+        known_scopes = set(att_queue.get_all_batch_status_scopes())
+
+        new_count = 0
+        for cid, batch_ids in centre_to_batches.items():
+            scope_key = _build_scope_key([cid], "")
+            if scope_key in known_scopes:
+                continue
+            logger.info(
+                f"[GlobalSync] Centre {cid}: {len(batch_ids)} ongoing batch(es) not yet in DB — loading students"
+            )
+            threading.Thread(
+                target=_load_students_bg,
+                args=([cid], ""),
+                daemon=True,
+                name=f"global-disc-{cid}",
+            ).start()
+            new_count += 1
+
+        logger.info(
+            f"[GlobalSync] Discovery complete — {new_count} new centre(s) queued for sync."
+            if new_count else
+            "[GlobalSync] All ongoing centres already tracked in DB."
+        )
+    except Exception as e:
+        logger.error(f"[GlobalSync] Discovery failed (source={source}): {e}")
+
+
 def _run_batch_sync():
     """
     Check all known scopes for batch status changes and act accordingly:
@@ -878,9 +932,20 @@ def _run_batch_sync():
       Hold     → still Hold    : no action
       Ongoing/Hold → other     : permanently delete students + embeddings from DB
     """
+    if not _batch_sync_lock.acquire(blocking=False):
+        logger.info("[BatchSync] Already running — skipping concurrent trigger.")
+        return
+    try:
+        _run_batch_sync_inner()
+    finally:
+        _batch_sync_lock.release()
+
+
+def _run_batch_sync_inner():
     scope_keys = att_queue.get_all_batch_status_scopes()
     if not scope_keys:
-        logger.info("[BatchSync] No scopes with tracked batches — nothing to check.")
+        logger.info("[BatchSync] No scopes with tracked batches — running global discovery only.")
+        _global_student_discovery("nightly")
         return
 
     total_deleted_batches = total_deleted_students = total_deleted_embeddings = 0
@@ -1014,6 +1079,9 @@ def _run_batch_sync():
             zoho.sync_centres_meta(centre_ids, env="")
     except Exception as e:
         logger.error(f"[BatchSync] Zone sync failed: {e}")
+
+    # Global discovery: find any centre with ongoing batches that is not yet in DB
+    _global_student_discovery("nightly")
 
 
 threading.Thread(target=_batch_sync_worker, daemon=True, name="batch-sync").start()
@@ -2083,11 +2151,22 @@ def webhook_environment_changed():
         f"{'ENABLED globally' if is_live else 'DISABLED globally'}."
     )
 
+    # When turning ON, immediately sync all ongoing batches and their students
+    # across every centre — no need to wait for the 02:00 IST nightly scheduler.
+    if is_live:
+        threading.Thread(
+            target=_run_batch_sync,
+            daemon=True,
+            name="env-webhook-batch-sync",
+        ).start()
+        logger.info("[EnvWebhook] Background global batch+student sync triggered.")
+
     return jsonify({
         "success":               True,
         "face_recognition_live": is_live,
         "method":                method,
         "environment":           environment_name,
+        "sync_triggered":        is_live,
     })
 
 

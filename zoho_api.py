@@ -347,6 +347,96 @@ class ZohoCreatorAPI:
         logger.info(f"Found {len(batch_ids)} ongoing batch(es) for centers {centers}")
         return batch_ids
 
+    def get_all_ongoing_batches(self, env: str = "") -> list[dict]:
+        """
+        Return ALL ongoing batches globally, with no centre filter.
+        Each item: {"batch_id": str, "centre_id": str, "centre_name": str}.
+        Used by the nightly global discovery sweep to find centres not yet in the local DB.
+        """
+        url = f"{self._base_url}/report/{ZOHO_BATCHES_REPORT}"
+        criteria = f'({FIELD_BATCH_STATUS}=="Ongoing")'
+        results: list[dict] = []
+        page_start = 1
+        criteria_failed = False
+
+        while True:
+            resp = self._request(
+                "get", url, env=env,
+                params={"criteria": criteria, "from": page_start, "limit": 200},
+                timeout=20,
+            )
+            if resp.status_code == 404:
+                if page_start == 1:
+                    criteria_failed = True
+                    logger.warning(
+                        f"get_all_ongoing_batches: Ongoing criteria 404 "
+                        f"(env={env or 'production'}) — retrying without criteria"
+                    )
+                break
+            resp.raise_for_status()
+            records = resp.json().get("data", [])
+            if not records:
+                break
+            for rec in records:
+                bid = str(rec.get("ID") or rec.get("id") or "")
+                if not bid:
+                    continue
+                center_field = rec.get(FIELD_BATCH_CENTER)
+                if isinstance(center_field, dict):
+                    c_id   = str(center_field.get("ID") or "")
+                    c_name = str(center_field.get("display_value") or "")
+                elif isinstance(center_field, str):
+                    c_id   = ""
+                    c_name = center_field.strip()
+                else:
+                    c_id = c_name = ""
+                results.append({"batch_id": bid, "centre_id": c_id, "centre_name": c_name})
+            if len(records) < 200:
+                break
+            page_start += 200
+
+        if criteria_failed:
+            page_start = 1
+            while True:
+                resp = self._request(
+                    "get", url, env=env,
+                    params={"from": page_start, "limit": 200},
+                    timeout=20,
+                )
+                if resp.status_code == 404:
+                    break
+                resp.raise_for_status()
+                records = resp.json().get("data", [])
+                if not records:
+                    break
+                seen = {r["batch_id"] for r in results}
+                for rec in records:
+                    if str(rec.get(FIELD_BATCH_STATUS) or "").strip().lower() != "ongoing":
+                        continue
+                    bid = str(rec.get("ID") or rec.get("id") or "")
+                    if not bid or bid in seen:
+                        continue
+                    center_field = rec.get(FIELD_BATCH_CENTER)
+                    if isinstance(center_field, dict):
+                        c_id   = str(center_field.get("ID") or "")
+                        c_name = str(center_field.get("display_value") or "")
+                    elif isinstance(center_field, str):
+                        c_id   = ""
+                        c_name = center_field.strip()
+                    else:
+                        c_id = c_name = ""
+                    results.append({"batch_id": bid, "centre_id": c_id, "centre_name": c_name})
+                    seen.add(bid)
+                if len(records) < 200:
+                    break
+                page_start += 200
+
+        logger.info(
+            f"get_all_ongoing_batches: {len(results)} ongoing batch(es) globally "
+            f"(env={env or 'production'})"
+        )
+        return results
+
     def get_hold_batch_ids(self, centers: list, env: str = "") -> list[str]:
         """
         Return Zoho record IDs of batches with status 'Hold' for the given centers.
