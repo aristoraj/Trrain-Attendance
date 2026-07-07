@@ -1074,7 +1074,7 @@ class ZohoCreatorAPI:
             FIELD_ATT_STATUS:      "Present",
             FIELD_ATT_TRAINEE_REG: student_id,
             FIELD_ATT_CHECKED_OUT: "No",
-            FIELD_ATT_SOURCE:      "Live Face Recognition",
+            FIELD_ATT_SOURCE:      "Face Recognition",
             FIELD_ATT_VALUE:       1,
         }
         if checkin_time:
