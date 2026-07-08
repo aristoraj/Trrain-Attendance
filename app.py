@@ -191,6 +191,12 @@ _preloading_lock  = threading.Lock()
 _pending_captures: dict = {}
 _captures_lock    = threading.Lock()
 
+# Per-user feature-access cache (currently a no-op since access is a global flag,
+# but the eviction code in _sync_center_for_webhook / _delete_center_for_webhook
+# still references these — declare them to avoid NameError).
+_feature_cache: dict = {}
+_feature_cache_lock = threading.Lock()
+
 
 def _resolve_env(raw: str | None) -> str:
     """Normalise the environment string from the frontend; fall back to server default."""
