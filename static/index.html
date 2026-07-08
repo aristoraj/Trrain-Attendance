@@ -994,13 +994,13 @@ async function initDataLoadingScreen() {
   _loadingAttempts  = 0;
   _loadingStartTime = Date.now();
 
-  // 0. Attendance window check — if past cutoff, show closed screen and stop.
+  // 0. Check-in window check — if past cutoff, show closed screen and stop.
   try {
-    const win = await fetch('/api/attendance-window').then(r => r.json());
+    const win = await fetch('/api/checkin-window').then(r => r.json());
     if (!win.open) {
       dlScreen.style.display = 'none';
       const closedSub = document.getElementById('attendance-closed-sub');
-      if (closedSub) closedSub.textContent = `Attendance capture closed at ${win.cutoff} IST. Please return tomorrow morning.`;
+      if (closedSub) closedSub.textContent = `Check-in closed at ${win.cutoff} IST. Check-out is still available if you are already marked present.`;
       document.getElementById('attendance-closed-screen').style.display = 'flex';
       return;
     }
