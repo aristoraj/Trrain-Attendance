@@ -201,7 +201,13 @@ _feature_cache_lock = threading.Lock()
 def _resolve_env(raw: str | None) -> str:
     """Normalise the environment string from the frontend; fall back to server default."""
     if raw:
-        return raw.strip().lower()
+        v = raw.strip().lower()
+        # "production" and "" are the same environment — normalise to "" so all
+        # cache keys (daily_cache, scope keys, in-memory dicts) are consistent
+        # regardless of whether Zoho Deluge or the Widget SDK sends the string.
+        if v == "production":
+            return ""
+        return v
     return ZOHO_ENVIRONMENT  # e.g. "" (production) or "development"
 
 
