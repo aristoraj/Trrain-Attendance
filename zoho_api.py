@@ -575,6 +575,10 @@ class ZohoCreatorAPI:
             if not records:
                 break
 
+            logger.info(
+                f"Page {page_start}: {len(records)} records returned from Zoho ({scope_label})."
+            )
+
             for record in records:
                 # Python-side batch ID match — safety net when server criteria is active;
                 # primary filter when batch_ids is empty or server criteria is absent.
@@ -618,6 +622,9 @@ class ZohoCreatorAPI:
                 else:
                     rec_batch_id = ""
 
+                _sid  = str(record.get("ID") or "")
+                _name = str(record.get(FIELD_STUDENT_NAME) or "").strip()
+                logger.info(f"Processing student {_sid} ({_name})...")
                 student = self._process_record(record, env=env, fresh_load=fresh_load)
                 if student:
                     student["batch_id"] = rec_batch_id
