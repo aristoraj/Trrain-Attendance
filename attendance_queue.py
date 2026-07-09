@@ -1605,6 +1605,23 @@ class AttendanceQueue:
             rows = conn.execute("SELECT DISTINCT scope_key FROM student_cache").fetchall()
         return [r["scope_key"] for r in rows]
 
+    def get_ongoing_scope_keys(self) -> list:
+        """Return scope keys that have at least one Ongoing or Hold batch.
+        Used on startup to skip loading stale completed-batch scopes into memory."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("""
+                    SELECT DISTINCT sc.scope_key
+                    FROM student_cache sc
+                    WHERE EXISTS (
+                        SELECT 1 FROM batch_status bs
+                        WHERE bs.scope_key = sc.scope_key
+                        AND bs.status IN ('Ongoing', 'Hold')
+                    )
+                """)
+            ).fetchall()
+        return [r["scope_key"] for r in rows]
+
     def get_all_batch_status_scopes(self) -> list:
         """Return all distinct scope_keys that have rows in batch_status."""
         with self._db() as conn:

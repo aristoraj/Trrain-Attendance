@@ -249,9 +249,11 @@ def _restore_face_caches_from_db() -> None:
     On startup, rebuild FaceCaches from local DB so the app serves verify
     requests immediately without a 60-second Zoho API round-trip.
     Runs once at module load; failures are non-fatal (cold start falls back to Zoho).
+    Only restores scopes that have at least one Ongoing/Hold batch — skips stale
+    completed-batch scopes to keep startup memory usage low.
     """
     try:
-        scope_keys = att_queue.get_all_scope_keys()
+        scope_keys = att_queue.get_ongoing_scope_keys()
         if not scope_keys:
             logger.info("Local DB: no student data — will load from Zoho on first request.")
             return
@@ -322,6 +324,14 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
                     f"[BG] Removed {s_count} student(s), {e_count} embedding(s) "
                     f"from scope '{key}' for batch {rbid}."
                 )
+
+        # No ongoing batches — nothing to fetch from Zoho. Avoids expensive centre-only
+        # fallback that downloads every student from every centre with no batch filter.
+        if not curr_batch_ids:
+            logger.info(f"[BG] Scope '{key}': no ongoing batches — skipping Zoho fetch.")
+            with _preloading_lock:
+                _preloading_keys.discard(key)
+            return
 
         # Skip Zoho API fetch if in-memory cache is already warm AND no batches changed
         existing = _get_cache(centers, env).get()
@@ -1143,15 +1153,22 @@ def _weekly_cleanup_worker():
 
 threading.Thread(target=_weekly_cleanup_worker, daemon=True, name="weekly-cleanup").start()
 
-# Rebuild FaceCaches from local DB in a background thread (non-blocking startup)
-threading.Thread(target=_restore_face_caches_from_db, daemon=True, name="db-restore").start()
+# ── Staggered startup: load model first, then restore caches, then recover syncs.
+# All three are memory-intensive; firing them simultaneously causes OOM on 2 GB instances.
+def _staggered_startup():
+    time.sleep(5)   # let Flask finish binding before heavy work begins
+    _restore_face_caches_from_db()
+    time.sleep(10)  # model warmup runs concurrently below; give it a head-start
+    _recover_interrupted_syncs_inner()
+
+threading.Thread(target=_staggered_startup, daemon=True, name="db-restore").start()
 
 
-def _recover_interrupted_syncs() -> None:
+def _recover_interrupted_syncs_inner() -> None:
     """
     On startup, find any webhook_sync_log rows still marked 'running' or 'deleting'
     from a previous instance that was killed mid-sync, and re-trigger them.
-    Runs once, non-blocking. Failures are logged but never raise.
+    Called from _staggered_startup after DB restore completes.
     """
     try:
         incomplete = att_queue.get_incomplete_syncs()
@@ -1190,7 +1207,7 @@ def _recover_interrupted_syncs() -> None:
         logger.error(f"[FeatureSync] Startup recovery failed: {e}")
 
 
-threading.Thread(target=_recover_interrupted_syncs, daemon=True, name="feature-sync-recovery").start()
+# _recover_interrupted_syncs_inner is now called from _staggered_startup (sequentially after db-restore)
 
 
 def _populate_centre_meta() -> None:
