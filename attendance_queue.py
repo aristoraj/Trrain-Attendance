@@ -1468,12 +1468,11 @@ class AttendanceQueue:
                        True, s.get("batch_id", ""), s.get("meta_json", "{}"), now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
 
-    def get_student_ids_for_scope(self, scope_key: str) -> set:
-        """Return the set of student_ids already stored for a scope."""
+    def get_all_student_ids(self) -> set:
+        """Return the set of all student_ids present anywhere in student_cache."""
         with self._db() as conn:
             rows = conn.execute(
-                self._q("SELECT student_id FROM student_cache WHERE scope_key=?"),
-                (scope_key,)
+                self._q("SELECT student_id FROM student_cache")
             ).fetchall()
         return {r["student_id"] for r in rows}
 

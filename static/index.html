@@ -1991,8 +1991,10 @@ function closeFinishModal() {
   })();
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    permScreen.querySelector('p').textContent =
-      'Your browser does not support camera access. Please use Chrome or Edge.';
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    permScreen.querySelector('p').textContent = isIOS
+      ? 'Camera is not available in this browser context. On iPhone, please open this link directly in Safari (not inside the Zoho Creator app).'
+      : 'Your browser does not support camera access. Please use Chrome or Edge.';
     return;
   }
   // Camera start is deferred until initDataLoadingScreen confirms data is ready.
