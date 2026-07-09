@@ -1238,6 +1238,14 @@ async function startCamera() {
   canvasEl = document.getElementById('canvas-overlay');
   ctx      = canvasEl.getContext('2d');
 
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    permScreen.style.display = 'flex';
+    permScreen.querySelector('p').textContent =
+      'Camera is not available in this browser context. On iPhone, please open this link in Safari instead of inside the Zoho Creator app.';
+    setStatus('error', 'Camera unavailable — open in Safari');
+    return;
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
@@ -1258,7 +1266,7 @@ async function startCamera() {
     const isUnavailable = err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError';
     let msg;
     if (isDenied) {
-      msg = 'Camera permission denied. Open your phone Settings → Apps → Zoho Creator (or your browser) → Permissions → allow Camera, then tap Allow Camera again.';
+      msg = 'Camera permission denied. Open your phone Settings → Safari → Camera → Allow, then tap Allow Camera again.';
     } else if (isUnavailable) {
       msg = 'No camera found on this device. Please use a device with a front camera.';
     } else {
