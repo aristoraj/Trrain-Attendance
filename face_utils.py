@@ -165,9 +165,13 @@ def encode_face_from_bytes(image_bytes: bytes):
     so a photo uploaded at the wrong angle doesn't silently fail.
     """
     try:
+        import warnings
         from PIL import ImageOps
         try:
-            image = Image.open(io.BytesIO(image_bytes))
+            # Suppress DecompressionBombWarning — we handle oversized images ourselves
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                image = Image.open(io.BytesIO(image_bytes))
         except Exception:
             # Explicit HEIC/HEIF fallback for iPhone photos (.heic content-type=octet-stream).
             # pillow-heif's opener registration may not fire in all Gunicorn worker configs;
@@ -183,9 +187,25 @@ def encode_face_from_bytes(image_bytes: bytes):
                 logger.info("HEIC image decoded via pillow_heif direct API")
             except Exception as heic_err:
                 raise ValueError(f"Unsupported image format (HEIC fallback also failed: {heic_err})")
+
+        # Cap oversized photos before loading pixels into RAM.
+        # A 25MB JPEG can decompress to 171M pixels (~500MB RAM) and cause OOM.
+        # draft() tells libjpeg to decode at a reduced scale (JPEG only); thumbnail()
+        # is a safety net for PNG/WebP/etc where draft() is a no-op.
+        _MAX_DIM = 1920
+        _w, _h = image.size
+        if max(_w, _h) > _MAX_DIM:
+            image.draft('RGB', (_MAX_DIM, _MAX_DIM))
+            logger.info(f"Large photo {_w}x{_h} ({len(image_bytes)//1024}KB) — using reduced decode for face encoding")
+
         # Apply EXIF rotation tag so the pixel data matches the visual orientation
         image = ImageOps.exif_transpose(image)
         image = image.convert("RGB")
+
+        # Final safety cap for non-JPEG formats where draft() is a no-op
+        if max(image.size) > _MAX_DIM:
+            image.thumbnail((_MAX_DIM, _MAX_DIM), Image.LANCZOS)
+            logger.info(f"Downsampled to {image.size[0]}x{image.size[1]} for face encoding")
 
         embedding, _, det_score, err = _encode_largest_face(np.array(image))
         if embedding is not None:
