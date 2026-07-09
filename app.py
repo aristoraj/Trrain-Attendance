@@ -1029,6 +1029,21 @@ def _run_batch_sync_inner():
                         f"completed — deleted {s} student(s), {e} embedding(s)."
                     )
 
+            # ── Orphaned old-style students ───────────────────────────────────
+            # If every previously-tracked batch has now left this scope (all
+            # completed/dropped), clean up any remaining students with batch_id=''
+            # that couldn't be matched to a specific batch above.
+            remaining_in_scope = set(known.keys()) & (curr_ongoing_ids | curr_hold_ids)
+            if not remaining_in_scope and cache_invalidated:
+                orph_s, orph_e = att_queue.remove_orphaned_students_for_scope(scope_key)
+                if orph_s:
+                    total_deleted_students += orph_s
+                    total_deleted_embeddings += orph_e
+                    logger.warning(
+                        f"[BatchSync] Scope '{scope_key}': removed {orph_s} orphaned "
+                        f"old-style student(s) — no remaining batches in scope."
+                    )
+
             # ── New Ongoing batches (not yet tracked) ────────────────────────
             # Any batch in curr_ongoing_ids that isn't in `known` is brand new.
             # Fetch its students now so they're in DB with full meta_json before

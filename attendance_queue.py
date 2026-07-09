@@ -605,11 +605,84 @@ class AttendanceQueue:
         """
         Permanently remove all student_cache rows AND face_embeddings for a batch
         that is no longer Ongoing. Returns (removed_students, removed_embeddings).
+
+        Handles two storage styles:
+          - New-style: batch_id column is set correctly.
+          - Transition-style: batch_id column is '' but meta_json->>'batch_id' is set.
+        Truly old-style rows (batch_id='', meta_json='{}') are handled separately by
+        remove_orphaned_students_for_scope() when the last batch leaves a scope.
         """
         with self._db() as conn:
+            # Collect student_ids from both storage styles
             rows = conn.execute(
                 self._q("SELECT student_id FROM student_cache WHERE batch_id=? AND scope_key=?"),
                 (batch_id, scope_key)
+            ).fetchall()
+            if self._is_postgres:
+                meta_rows = conn.execute(
+                    self._q("SELECT student_id FROM student_cache "
+                            "WHERE scope_key=? AND batch_id='' "
+                            "AND meta_json::jsonb->>'batch_id' = ?"),
+                    (scope_key, batch_id)
+                ).fetchall()
+            else:
+                meta_rows = conn.execute(
+                    self._q("SELECT student_id FROM student_cache "
+                            "WHERE scope_key=? AND batch_id='' "
+                            "AND json_extract(meta_json, '$.batch_id') = ?"),
+                    (scope_key, batch_id)
+                ).fetchall()
+            student_ids = list({r["student_id"] for r in rows} | {r["student_id"] for r in meta_rows})
+
+            removed_embeddings = 0
+            if student_ids:
+                placeholders = ",".join("?" * len(student_ids))
+                cur = conn.execute(
+                    self._q(f"DELETE FROM face_embeddings WHERE student_id IN ({placeholders})"),
+                    student_ids
+                )
+                removed_embeddings = cur.rowcount if hasattr(cur, "rowcount") else len(student_ids)
+
+            # Delete by batch_id column (new-style)
+            cur = conn.execute(
+                self._q("DELETE FROM student_cache WHERE batch_id=? AND scope_key=?"),
+                (batch_id, scope_key)
+            )
+            removed_students = cur.rowcount if hasattr(cur, "rowcount") else 0
+
+            # Delete by meta_json batch_id (transition-style: batch_id column is empty)
+            if self._is_postgres:
+                cur2 = conn.execute(
+                    self._q("DELETE FROM student_cache WHERE scope_key=? AND batch_id='' "
+                            "AND meta_json::jsonb->>'batch_id' = ?"),
+                    (scope_key, batch_id)
+                )
+            else:
+                cur2 = conn.execute(
+                    self._q("DELETE FROM student_cache WHERE scope_key=? AND batch_id='' "
+                            "AND json_extract(meta_json, '$.batch_id') = ?"),
+                    (scope_key, batch_id)
+                )
+            removed_students += cur2.rowcount if hasattr(cur2, "rowcount") else 0
+
+        if removed_students:
+            logger.info(
+                f"Removed {removed_students} student(s) and {removed_embeddings} embedding(s) "
+                f"for completed batch {batch_id} in scope '{scope_key}'."
+            )
+        return removed_students, removed_embeddings
+
+    def remove_orphaned_students_for_scope(self, scope_key: str) -> tuple:
+        """
+        Remove all students with batch_id='' from a scope where every tracked
+        batch has been cleaned up.  These are old-style rows that cannot be
+        matched to a specific batch during normal batch-completion cleanup.
+        Returns (removed_students, removed_embeddings).
+        """
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT student_id FROM student_cache WHERE scope_key=? AND batch_id=''"),
+                (scope_key,)
             ).fetchall()
             student_ids = [r["student_id"] for r in rows]
 
@@ -623,15 +696,15 @@ class AttendanceQueue:
                 removed_embeddings = cur.rowcount if hasattr(cur, "rowcount") else len(student_ids)
 
             cur = conn.execute(
-                self._q("DELETE FROM student_cache WHERE batch_id=? AND scope_key=?"),
-                (batch_id, scope_key)
+                self._q("DELETE FROM student_cache WHERE scope_key=? AND batch_id=''"),
+                (scope_key,)
             )
             removed_students = cur.rowcount if hasattr(cur, "rowcount") else len(student_ids)
 
         if removed_students:
             logger.info(
-                f"Removed {removed_students} student(s) and {removed_embeddings} embedding(s) "
-                f"for completed batch {batch_id} in scope '{scope_key}'."
+                f"Removed {removed_students} orphaned old-style student(s) and "
+                f"{removed_embeddings} embedding(s) from scope '{scope_key}'."
             )
         return removed_students, removed_embeddings
 
