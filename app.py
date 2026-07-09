@@ -838,6 +838,142 @@ def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> N
         logger.error(f"[BatchWebhook] Failed to sync batch {batch_id}: {e}")
 
 
+# ─── Gap-fill webhook background worker ──────────────────────────────────────
+def _gap_fill_batch(batch_id: str, centers: list, missing_ids: list,
+                    env: str, scope_key: str) -> None:
+    """
+    Triggered by /api/webhook/batch-gap-fill.
+    Fetches only the students whose IDs are missing from local DB,
+    encodes their faces, and stores them — leaving existing records untouched.
+    """
+    try:
+        logger.info(
+            f"[GapFill] Fetching {len(missing_ids)} missing student(s) "
+            f"for batch {batch_id} scope '{scope_key}'..."
+        )
+        no_photo: list = []
+        students = zoho.get_students_by_ids(missing_ids, env=env, no_photo_out=no_photo)
+
+        if students:
+            att_queue.upsert_students_for_batch(scope_key, batch_id, students)
+
+        if no_photo:
+            att_queue.save_no_photo_students(scope_key, no_photo)
+            logger.info(f"[GapFill] {len(no_photo)} student(s) have no photo for batch {batch_id}.")
+
+        # Rebuild in-memory face cache so newly stored students are live immediately
+        raw = att_queue.load_students_from_db(scope_key)
+        if raw:
+            decoded = []
+            for s in raw:
+                encs = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+                encs = [e for e in encs if e is not None]
+                if encs:
+                    decoded.append({
+                        "id":             s["id"],
+                        "name":           s["name"],
+                        "student_number": s["student_number"],
+                        "encodings":      encs,
+                    })
+            if decoded:
+                _get_cache(centers, env).set(decoded)
+                logger.info(
+                    f"[GapFill] Face cache rebuilt — {len(decoded)} student(s) live "
+                    f"for scope '{scope_key}'."
+                )
+
+        logger.info(
+            f"[GapFill] Done — {len(students)} fetched, {len(no_photo)} no-photo "
+            f"for batch {batch_id}."
+        )
+
+    except Exception as e:
+        logger.error(f"[GapFill] Failed for batch {batch_id}: {e}")
+
+
+@app.route("/api/webhook/batch-gap-fill", methods=["POST"])
+@limiter.limit("20 per minute")
+def webhook_batch_gap_fill():
+    """
+    Called by a Zoho Creator scheduler with the full list of student record IDs
+    for every ongoing batch. Compares against local DB and fetches only the
+    missing students — ensuring no trainee is ever left out of the face cache.
+
+    Expected JSON payload:
+        {
+            "batch_id":    "<Zoho Creator record ID of the batch>",
+            "centre_ids":  "<comma-separated numeric centre IDs>",
+            "student_ids": ["id1", "id2", ...],
+            "environment": "<Zoho app environment link name>"
+        }
+
+    Zoho Creator Deluge (scheduler):
+        body = {
+            "batch_id":    batchRec.ID.toLong().toString(),
+            "centre_ids":  batchRec.Centres.ID.toString(),
+            "student_ids": studentIdList,
+            "environment": thisapp.environment.linkname
+        };
+        response = invokeurl
+        [
+            url     : "https://trrain-attendance.onrender.com/api/webhook/batch-gap-fill"
+            type    : POST
+            body    : body.toString()
+            headers : {"X-Webhook-Secret":"train2026","Content-Type":"application/json"}
+        ];
+    """
+    secret = request.headers.get("X-Webhook-Secret", "")
+    if secret != ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        data = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    batch_id    = str(data.get("batch_id", "")).strip()
+    centre_ids  = str(data.get("centre_ids", "")).strip()
+    student_ids = data.get("student_ids", [])
+    env         = str(data.get("environment", "")).strip()
+
+    if not batch_id or not isinstance(student_ids, list) or not student_ids:
+        return jsonify({"error": "batch_id and student_ids (list) are required"}), 400
+
+    centers   = [c.strip() for c in centre_ids.split(",") if c.strip()] if centre_ids else []
+    scope_key = _build_scope_key(centers, env)
+
+    incoming_set = {str(sid) for sid in student_ids if sid}
+    existing_ids = att_queue.get_student_ids_for_scope(scope_key)
+    missing_ids  = list(incoming_set - existing_ids)
+
+    logger.info(
+        f"[GapFill] batch={batch_id} scope={scope_key}: "
+        f"{len(incoming_set)} incoming, {len(existing_ids)} in DB, "
+        f"{len(missing_ids)} missing."
+    )
+
+    if not missing_ids:
+        return jsonify({
+            "status":  "ok",
+            "message": "DB complete — no missing students",
+            "missing": 0,
+        })
+
+    threading.Thread(
+        target=_gap_fill_batch,
+        args=(batch_id, centers, missing_ids, env, scope_key),
+        daemon=True,
+        name=f"gap-fill-{batch_id[:8]}",
+    ).start()
+
+    return jsonify({
+        "status":  "ok",
+        "message": f"Gap fill started for {len(missing_ids)} missing student(s)",
+        "missing": len(missing_ids),
+        "sample_missing_ids": missing_ids[:10],
+    })
+
+
 # ─── 10 PM auto-checkout scheduler ───────────────────────────────────────────
 def _auto_checkout_worker():
     """At 22:00 IST daily, mark unchecked-out attendance records with Auto_Checkout=No."""

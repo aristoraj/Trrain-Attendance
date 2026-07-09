@@ -1468,6 +1468,15 @@ class AttendanceQueue:
                        True, s.get("batch_id", ""), s.get("meta_json", "{}"), now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
 
+    def get_student_ids_for_scope(self, scope_key: str) -> set:
+        """Return the set of student_ids already stored for a scope."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT student_id FROM student_cache WHERE scope_key=?"),
+                (scope_key,)
+            ).fetchall()
+        return {r["student_id"] for r in rows}
+
     def upsert_students_for_batch(self, scope_key: str, batch_id: str, students: list) -> None:
         """
         Add/update students for a single batch without wiping other batches in the scope.

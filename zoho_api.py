@@ -649,6 +649,49 @@ class ZohoCreatorAPI:
         logger.info(f"Total students loaded ({scope_label}): {len(students)}")
         return students
 
+    def get_students_by_ids(self, student_ids: list, env: str = "",
+                            no_photo_out: list = None) -> list[dict]:
+        """
+        Fetch specific students by their Zoho record IDs and encode their faces.
+        Used by the gap-fill webhook to retrieve only students missing from local DB.
+        Fetches in chunks of 20 to keep URL criteria length manageable.
+        """
+        if not student_ids:
+            return []
+        url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
+        students = []
+        CHUNK = 20
+        for i in range(0, len(student_ids), CHUNK):
+            chunk = student_ids[i:i + CHUNK]
+            criteria = "||".join(f"(ID=={sid})" for sid in chunk)
+            logger.info(f"[GapFill] Fetching chunk {i//CHUNK + 1} ({len(chunk)} IDs)...")
+            try:
+                resp = self._request("get", url, env=env,
+                                     params={"criteria": criteria, "from": 1, "limit": CHUNK},
+                                     timeout=30)
+                resp.raise_for_status()
+                records = resp.json().get("data", [])
+            except Exception as e:
+                logger.error(f"[GapFill] Chunk fetch failed: {e}")
+                continue
+            for record in records:
+                _sid  = str(record.get("ID") or "")
+                _name = str(record.get(FIELD_STUDENT_NAME) or "").strip()
+                logger.info(f"[GapFill] Processing {_sid} ({_name})...")
+                student = self._process_record(record, env=env, fresh_load=True)
+                raw_batch = record.get(FIELD_STUDENT_BATCH)
+                rec_batch_id = str(raw_batch.get("ID") or "") if isinstance(raw_batch, dict) else str(raw_batch or "")
+                if student:
+                    student["batch_id"] = rec_batch_id
+                    students.append(student)
+                elif no_photo_out is not None:
+                    num = str(record.get(FIELD_STUDENT_NUMBER) or "").strip()
+                    if _sid:
+                        no_photo_out.append({"id": _sid, "name": _name,
+                                             "student_number": num, "batch_id": rec_batch_id})
+        logger.info(f"[GapFill] Total fetched: {len(students)} with embeddings.")
+        return students
+
     def get_students_list(self, env: str = "") -> list[dict]:
         """
         Lightweight fetch of student names + IDs only (no photo download / encoding).
