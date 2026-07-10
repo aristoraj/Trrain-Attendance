@@ -724,6 +724,9 @@
       <span id="count-success">0</span>
     </div>
   </div>
+  <button id="btn-refresh-cache" onclick="refreshStudentCache()" title="Refresh student list from database">
+    <i class="bi bi-arrow-clockwise"></i> Refresh
+  </button>
   <button id="btn-finish" onclick="showFinishModal()">
     <i class="bi bi-clipboard-check"></i> Summary
   </button>
@@ -1920,6 +1923,26 @@ function esc(str) {
 }
 
 // ── Finish modal ──────────────────────────────────────────────────────────────
+
+async function refreshStudentCache() {
+  const btn = document.getElementById('btn-refresh-cache');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refreshing…';
+  try {
+    const resp = await authFetch('/api/cache/refresh', { method: 'POST' });
+    const data = await resp.json();
+    btn.innerHTML = '<i class="bi bi-check-circle"></i> Refreshed';
+    setStatus('ok', data.message || 'Student list refreshed from DB');
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
+    }, 3000);
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
+    setStatus('error', 'Refresh failed — ' + e.message);
+  }
+}
 
 async function showFinishModal() {
   const modal       = document.getElementById('finish-modal');

@@ -3822,6 +3822,58 @@ def user_centers_api():
 
 # ─── Admin DB Dashboard ───────────────────────────────────────────────────────
 
+@app.route("/api/cache/refresh", methods=["POST"])
+@require_session
+def widget_cache_refresh():
+    """
+    Called by the attendance widget's Refresh button.
+    Invalidates the in-memory face cache for the logged-in user's scope
+    so the next scan reloads fresh student data from DB.
+    """
+    email = request.session_email
+    env   = request.session_env
+    centers = get_user_centers_cached(email, env=env)
+    scope_key = _build_scope_key(centers, env)
+    with _scope_caches_lock:
+        cache = _scope_caches.get(scope_key)
+        if cache:
+            cache.invalidate()
+            logger.info(f"[CacheRefresh] Scope '{scope_key}' invalidated by {email}.")
+            return jsonify({"status": "ok", "message": "Cache refreshed — next scan will load latest students from DB."})
+    logger.info(f"[CacheRefresh] Scope '{scope_key}' was already cold for {email}.")
+    return jsonify({"status": "ok", "message": "Cache was already fresh."})
+
+
+@app.route("/api/admin/invalidate-cache", methods=["POST"])
+def admin_invalidate_cache():
+    """
+    Force-invalidate one or all in-memory scope caches on this worker.
+    The next attendance request for the affected scope will reload fresh from DB.
+
+    Body: {"scope_key": "C:..."} to invalidate one scope.
+          {} or {"all": true} to invalidate every warm scope.
+    """
+    err = _admin_auth()
+    if err: return err
+    data = request.get_json(force=True) or {}
+    scope_key = data.get("scope_key", "").strip()
+
+    with _scope_caches_lock:
+        if scope_key:
+            cache = _scope_caches.get(scope_key)
+            if cache:
+                cache.invalidate()
+                logger.info(f"[Admin] Cache invalidated for scope '{scope_key}'.")
+                return jsonify({"status": "ok", "cleared": 1, "scope": scope_key})
+            return jsonify({"status": "ok", "cleared": 0, "message": "Scope not in active cache (already cold)"})
+        else:
+            count = sum(1 for c in _scope_caches.values() if c._data is not None)
+            for c in _scope_caches.values():
+                c.invalidate()
+            logger.info(f"[Admin] All {count} warm scope cache(s) invalidated.")
+            return jsonify({"status": "ok", "cleared": count})
+
+
 def _admin_auth():
     if request.headers.get("X-Webhook-Secret", "") != ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 401

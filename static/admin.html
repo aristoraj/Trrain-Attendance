@@ -127,6 +127,7 @@ tbody tr:hover td{background:#f8fafc}
   <nav>
     <h1>&#127947; Attendance DB Admin</h1>
     <span id="env-label"></span>
+    <button class="nav-btn" style="background:rgba(239,68,68,.2);color:#fca5a5;border-color:rgba(239,68,68,.3)" onclick="invalidateCache(null)">⚡ Refresh All Caches</button>
     <button class="nav-btn" onclick="logout()">Sign out</button>
   </nav>
   <div class="tabs">
@@ -163,11 +164,22 @@ const saved = sessionStorage.getItem('admin_secret');
 if (saved) { AUTH = saved; document.getElementById('login').style.display = 'none'; document.getElementById('app').style.display = 'block'; switchTab('attendance'); }
 
 // ── API ───────────────────────────────────────────────────────────────────────
-async function api(path) {
-  const r = await fetch('/api/admin' + path, { headers: { 'X-Webhook-Secret': AUTH } });
+async function api(path, opts) {
+  const defaultHeaders = { 'X-Webhook-Secret': AUTH };
+  const mergedHeaders = Object.assign({}, defaultHeaders, (opts && opts.headers) || {});
+  const r = await fetch('/api/admin' + path, Object.assign({}, opts || {}, { headers: mergedHeaders }));
   if (r.status === 401) { document.getElementById('lerr').style.display = 'block'; logout(); return null; }
   if (!r.ok) { const t = await r.text(); throw new Error(t); }
   return r.json();
+}
+async function invalidateCache(scopeKey) {
+  const label = scopeKey ? scopeKey : 'ALL active scopes';
+  if (!confirm('Invalidate cache for ' + label + '?\n\nNext attendance scan will reload fresh from DB.')) return;
+  try {
+    const body = JSON.stringify(scopeKey ? {scope_key: scopeKey} : {all: true});
+    const res = await api('/invalidate-cache', {method:'POST', body, headers:{'Content-Type':'application/json'}});
+    if (res) alert('✓ Cleared ' + res.cleared + ' cache(s). Students will reload from DB on next scan.');
+  } catch(e) { alert('Error: ' + e.message); }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -424,10 +436,11 @@ function renderBatchesResult(rows) {
       <div class="tscroll"><table>
         <thead><tr>
           <th>Batch Name</th><th>Status</th><th>Start</th><th>End</th>
-          <th>Total</th><th>With Photo</th><th>No Photo</th><th>Coverage</th><th>Scope</th>
+          <th>Total</th><th>With Photo</th><th>No Photo</th><th>Coverage</th><th>Scope</th><th></th>
         </tr></thead>
         <tbody>${rows.map(r => {
           const total = r.total_students||0, emb = r.with_embeddings||0, nop = r.no_photo||0;
+          const sk = esc(r.scope_key||'');
           return `<tr>
             <td style="font-weight:600;max-width:220px;white-space:normal">${esc(r.batch_name||r.batch_id)}</td>
             <td>${batchBadge(r.status)}</td>
@@ -437,7 +450,8 @@ function renderBatchesResult(rows) {
             <td style="text-align:center;color:#16a34a;font-weight:600">${emb}</td>
             <td style="text-align:center;color:${nop>0?'#dc2626':'#94a3b8'};font-weight:600">${nop}</td>
             <td>${progBar(emb,total)}</td>
-            <td class="mono" style="font-size:11px;color:#94a3b8">${esc(r.scope_key)}</td>
+            <td class="mono" style="font-size:11px;color:#94a3b8">${sk}</td>
+            <td><button onclick="invalidateCache('${sk}')" style="background:#f1f5f9;border:none;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;color:#475569" title="Force reload from DB">⚡</button></td>
           </tr>`;
         }).join('')}</tbody>
       </table></div>
