@@ -136,6 +136,7 @@ tbody tr:hover td{background:#f8fafc}
     <div class="tab" onclick="switchTab('batches')">Batches</div>
     <div class="tab" onclick="switchTab('centres')">Centres</div>
     <div class="tab" onclick="switchTab('compare')" style="color:#dc2626">⚠ Compare</div>
+    <div class="tab" onclick="switchTab('tools')">🛠 Tools</div>
   </div>
   <div class="content" id="content"></div>
 </div>
@@ -226,9 +227,9 @@ function placeholder(icon, msg, sub) {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['attendance','students','batches','centres','compare'][i] === tab);
+    el.classList.toggle('active', ['attendance','students','batches','centres','compare','tools'][i] === tab);
   });
-  const renders = { attendance: renderAttendanceTab, students: renderStudentsTab, batches: renderBatchesTab, centres: renderCentresTab, compare: renderCompareTab };
+  const renders = { attendance: renderAttendanceTab, students: renderStudentsTab, batches: renderBatchesTab, centres: renderCentresTab, compare: renderCompareTab, tools: renderToolsTab };
   renders[tab]();
 }
 
@@ -598,6 +599,95 @@ function renderCentresResult(rows) {
         }).join('')}</tbody>
       </table></div>
     </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TOOLS TAB
+// ─────────────────────────────────────────────────────────────────────────────
+function renderToolsTab() {
+  document.getElementById('content').innerHTML = `
+    <div style="max-width:640px">
+
+      <div class="card" style="padding:28px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+          <span style="font-size:20px">⚡</span>
+          <h3 style="font-size:16px;font-weight:700">Gap Fill — Sync Missing Trainees</h3>
+        </div>
+        <p style="font-size:13px;color:#64748b;margin-bottom:20px;line-height:1.6">
+          Fetches one or more trainees from Zoho by their record ID, encodes their photo,
+          and stores them in the local DB. Useful to manually sync a new trainee without
+          waiting for the nightly scheduler.
+        </p>
+
+        <div class="fg" style="margin-bottom:14px">
+          <label>Trainee ID(s)</label>
+          <textarea id="gf-ids" rows="4" placeholder="One ID per line, or comma-separated:&#10;217795000025055389&#10;217795000024759039"
+            style="width:100%;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:monospace;outline:none;resize:vertical;background:#f8fafc;transition:.15s"
+            onfocus="this.style.borderColor='#2563eb';this.style.background='#fff'"
+            onblur="this.style.borderColor='#e2e8f0';this.style.background='#f8fafc'"
+          ></textarea>
+        </div>
+
+        <div class="fg" style="margin-bottom:20px">
+          <label>Environment</label>
+          <select id="gf-env" style="max-width:200px">
+            <option value="">Production</option>
+            <option value="development">Development</option>
+          </select>
+        </div>
+
+        <button class="btn-search" id="gf-btn" onclick="runGapFill()">Run Gap Fill</button>
+        <div id="gf-result" style="margin-top:20px"></div>
+      </div>
+
+    </div>
+  `;
+}
+
+async function runGapFill() {
+  const raw = document.getElementById('gf-ids').value.trim();
+  if (!raw) { document.getElementById('gf-result').innerHTML = `<div class="err-msg">Enter at least one trainee ID.</div>`; return; }
+
+  const ids = raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  if (!ids.length) { document.getElementById('gf-result').innerHTML = `<div class="err-msg">No valid IDs found.</div>`; return; }
+
+  const env = document.getElementById('gf-env').value;
+  const btn = document.getElementById('gf-btn');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  document.getElementById('gf-result').innerHTML = `<div style="color:#64748b;font-size:13px">Sending ${ids.length} ID(s) to gap fill…</div>`;
+
+  try {
+    const r = await api('/webhook/batch-gap-fill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ student_ids: ids, environment: env })
+    });
+
+    if (!r) return;
+
+    const missing = r.missing_count ?? '?';
+    const total   = r.total_received ?? ids.length;
+    const color   = missing > 0 ? '#16a34a' : '#64748b';
+
+    document.getElementById('gf-result').innerHTML = `
+      <div style="background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:10px;padding:16px">
+        <div style="font-weight:700;color:#15803d;margin-bottom:6px">✓ Gap fill triggered</div>
+        <div style="font-size:13px;color:#166534;line-height:1.7">
+          IDs sent: <strong>${total}</strong><br>
+          Missing (will be fetched): <strong style="color:${color}">${missing}</strong><br>
+          Already in DB (skipped): <strong>${total - missing}</strong>
+        </div>
+        <div style="font-size:12px;color:#4ade80;margin-top:10px">
+          Processing runs in background — check server logs for progress. Search the Students tab in ~10s to verify.
+        </div>
+      </div>`;
+  } catch(e) {
+    document.getElementById('gf-result').innerHTML = `<div class="err-msg">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Gap Fill';
+  }
 }
 </script>
 </body>

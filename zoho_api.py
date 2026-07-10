@@ -687,8 +687,14 @@ class ZohoCreatorAPI:
                 elif no_photo_out is not None:
                     num = str(record.get(FIELD_STUDENT_NUMBER) or "").strip()
                     if _sid:
+                        c_raw = record.get(FIELD_STUDENT_CENTER) or {}
+                        c_id  = str(c_raw.get("ID") or "") if isinstance(c_raw, dict) else ""
+                        _m: dict = {}
+                        if c_id:         _m["centre_id"] = c_id
+                        if rec_batch_id: _m["batch_id"]  = rec_batch_id
                         no_photo_out.append({"id": _sid, "name": _name,
-                                             "student_number": num, "batch_id": rec_batch_id})
+                                             "student_number": num, "batch_id": rec_batch_id,
+                                             "meta_json": json.dumps(_m) if _m else "{}"})
         logger.info(f"[GapFill] Total fetched: {len(students)} with embeddings.")
         return students
 
