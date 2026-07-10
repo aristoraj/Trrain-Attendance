@@ -993,7 +993,10 @@ def webhook_batch_gap_fill():
         f"{len(missing_ids)} missing."
     )
 
-    att_queue.save_sync_audit(env, list(incoming_set))
+    try:
+        att_queue.save_sync_audit(env, list(incoming_set))
+    except Exception as _ae:
+        logger.warning(f"[GapFill] save_sync_audit failed (non-fatal): {_ae}")
 
     if not missing_ids:
         return jsonify({

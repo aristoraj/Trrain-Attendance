@@ -691,7 +691,14 @@ async function loadSyncAudit() {
   if (!el) return;
   el.innerHTML = `<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px">Loading…</div>`;
   try {
-    const r = await api('/sync-audit' + (env ? `?env=${encodeURIComponent(env)}` : ''));
+    const path = '/sync-audit' + (env ? `?env=${encodeURIComponent(env)}` : '');
+    const raw = await fetch('/api/admin' + path, { headers: { 'X-Webhook-Secret': AUTH } });
+    if (raw.status === 404) {
+      el.innerHTML = `<div style="text-align:center;padding:32px;color:#94a3b8;font-size:13px">No audit data yet — run the gap fill first to populate.</div>`;
+      return;
+    }
+    if (!raw.ok) { const t = await raw.text(); throw new Error(t); }
+    const r = await raw.json();
     if (!r) return;
     if (r.error) { el.innerHTML = `<div style="color:#64748b;font-size:13px;text-align:center;padding:24px">${esc(r.error)}</div>`; return; }
 
