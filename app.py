@@ -3908,17 +3908,21 @@ def admin_batches():
             params += [f"%{search}%", search]
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
         rows = conn.execute(att_queue._q(f"""
-            SELECT bs.batch_id, bs.batch_name, bs.scope_key, bs.status,
-                   bs.start_date, bs.end_date, bs.updated_at,
-                   COUNT(sc.student_id)                               AS total_students,
-                   SUM(CASE WHEN sc.has_embedding THEN 1 ELSE 0 END) AS with_embeddings,
-                   SUM(CASE WHEN sc.has_embedding THEN 0 ELSE 1 END) AS no_photo
+            SELECT bs.batch_id,
+                   MIN(bs.batch_name)  AS batch_name,
+                   MIN(bs.scope_key)   AS scope_key,
+                   MIN(bs.status)      AS status,
+                   MIN(bs.start_date)  AS start_date,
+                   MIN(bs.end_date)    AS end_date,
+                   MAX(bs.updated_at)  AS updated_at,
+                   COUNT(DISTINCT sc.student_id)                                           AS total_students,
+                   COUNT(DISTINCT CASE WHEN sc.has_embedding THEN sc.student_id END)      AS with_embeddings,
+                   COUNT(DISTINCT CASE WHEN sc.has_embedding THEN NULL ELSE sc.student_id END) AS no_photo
             FROM batch_status bs
             LEFT JOIN student_cache sc ON sc.batch_id = bs.batch_id
             {where}
-            GROUP BY bs.batch_id, bs.scope_key, bs.batch_name,
-                     bs.status, bs.start_date, bs.end_date, bs.updated_at
-            ORDER BY bs.updated_at DESC
+            GROUP BY bs.batch_id
+            ORDER BY MAX(bs.updated_at) DESC
         """), params).fetchall()
     return jsonify([dict(r) for r in rows])
 
@@ -3930,10 +3934,10 @@ def admin_centres():
     with att_queue._db() as conn:
         rows = conn.execute(att_queue._q("""
             SELECT bs.scope_key,
-                   COUNT(DISTINCT bs.batch_id)                            AS batch_count,
-                   SUM(CASE WHEN bs.status='Ongoing' THEN 1 ELSE 0 END)  AS active_batches,
-                   COUNT(DISTINCT sc.student_id)                          AS total_students,
-                   SUM(CASE WHEN sc.has_embedding THEN 1 ELSE 0 END)     AS with_embeddings
+                   COUNT(DISTINCT bs.batch_id)                                                  AS batch_count,
+                   COUNT(DISTINCT CASE WHEN bs.status='Ongoing' THEN bs.batch_id END)          AS active_batches,
+                   COUNT(DISTINCT sc.student_id)                                                AS total_students,
+                   COUNT(DISTINCT CASE WHEN sc.has_embedding THEN sc.student_id END)           AS with_embeddings
             FROM batch_status bs
             LEFT JOIN student_cache sc ON sc.scope_key = bs.scope_key
             GROUP BY bs.scope_key
