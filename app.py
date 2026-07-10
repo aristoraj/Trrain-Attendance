@@ -3890,55 +3890,64 @@ def admin_compare():
     if not id_a or not id_b:
         return jsonify({"error": "id_a and id_b required"}), 400
 
-    with att_queue._db() as conn:
-        def fetch(sid):
+    try:
+        import numpy as np
+
+        def fetch_student(conn, sid):
             sc = conn.execute(att_queue._q(
                 "SELECT student_id, name, student_number FROM student_cache WHERE student_id = ? LIMIT 1"
             ), [sid]).fetchone()
             embs = conn.execute(att_queue._q(
                 "SELECT source, embedding, det_score FROM face_embeddings WHERE student_id = ? AND source != 'no_photo'"
             ), [sid]).fetchall()
-            return dict(sc) if sc else {"student_id": sid, "name": "Not found", "student_number": ""},  [dict(e) for e in embs]
+            meta = dict(sc) if sc else {"student_id": sid, "name": "Not found", "student_number": ""}
+            return meta, [dict(e) for e in embs]
 
-        meta_a, embs_a = fetch(id_a)
-        meta_b, embs_b = fetch(id_b)
+        with att_queue._db() as conn:
+            meta_a, embs_a = fetch_student(conn, id_a)
+            meta_b, embs_b = fetch_student(conn, id_b)
 
-    if not embs_a or not embs_b:
-        return jsonify({"error": "One or both students have no embeddings to compare"})
+        if not embs_a or not embs_b:
+            missing = []
+            if not embs_a: missing.append(meta_a.get("name") or id_a)
+            if not embs_b: missing.append(meta_b.get("name") or id_b)
+            return jsonify({"error": f"No embeddings found for: {', '.join(missing)}"})
 
-    # Compute best cosine similarity across all embedding pairs
-    import numpy as np
-    best_sim = -1.0
-    best_pair = ("", "")
-    for ea in embs_a:
-        va = np.array(json.loads(ea["embedding"]), dtype=np.float32)
-        va /= (np.linalg.norm(va) or 1)
-        for eb in embs_b:
-            vb = np.array(json.loads(eb["embedding"]), dtype=np.float32)
-            vb /= (np.linalg.norm(vb) or 1)
-            sim = float(np.dot(va, vb))
-            if sim > best_sim:
-                best_sim = sim
-                best_pair = (ea["source"], eb["source"])
+        best_sim = -1.0
+        best_pair = ["", ""]
+        for ea in embs_a:
+            va = np.array(json.loads(ea["embedding"]), dtype=np.float32)
+            norm = np.linalg.norm(va)
+            if norm > 0: va = va / norm
+            for eb in embs_b:
+                vb = np.array(json.loads(eb["embedding"]), dtype=np.float32)
+                norm = np.linalg.norm(vb)
+                if norm > 0: vb = vb / norm
+                sim = float(np.dot(va, vb))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_pair = [ea["source"], eb["source"]]
 
-    threshold = 0.40
-    verdict = "FALSE MATCH RISK" if best_sim >= threshold else "Safe — below threshold"
-
-    return jsonify({
-        "student_a":    {**meta_a, "embeddings": [{"source": e["source"], "det_score": e["det_score"]} for e in embs_a]},
-        "student_b":    {**meta_b, "embeddings": [{"source": e["source"], "det_score": e["det_score"]} for e in embs_b]},
-        "similarity":   round(best_sim, 4),
-        "threshold":    threshold,
-        "best_pair":    best_pair,
-        "verdict":      verdict,
-        "explanation":  (
-            f"Similarity {round(best_sim, 4)} is ABOVE the {threshold} match threshold — "
-            f"these two faces are too similar for the system to reliably tell apart."
-            if best_sim >= threshold else
-            f"Similarity {round(best_sim, 4)} is below {threshold} — "
-            f"the false match was likely caused by a poor live capture (bad angle, lighting, or motion blur)."
-        )
-    })
+        threshold = 0.40
+        risk = best_sim >= threshold
+        return jsonify({
+            "student_a":   {**meta_a, "embeddings": [{"source": e["source"], "det_score": e["det_score"]} for e in embs_a]},
+            "student_b":   {**meta_b, "embeddings": [{"source": e["source"], "det_score": e["det_score"]} for e in embs_b]},
+            "similarity":  round(best_sim, 4),
+            "threshold":   threshold,
+            "best_pair":   best_pair,
+            "verdict":     "FALSE MATCH RISK" if risk else "Safe — below threshold",
+            "explanation": (
+                f"Similarity {round(best_sim, 4)} is ABOVE the {threshold} threshold — "
+                "these two faces are too similar for the system to reliably tell apart."
+                if risk else
+                f"Similarity {round(best_sim, 4)} is below {threshold} — "
+                "the false match was likely caused by poor lighting, angle, or motion blur during that scan."
+            ),
+        })
+    except Exception as e:
+        logger.error(f"[Compare] {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/admin")
