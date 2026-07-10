@@ -982,11 +982,14 @@ def webhook_batch_gap_fill():
         f"{len(missing_ids)} missing."
     )
 
+    att_queue.save_sync_audit(env, list(incoming_set))
+
     if not missing_ids:
         return jsonify({
-            "status":  "ok",
-            "message": "DB complete — no missing students",
-            "missing": 0,
+            "status":         "ok",
+            "message":        "DB complete — no missing students",
+            "missing_count":  0,
+            "total_received": len(incoming_set),
         })
 
     threading.Thread(
@@ -997,9 +1000,10 @@ def webhook_batch_gap_fill():
     ).start()
 
     return jsonify({
-        "status":  "ok",
-        "message": f"Gap fill started for {len(missing_ids)} missing student(s)",
-        "missing": len(missing_ids),
+        "status":         "ok",
+        "message":        f"Gap fill started for {len(missing_ids)} missing student(s)",
+        "missing_count":  len(missing_ids),
+        "total_received": len(incoming_set),
         "sample_missing_ids": missing_ids[:10],
     })
 
@@ -4079,6 +4083,32 @@ def admin_centres():
             row["zone_name"] = zone_name
             result.append(row)
     return jsonify(result)
+
+
+@app.route("/api/admin/stats")
+def admin_stats():
+    err = _admin_auth()
+    if err: return err
+    try:
+        return jsonify(att_queue.get_db_stats())
+    except Exception as e:
+        logger.error(f"[AdminStats] {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/sync-audit")
+def admin_sync_audit():
+    err = _admin_auth()
+    if err: return err
+    env = request.args.get("env", "")
+    try:
+        diff = att_queue.get_sync_audit_diff(env)
+        if diff is None:
+            return jsonify({"error": "No audit data yet — trigger the gap-fill webhook first"}), 404
+        return jsonify(diff)
+    except Exception as e:
+        logger.error(f"[AdminSyncAudit] {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

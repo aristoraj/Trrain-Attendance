@@ -1045,6 +1045,7 @@ class AttendanceQueue:
             self._create_webhook_sync_log_table(conn)
             self._create_checkin_state_table(conn)
             self._create_global_settings_table(conn)
+            self._create_sync_audit_table(conn)
             # Drop financial_year_master if it exists from a prior deployment
             conn.execute("DROP TABLE IF EXISTS financial_year_master")
 
@@ -1467,6 +1468,108 @@ class AttendanceQueue:
                 """), (s["id"], scope_key, s.get("name", ""), s.get("student_number", ""),
                        True, s.get("batch_id", ""), s.get("meta_json", "{}"), now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
+
+    def _create_sync_audit_table(self, conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_audit (
+                environment TEXT PRIMARY KEY,
+                run_at      TEXT NOT NULL,
+                total_count INTEGER NOT NULL DEFAULT 0,
+                student_ids TEXT    NOT NULL DEFAULT '[]'
+            )
+        """)
+
+    def save_sync_audit(self, env: str, student_ids) -> None:
+        """Upsert the latest gap-fill payload per environment (one row per env)."""
+        from datetime import datetime as _dt
+        now = _dt.now().strftime("%Y-%m-%dT%H:%M:%S")
+        ids_json = json.dumps(sorted(str(s) for s in student_ids))
+        if self._is_postgres:
+            sql = self._q("""
+                INSERT INTO sync_audit (environment, run_at, total_count, student_ids)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (environment) DO UPDATE SET
+                    run_at      = EXCLUDED.run_at,
+                    total_count = EXCLUDED.total_count,
+                    student_ids = EXCLUDED.student_ids
+            """)
+        else:
+            sql = self._q("""
+                INSERT OR REPLACE INTO sync_audit (environment, run_at, total_count, student_ids)
+                VALUES (?, ?, ?, ?)
+            """)
+        with self._db() as conn:
+            conn.execute(sql, (env or '', now, len(student_ids), ids_json))
+
+    def get_db_stats(self) -> dict:
+        """Return student/batch counts for the stats panels."""
+        with self._db() as conn:
+            stu = conn.execute("""
+                SELECT
+                    COUNT(DISTINCT CASE WHEN scope_key LIKE 'C:%' THEN student_id END)                              AS prod_total,
+                    COUNT(DISTINCT CASE WHEN scope_key LIKE 'C:%' AND has_embedding  THEN student_id END)            AS prod_with_emb,
+                    COUNT(DISTINCT CASE WHEN scope_key LIKE 'C:%' AND NOT has_embedding THEN student_id END)         AS prod_no_emb,
+                    COUNT(DISTINCT CASE WHEN scope_key NOT LIKE 'C:%' THEN student_id END)                           AS dev_total,
+                    COUNT(DISTINCT CASE WHEN scope_key NOT LIKE 'C:%' AND has_embedding THEN student_id END)         AS dev_with_emb,
+                    COUNT(DISTINCT CASE WHEN scope_key NOT LIKE 'C:%' AND NOT has_embedding THEN student_id END)     AS dev_no_emb
+                FROM student_cache
+            """).fetchone()
+            bat = conn.execute("""
+                SELECT
+                    COUNT(DISTINCT batch_id)                                                AS total_batches,
+                    COUNT(DISTINCT CASE WHEN status = 'Ongoing'   THEN batch_id END)       AS ongoing_batches,
+                    COUNT(DISTINCT CASE WHEN status = 'Completed' THEN batch_id END)       AS completed_batches,
+                    COUNT(DISTINCT scope_key)                                               AS total_scopes
+                FROM batch_status
+            """).fetchone()
+            audits = conn.execute(
+                "SELECT environment, run_at, total_count FROM sync_audit ORDER BY run_at DESC"
+            ).fetchall()
+        return {
+            "students": dict(stu) if stu else {},
+            "batches":  dict(bat) if bat else {},
+            "audits":   [dict(a) for a in audits],
+        }
+
+    def get_sync_audit_diff(self, env: str = '') -> dict | None:
+        """Compare latest gap-fill payload vs student_cache and return the diff."""
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT * FROM sync_audit WHERE environment = ?"),
+                (env or '',)
+            ).fetchone()
+            if not row:
+                return None
+            zoho_ids = set(json.loads(row['student_ids']))
+            if zoho_ids:
+                ph = ','.join(['?' for _ in zoho_ids])
+                sql = self._q(
+                    f"SELECT student_id, MAX(name) AS name, MAX(student_number) AS student_number, "
+                    f"MAX(batch_id) AS batch_id, "
+                    f"MAX(CASE WHEN has_embedding THEN 1 ELSE 0 END) AS has_embedding "
+                    f"FROM student_cache WHERE student_id IN ({ph}) GROUP BY student_id"
+                )
+                cache_rows = conn.execute(sql, list(zoho_ids)).fetchall()
+            else:
+                cache_rows = []
+        cached_map = {r['student_id']: dict(r) for r in cache_rows}
+        cached_ids = set(cached_map.keys())
+        missing_ids = sorted(zoho_ids - cached_ids)
+        no_emb = sorted(
+            [v for v in cached_map.values() if not v['has_embedding']],
+            key=lambda x: x.get('name', '')
+        )
+        return {
+            'run_at':           row['run_at'],
+            'environment':      row['environment'],
+            'zoho_total':       len(zoho_ids),
+            'cache_total':      len(cached_ids),
+            'missing_count':    len(missing_ids),
+            'no_emb_count':     len(no_emb),
+            'missing_ids':      missing_ids,
+            'no_embedding':     no_emb,
+            'with_emb_count':   len(cached_ids) - len(no_emb),
+        }
 
     def get_all_student_ids(self) -> set:
         """Return the set of all student_ids present anywhere in student_cache."""
