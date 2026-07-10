@@ -658,11 +658,13 @@ async function runGapFill() {
   document.getElementById('gf-result').innerHTML = `<div style="color:#64748b;font-size:13px">Sending ${ids.length} ID(s) to gap fill…</div>`;
 
   try {
-    const r = await api('/webhook/batch-gap-fill', {
+    const resp = await fetch('/api/webhook/batch-gap-fill', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': AUTH },
       body: JSON.stringify({ student_ids: ids, environment: env })
     });
+    if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
+    const r = await resp.json();
 
     if (!r) return;
 
