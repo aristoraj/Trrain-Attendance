@@ -3820,6 +3820,141 @@ def user_centers_api():
 # /api/debug/students removed — was unauthenticated and exposed PII + OAuth token
 
 
+# ─── Admin DB Dashboard ───────────────────────────────────────────────────────
+
+def _admin_auth():
+    if request.headers.get("X-Webhook-Secret", "") != ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    return None
+
+
+@app.route("/admin")
+def admin_page():
+    return send_from_directory("static", "admin.html")
+
+
+@app.route("/api/admin/attendance")
+def admin_attendance():
+    err = _admin_auth()
+    if err: return err
+    date_str = request.args.get("date", "").strip()
+    search   = request.args.get("search", "").strip()
+    env      = request.args.get("env", "").strip()
+    with att_queue._db() as conn:
+        conds, params = [], []
+        if date_str:
+            conds.append("aq.date_str = ?"); params.append(date_str)
+        if search:
+            conds.append("(aq.student_id LIKE ? OR aq.student_name LIKE ?)")
+            params += [f"%{search}%", f"%{search}%"]
+        if env == "production":
+            conds.append("aq.environment = ?"); params.append("")
+        elif env:
+            conds.append("aq.environment = ?"); params.append(env)
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        rows = conn.execute(att_queue._q(f"""
+            SELECT aq.student_id, aq.student_name, aq.date_str, aq.status,
+                   aq.checkin_time, aq.action_field, aq.attempts, aq.last_error,
+                   aq.created_at, aq.environment,
+                   cs.checkin_at, cs.is_checked_out, cs.checkout_at
+            FROM attendance_queue aq
+            LEFT JOIN checkin_state cs
+                   ON cs.student_id = aq.student_id AND cs.date_str = aq.date_str
+            {where}
+            ORDER BY aq.created_at DESC LIMIT 300
+        """), params).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/admin/student")
+def admin_student():
+    err = _admin_auth()
+    if err: return err
+    search = request.args.get("search", "").strip()
+    if not search:
+        return jsonify({"error": "search param required"}), 400
+    with att_queue._db() as conn:
+        rows = conn.execute(att_queue._q("""
+            SELECT student_id, name, student_number, scope_key,
+                   has_embedding, batch_id, meta_json, updated_at
+            FROM student_cache
+            WHERE student_id = ? OR student_number LIKE ? OR name LIKE ?
+            ORDER BY updated_at DESC
+        """), [search, f"%{search}%", f"%{search}%"]).fetchall()
+        result = []
+        for r in rows:
+            row = dict(r)
+            embs = conn.execute(att_queue._q(
+                "SELECT source, det_score, updated_at FROM face_embeddings WHERE student_id = ? ORDER BY updated_at DESC"
+            ), [row["student_id"]]).fetchall()
+            row["embeddings"] = [dict(e) for e in embs]
+            row["embedding_count"] = sum(1 for e in embs if e["source"] != "no_photo")
+            result.append(row)
+    return jsonify(result)
+
+
+@app.route("/api/admin/batches")
+def admin_batches():
+    err = _admin_auth()
+    if err: return err
+    status_f = request.args.get("status", "").strip()
+    search   = request.args.get("search", "").strip()
+    with att_queue._db() as conn:
+        conds, params = [], []
+        if status_f:
+            conds.append("bs.status = ?"); params.append(status_f)
+        if search:
+            conds.append("(bs.batch_name LIKE ? OR bs.batch_id = ?)")
+            params += [f"%{search}%", search]
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        rows = conn.execute(att_queue._q(f"""
+            SELECT bs.batch_id, bs.batch_name, bs.scope_key, bs.status,
+                   bs.start_date, bs.end_date, bs.updated_at,
+                   COUNT(sc.student_id)                               AS total_students,
+                   SUM(CASE WHEN sc.has_embedding THEN 1 ELSE 0 END) AS with_embeddings,
+                   SUM(CASE WHEN sc.has_embedding THEN 0 ELSE 1 END) AS no_photo
+            FROM batch_status bs
+            LEFT JOIN student_cache sc ON sc.batch_id = bs.batch_id
+            {where}
+            GROUP BY bs.batch_id, bs.scope_key, bs.batch_name,
+                     bs.status, bs.start_date, bs.end_date, bs.updated_at
+            ORDER BY bs.updated_at DESC
+        """), params).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/admin/centres")
+def admin_centres():
+    err = _admin_auth()
+    if err: return err
+    with att_queue._db() as conn:
+        rows = conn.execute(att_queue._q("""
+            SELECT bs.scope_key,
+                   COUNT(DISTINCT bs.batch_id)                            AS batch_count,
+                   SUM(CASE WHEN bs.status='Ongoing' THEN 1 ELSE 0 END)  AS active_batches,
+                   COUNT(DISTINCT sc.student_id)                          AS total_students,
+                   SUM(CASE WHEN sc.has_embedding THEN 1 ELSE 0 END)     AS with_embeddings
+            FROM batch_status bs
+            LEFT JOIN student_cache sc ON sc.scope_key = bs.scope_key
+            GROUP BY bs.scope_key
+            ORDER BY total_students DESC
+        """)).fetchall()
+        result = []
+        for r in rows:
+            row = dict(r)
+            centre_ids, _ = _parse_scope_key(row["scope_key"])
+            row["centre_ids"] = centre_ids or []
+            zone_name = ""
+            if centre_ids:
+                cm = conn.execute(att_queue._q(
+                    "SELECT zone_name FROM centre_meta WHERE centre_id = ?"
+                ), [centre_ids[0]]).fetchone()
+                zone_name = (cm["zone_name"] if cm else "") or ""
+            row["zone_name"] = zone_name
+            result.append(row)
+    return jsonify(result)
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=DEBUG)

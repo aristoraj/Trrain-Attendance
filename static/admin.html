@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Attendance DB Admin</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f1f5f9;color:#1e293b;font-size:14px}
+
+/* ── Login ── */
+#login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#f1f5f9;z-index:100}
+.lcard{background:#fff;border-radius:14px;padding:44px;width:360px;box-shadow:0 4px 32px rgba(0,0,0,.1)}
+.lcard h2{font-size:22px;font-weight:800;margin-bottom:6px}
+.lcard p{color:#64748b;font-size:13px;margin-bottom:28px}
+.lcard input{width:100%;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:14px;margin-bottom:14px;outline:none;transition:.15s}
+.lcard input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.btn-primary{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:11px 16px;font-size:14px;font-weight:600;cursor:pointer;width:100%;transition:.15s}
+.btn-primary:hover{background:#1d4ed8}
+.lerr{color:#dc2626;font-size:13px;margin-top:10px;display:none}
+
+/* ── App shell ── */
+#app{display:none;min-height:100vh}
+nav{background:#0f172a;color:#fff;padding:0 24px;display:flex;align-items:center;height:54px;gap:14px;position:sticky;top:0;z-index:10}
+nav h1{font-size:15px;font-weight:700;flex:1;letter-spacing:-.3px}
+nav span{font-size:12px;color:#64748b}
+.nav-btn{background:rgba(255,255,255,.08);border:none;color:#cbd5e1;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;transition:.15s}
+.nav-btn:hover{background:rgba(255,255,255,.16);color:#fff}
+
+.tabs{background:#fff;border-bottom:2px solid #e2e8f0;padding:0 24px;display:flex;gap:2px}
+.tab{padding:14px 18px;cursor:pointer;font-size:14px;font-weight:500;color:#64748b;border-bottom:2px solid transparent;margin-bottom:-2px;transition:.15s;user-select:none}
+.tab.active{color:#2563eb;border-bottom-color:#2563eb;font-weight:600}
+.tab:hover:not(.active){color:#1e293b}
+
+.content{padding:24px;max-width:1440px;margin:0 auto}
+
+/* ── Filter bar ── */
+.fbar{background:#fff;border-radius:12px;padding:18px 20px;margin-bottom:20px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.fg{display:flex;flex-direction:column;gap:5px}
+.fg label{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px}
+.fg input,.fg select{padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:14px;outline:none;background:#f8fafc;min-width:160px;transition:.15s}
+.fg input:focus,.fg select:focus{border-color:#2563eb;background:#fff}
+.fg input[type=date]{min-width:150px}
+.btn-search{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;transition:.15s;align-self:flex-end}
+.btn-search:hover{background:#1d4ed8}
+.btn-clear{background:#f1f5f9;color:#475569;border:none;border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer;align-self:flex-end;transition:.15s}
+.btn-clear:hover{background:#e2e8f0}
+
+/* ── Stats strip ── */
+.stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.stat{background:#fff;border-radius:10px;padding:14px 20px;flex:1;min-width:120px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.stat .val{font-size:24px;font-weight:800;line-height:1}
+.stat .lbl{font-size:12px;color:#64748b;margin-top:4px}
+.stat.s-green .val{color:#16a34a}
+.stat.s-red .val{color:#dc2626}
+.stat.s-amber .val{color:#d97706}
+.stat.s-blue .val{color:#2563eb}
+
+/* ── Table ── */
+.card{background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.06);overflow:hidden}
+.card-head{padding:16px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f1f5f9}
+.card-head h3{font-size:15px;font-weight:700}
+.card-head small{font-size:13px;color:#94a3b8}
+.tscroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;white-space:nowrap}
+th{background:#f8fafc;text-align:left;padding:10px 14px;font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #e2e8f0}
+td{padding:11px 14px;border-bottom:1px solid #f8fafc;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:#f8fafc}
+.mono{font-family:'Courier New',monospace;font-size:12px;color:#475569}
+
+/* ── Badges ── */
+.badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap}
+.bg-green{background:#dcfce7;color:#15803d}
+.bg-red{background:#fee2e2;color:#b91c1c}
+.bg-amber{background:#fef3c7;color:#92400e}
+.bg-blue{background:#dbeafe;color:#1d4ed8}
+.bg-grey{background:#f1f5f9;color:#475569}
+.bg-purple{background:#f3e8ff;color:#7e22ce}
+
+/* ── Progress ── */
+.pbar-wrap{display:flex;align-items:center;gap:8px}
+.pbar{background:#e2e8f0;border-radius:99px;height:6px;width:80px}
+.pfill{height:100%;border-radius:99px}
+.pfill.good{background:#16a34a}
+.pfill.warn{background:#f59e0b}
+.pfill.bad{background:#ef4444}
+.pct{font-size:12px;color:#64748b;min-width:34px}
+
+/* ── Student cards ── */
+.sc-list{display:flex;flex-direction:column;gap:16px}
+.sc{background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.sc-head{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.sc-head h3{font-size:16px;font-weight:700;flex:1}
+.sc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:14px}
+.sc-field label{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:3px}
+.sc-field span{font-size:13px;word-break:break-all}
+.emb-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.emb-chip{background:#f1f5f9;border-radius:6px;padding:4px 10px;font-size:12px;color:#475569}
+.emb-chip.verified{background:#dcfce7;color:#15803d}
+
+/* ── Misc ── */
+.placeholder{text-align:center;padding:60px 20px;color:#94a3b8}
+.placeholder svg{width:44px;height:44px;opacity:.4;margin-bottom:10px;display:block;margin-inline:auto}
+.placeholder p{font-size:15px;margin-bottom:4px}
+.placeholder small{font-size:13px}
+.err-msg{background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:12px 16px;color:#b91c1c;font-size:13px;margin-bottom:16px}
+
+@media(max-width:640px){.content{padding:14px}.fbar{flex-direction:column}.stats{flex-direction:column}}
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login">
+  <div class="lcard">
+    <h2>DB Admin</h2>
+    <p>Face Attendance System — Restricted Access</p>
+    <input type="password" id="pwd" placeholder="Admin secret" autocomplete="current-password">
+    <button class="btn-primary" onclick="doLogin()">Sign in</button>
+    <div class="lerr" id="lerr">Invalid secret — try again.</div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <nav>
+    <h1>&#127947; Attendance DB Admin</h1>
+    <span id="env-label"></span>
+    <button class="nav-btn" onclick="logout()">Sign out</button>
+  </nav>
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('attendance')">Attendance</div>
+    <div class="tab" onclick="switchTab('students')">Students</div>
+    <div class="tab" onclick="switchTab('batches')">Batches</div>
+    <div class="tab" onclick="switchTab('centres')">Centres</div>
+  </div>
+  <div class="content" id="content"></div>
+</div>
+
+<script>
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let AUTH = '';
+let currentTab = 'attendance';
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+function doLogin() {
+  AUTH = document.getElementById('pwd').value.trim();
+  if (!AUTH) return;
+  sessionStorage.setItem('admin_secret', AUTH);
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  switchTab('attendance');
+}
+function logout() {
+  sessionStorage.removeItem('admin_secret');
+  AUTH = '';
+  document.getElementById('login').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+document.getElementById('pwd').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+const saved = sessionStorage.getItem('admin_secret');
+if (saved) { AUTH = saved; document.getElementById('login').style.display = 'none'; document.getElementById('app').style.display = 'block'; switchTab('attendance'); }
+
+// ── API ───────────────────────────────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch('/api/admin' + path, { headers: { 'X-Webhook-Secret': AUTH } });
+  if (r.status === 401) { document.getElementById('lerr').style.display = 'block'; logout(); return null; }
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
+  return r.json();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function isoToDb(iso) {
+  if (!iso) return '';
+  const [y,m,d] = iso.split('-');
+  return `${d}-${MONTHS[+m-1]}-${y}`;
+}
+function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function fmtTime(dt) {
+  if (!dt) return '—';
+  const t = (dt.includes('T') ? dt.split('T')[1] : dt.split(' ')[1]) || '';
+  return t.substring(0,5) || '—';
+}
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function statusBadge(s) {
+  const map = { POSTED:'bg-green', SDK_POSTED:'bg-green', PENDING:'bg-amber', PROCESSING:'bg-blue', FAILED:'bg-red' };
+  return `<span class="badge ${map[s]||'bg-grey'}">${esc(s)}</span>`;
+}
+function batchBadge(s) {
+  const map = { Ongoing:'bg-green', Hold:'bg-amber', 'On Hold':'bg-amber', Completed:'bg-grey', Cancelled:'bg-red' };
+  return `<span class="badge ${map[s]||'bg-grey'}">${esc(s)}</span>`;
+}
+function progBar(val, total) {
+  const pct = total > 0 ? Math.round(val / total * 100) : 0;
+  const cls = pct >= 90 ? 'good' : pct >= 60 ? 'warn' : 'bad';
+  return `<div class="pbar-wrap"><div class="pbar"><div class="pfill ${cls}" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>`;
+}
+function parseScopeKey(sk) {
+  let key = sk, env = '';
+  if (key.includes(':') && !key.startsWith('C:')) { const i = key.indexOf(':'); env = key.slice(0,i); key = key.slice(i+1); }
+  if (key.startsWith('C:')) return { ids: key.slice(2).split(','), env };
+  return { ids: [], env };
+}
+function placeholder(icon, msg, sub) {
+  return `<div class="placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><p>${icon} ${msg}</p><small>${sub||''}</small></div>`;
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach((el, i) => {
+    el.classList.toggle('active', ['attendance','students','batches','centres'][i] === tab);
+  });
+  const renders = { attendance: renderAttendanceTab, students: renderStudentsTab, batches: renderBatchesTab, centres: renderCentresTab };
+  renders[tab]();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATTENDANCE TAB
+// ─────────────────────────────────────────────────────────────────────────────
+function renderAttendanceTab() {
+  document.getElementById('content').innerHTML = `
+    <div class="fbar">
+      <div class="fg"><label>Date</label><input type="date" id="att-date" value="${todayIso()}"></div>
+      <div class="fg"><label>Student ID / Name</label><input type="text" id="att-search" placeholder="ID or name…"></div>
+      <div class="fg"><label>Environment</label>
+        <select id="att-env">
+          <option value="">All</option>
+          <option value="production">Production</option>
+          <option value="development">Development</option>
+        </select>
+      </div>
+      <button class="btn-search" onclick="loadAttendance()">Search</button>
+      <button class="btn-clear" onclick="clearAttendance()">Clear</button>
+    </div>
+    <div id="att-stats" class="stats" style="display:none"></div>
+    <div id="att-result"><div class="card"><div style="padding:48px;text-align:center;color:#94a3b8">Select a date and click Search</div></div></div>
+  `;
+  document.getElementById('att-date').addEventListener('keydown', e => { if (e.key==='Enter') loadAttendance(); });
+  document.getElementById('att-search').addEventListener('keydown', e => { if (e.key==='Enter') loadAttendance(); });
+}
+
+async function loadAttendance() {
+  const date   = isoToDb(document.getElementById('att-date').value);
+  const search = document.getElementById('att-search').value.trim();
+  const env    = document.getElementById('att-env').value;
+  if (!date && !search) { document.getElementById('att-result').innerHTML = `<div class="err-msg">Enter a date or search term.</div>`; return; }
+  document.getElementById('att-result').innerHTML = `<div class="card"><div style="padding:48px;text-align:center;color:#94a3b8">Loading…</div></div>`;
+  document.getElementById('att-stats').style.display = 'none';
+  try {
+    const params = new URLSearchParams();
+    if (date) params.set('date', date);
+    if (search) params.set('search', search);
+    if (env) params.set('env', env);
+    const rows = await api('/attendance?' + params);
+    if (!rows) return;
+    renderAttendanceResult(rows);
+  } catch(e) { document.getElementById('att-result').innerHTML = `<div class="err-msg">${esc(e.message)}</div>`; }
+}
+
+function clearAttendance() {
+  document.getElementById('att-date').value = todayIso();
+  document.getElementById('att-search').value = '';
+  document.getElementById('att-env').value = '';
+  document.getElementById('att-stats').style.display = 'none';
+  document.getElementById('att-result').innerHTML = `<div class="card"><div style="padding:48px;text-align:center;color:#94a3b8">Select a date and click Search</div></div>`;
+}
+
+function renderAttendanceResult(rows) {
+  const stats = { POSTED:0, SDK_POSTED:0, PENDING:0, PROCESSING:0, FAILED:0 };
+  rows.forEach(r => { if (r.status in stats) stats[r.status]++; });
+  const posted = stats.POSTED + stats.SDK_POSTED;
+  document.getElementById('att-stats').style.display = 'flex';
+  document.getElementById('att-stats').innerHTML = `
+    <div class="stat"><div class="val">${rows.length}</div><div class="lbl">Total Records</div></div>
+    <div class="stat s-green"><div class="val">${posted}</div><div class="lbl">Posted to Zoho</div></div>
+    <div class="stat s-amber"><div class="val">${stats.PENDING+stats.PROCESSING}</div><div class="lbl">Pending</div></div>
+    <div class="stat s-red"><div class="val">${stats.FAILED}</div><div class="lbl">Failed</div></div>
+  `;
+  if (!rows.length) { document.getElementById('att-result').innerHTML = `<div class="card">${placeholder('🔍','No records found','Try a different date or search term')}</div>`; return; }
+  document.getElementById('att-result').innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Attendance Records</h3><small>${rows.length} records</small></div>
+      <div class="tscroll">
+        <table>
+          <thead><tr>
+            <th>Student ID</th><th>Name</th><th>Date</th>
+            <th>Check-in</th><th>Check-out</th><th>Action</th>
+            <th>Status</th><th>Env</th><th>Attempts</th><th>Error</th>
+          </tr></thead>
+          <tbody>${rows.map(r => `<tr>
+            <td class="mono">${esc(r.student_id)}</td>
+            <td>${esc(r.student_name)}</td>
+            <td class="mono">${esc(r.date_str)}</td>
+            <td class="mono">${esc(r.checkin_time||fmtTime(r.checkin_at))}</td>
+            <td class="mono">${r.is_checked_out ? fmtTime(r.checkout_at) : '—'}</td>
+            <td><span class="badge ${r.action_field==='Checkout'?'bg-purple':'bg-blue'}">${esc(r.action_field||'Checkin')}</span></td>
+            <td>${statusBadge(r.status)}</td>
+            <td><span class="badge bg-grey">${r.environment||'prod'}</span></td>
+            <td style="text-align:center">${r.attempts}</td>
+            <td style="color:#dc2626;font-size:12px;max-width:200px;white-space:normal">${esc(r.last_error||'')}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STUDENTS TAB
+// ─────────────────────────────────────────────────────────────────────────────
+function renderStudentsTab() {
+  document.getElementById('content').innerHTML = `
+    <div class="fbar">
+      <div class="fg" style="flex:1"><label>Student ID / Reg No / Name</label>
+        <input type="text" id="stu-search" placeholder="e.g. 217795000024928043 or TRR-0123 or Priya…" style="min-width:320px">
+      </div>
+      <button class="btn-search" onclick="loadStudents()">Search</button>
+    </div>
+    <div id="stu-result">${placeholder('🎓','Search for a student','Enter the student ID, registration number, or name')}</div>
+  `;
+  document.getElementById('stu-search').addEventListener('keydown', e => { if (e.key==='Enter') loadStudents(); });
+}
+
+async function loadStudents() {
+  const search = document.getElementById('stu-search').value.trim();
+  if (!search) return;
+  document.getElementById('stu-result').innerHTML = `<div style="text-align:center;padding:48px;color:#94a3b8">Loading…</div>`;
+  try {
+    const rows = await api('/student?search=' + encodeURIComponent(search));
+    if (!rows) return;
+    if (!rows.length) { document.getElementById('stu-result').innerHTML = placeholder('🔍','No student found','Not in student_cache — they may need to be synced'); return; }
+    document.getElementById('stu-result').innerHTML = `<div class="sc-list">${rows.map(renderStudentCard).join('')}</div>`;
+  } catch(e) { document.getElementById('stu-result').innerHTML = `<div class="err-msg">${esc(e.message)}</div>`; }
+}
+
+function renderStudentCard(r) {
+  const hasEmb = r.has_embedding == true || r.has_embedding == 1;
+  const embBadge = hasEmb
+    ? `<span class="badge bg-green">✓ ${r.embedding_count} embedding${r.embedding_count!=1?'s':''}</span>`
+    : `<span class="badge bg-red">✗ No valid embedding</span>`;
+  let meta = {};
+  try { meta = JSON.parse(r.meta_json || '{}'); } catch(_) {}
+  const embs = (r.embeddings||[]).map(e => {
+    const verified = e.source && e.source.startsWith('verified');
+    const score = e.det_score ? ` · ${parseFloat(e.det_score).toFixed(2)}` : '';
+    return `<span class="emb-chip ${verified?'verified':''}">${esc(e.source)}${score}</span>`;
+  }).join('');
+  return `<div class="sc">
+    <div class="sc-head">
+      <h3>${esc(r.name||'Unknown')}</h3>
+      ${embBadge}
+    </div>
+    <div class="sc-grid">
+      <div class="sc-field"><label>Student ID</label><span class="mono">${esc(r.student_id)}</span></div>
+      <div class="sc-field"><label>Reg Number</label><span>${esc(r.student_number||'—')}</span></div>
+      <div class="sc-field"><label>Batch ID</label><span class="mono">${esc(r.batch_id||'—')}</span></div>
+      <div class="sc-field"><label>Scope / Centre</label><span class="mono">${esc(r.scope_key||'—')}</span></div>
+      <div class="sc-field"><label>Centre ID</label><span class="mono">${esc(meta.centre_id||'—')}</span></div>
+      <div class="sc-field"><label>Zone</label><span>${esc(meta.zone_name||meta.zone||'—')}</span></div>
+      <div class="sc-field"><label>Last Updated</label><span>${esc((r.updated_at||'').substring(0,16))}</span></div>
+    </div>
+    ${embs ? `<div><span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px">Embeddings</span><div class="emb-row">${embs}</div></div>` : ''}
+  </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCHES TAB
+// ─────────────────────────────────────────────────────────────────────────────
+function renderBatchesTab() {
+  document.getElementById('content').innerHTML = `
+    <div class="fbar">
+      <div class="fg"><label>Status</label>
+        <select id="bat-status">
+          <option value="">All Statuses</option>
+          <option value="Ongoing" selected>Ongoing</option>
+          <option value="On Hold">On Hold</option>
+          <option value="Hold">Hold</option>
+          <option value="Completed">Completed</option>
+        </select>
+      </div>
+      <div class="fg"><label>Search</label><input type="text" id="bat-search" placeholder="Batch name or ID…"></div>
+      <button class="btn-search" onclick="loadBatches()">Search</button>
+      <button class="btn-clear" onclick="document.getElementById('bat-status').value='Ongoing';document.getElementById('bat-search').value='';loadBatches()">Reset</button>
+    </div>
+    <div id="bat-stats" class="stats" style="display:none"></div>
+    <div id="bat-result"><div style="text-align:center;padding:48px;color:#94a3b8">Loading…</div></div>
+  `;
+  document.getElementById('bat-search').addEventListener('keydown', e => { if (e.key==='Enter') loadBatches(); });
+  loadBatches();
+}
+
+async function loadBatches() {
+  const status = document.getElementById('bat-status').value;
+  const search = document.getElementById('bat-search').value.trim();
+  document.getElementById('bat-result').innerHTML = `<div style="text-align:center;padding:48px;color:#94a3b8">Loading…</div>`;
+  try {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (search) params.set('search', search);
+    const rows = await api('/batches?' + params);
+    if (!rows) return;
+    renderBatchesResult(rows);
+  } catch(e) { document.getElementById('bat-result').innerHTML = `<div class="err-msg">${esc(e.message)}</div>`; }
+}
+
+function renderBatchesResult(rows) {
+  const totalStu = rows.reduce((a,r)=>a+(r.total_students||0),0);
+  const totalEmb = rows.reduce((a,r)=>a+(r.with_embeddings||0),0);
+  document.getElementById('bat-stats').style.display = 'flex';
+  document.getElementById('bat-stats').innerHTML = `
+    <div class="stat s-blue"><div class="val">${rows.length}</div><div class="lbl">Batches</div></div>
+    <div class="stat"><div class="val">${totalStu}</div><div class="lbl">Total Students</div></div>
+    <div class="stat s-green"><div class="val">${totalEmb}</div><div class="lbl">With Embeddings</div></div>
+    <div class="stat s-red"><div class="val">${totalStu-totalEmb}</div><div class="lbl">No Photo</div></div>
+  `;
+  if (!rows.length) { document.getElementById('bat-result').innerHTML = `<div class="card">${placeholder('📦','No batches found','Try a different status filter')}</div>`; return; }
+  document.getElementById('bat-result').innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Batches</h3><small>${rows.length} batches</small></div>
+      <div class="tscroll"><table>
+        <thead><tr>
+          <th>Batch Name</th><th>Status</th><th>Start</th><th>End</th>
+          <th>Total</th><th>With Photo</th><th>No Photo</th><th>Coverage</th><th>Scope</th>
+        </tr></thead>
+        <tbody>${rows.map(r => {
+          const total = r.total_students||0, emb = r.with_embeddings||0, nop = r.no_photo||0;
+          return `<tr>
+            <td style="font-weight:600;max-width:220px;white-space:normal">${esc(r.batch_name||r.batch_id)}</td>
+            <td>${batchBadge(r.status)}</td>
+            <td class="mono">${esc(r.start_date||'—')}</td>
+            <td class="mono">${esc(r.end_date||'—')}</td>
+            <td style="text-align:center;font-weight:600">${total}</td>
+            <td style="text-align:center;color:#16a34a;font-weight:600">${emb}</td>
+            <td style="text-align:center;color:${nop>0?'#dc2626':'#94a3b8'};font-weight:600">${nop}</td>
+            <td>${progBar(emb,total)}</td>
+            <td class="mono" style="font-size:11px;color:#94a3b8">${esc(r.scope_key)}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CENTRES TAB
+// ─────────────────────────────────────────────────────────────────────────────
+function renderCentresTab() {
+  document.getElementById('content').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <div id="cen-stats" class="stats" style="flex:1;display:none"></div>
+      <button class="btn-search" style="margin-left:12px;flex-shrink:0" onclick="loadCentres()">↻ Refresh</button>
+    </div>
+    <div id="cen-result"><div style="text-align:center;padding:48px;color:#94a3b8">Loading…</div></div>
+  `;
+  loadCentres();
+}
+
+async function loadCentres() {
+  document.getElementById('cen-result').innerHTML = `<div style="text-align:center;padding:48px;color:#94a3b8">Loading…</div>`;
+  try {
+    const rows = await api('/centres');
+    if (!rows) return;
+    renderCentresResult(rows);
+  } catch(e) { document.getElementById('cen-result').innerHTML = `<div class="err-msg">${esc(e.message)}</div>`; }
+}
+
+function renderCentresResult(rows) {
+  const totalStu = rows.reduce((a,r)=>a+(r.total_students||0),0);
+  const totalEmb = rows.reduce((a,r)=>a+(r.with_embeddings||0),0);
+  const activeBat = rows.reduce((a,r)=>a+(r.active_batches||0),0);
+  document.getElementById('cen-stats').style.display = 'flex';
+  document.getElementById('cen-stats').innerHTML = `
+    <div class="stat s-blue"><div class="val">${rows.length}</div><div class="lbl">Centres</div></div>
+    <div class="stat s-green"><div class="val">${activeBat}</div><div class="lbl">Active Batches</div></div>
+    <div class="stat"><div class="val">${totalStu}</div><div class="lbl">Total Students</div></div>
+    <div class="stat s-green"><div class="val">${Math.round(totalStu>0?totalEmb/totalStu*100:0)}%</div><div class="lbl">Overall Coverage</div></div>
+  `;
+  if (!rows.length) { document.getElementById('cen-result').innerHTML = `<div class="card">${placeholder('🏫','No centre data found','Batches must be loaded first')}</div>`; return; }
+  document.getElementById('cen-result').innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Centre Overview</h3><small>${rows.length} centres</small></div>
+      <div class="tscroll"><table>
+        <thead><tr>
+          <th>Centre ID(s)</th><th>Zone</th>
+          <th>Active Batches</th><th>Total Batches</th>
+          <th>Students</th><th>With Photo</th><th>Coverage</th><th>Scope Key</th>
+        </tr></thead>
+        <tbody>${rows.map(r => {
+          const total = r.total_students||0, emb = r.with_embeddings||0;
+          const ids = (r.centre_ids||[]).join(', ') || '—';
+          return `<tr>
+            <td class="mono" style="font-weight:600">${esc(ids)}</td>
+            <td>${esc(r.zone_name||'—')}</td>
+            <td style="text-align:center"><span class="badge bg-green">${r.active_batches||0}</span></td>
+            <td style="text-align:center;color:#64748b">${r.batch_count||0}</td>
+            <td style="text-align:center;font-weight:600">${total}</td>
+            <td style="text-align:center;color:#16a34a;font-weight:600">${emb}</td>
+            <td>${progBar(emb,total)}</td>
+            <td class="mono" style="font-size:11px;color:#94a3b8">${esc(r.scope_key)}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+    </div>`;
+}
+</script>
+</body>
+</html>
