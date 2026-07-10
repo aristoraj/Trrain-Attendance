@@ -855,7 +855,7 @@ def _gap_fill_students(missing_ids: list, env: str) -> None:
             logger.warning(f"[GapFill] No data returned for {len(missing_ids)} missing IDs.")
             return
 
-        # Group by (scope_key, batch_id) — derived from each student's own meta_json
+        # Group by (scope_key, batch_id) — derived from meta_json, with batch_status fallback
         from collections import defaultdict
         groups: dict = defaultdict(list)
         for s in students:
@@ -865,25 +865,36 @@ def _gap_fill_students(missing_ids: list, env: str) -> None:
                 meta = {}
             centre_id = meta.get("centre_id", "")
             batch_id  = s.get("batch_id", "")
-            scope_key = _build_scope_key([centre_id], env) if centre_id else ""
+            if centre_id:
+                scope_key = _build_scope_key([centre_id], env)
+            else:
+                # Zoho REST API returns Centre_Name as a display string, not a dict —
+                # fall back to the scope already stored for this batch in batch_status.
+                scope_key = att_queue.get_scope_key_for_batch(batch_id)
+                if scope_key:
+                    logger.info(f"[GapFill] Derived scope '{scope_key}' from batch_status for student {s.get('id')}")
             if scope_key:
                 groups[(scope_key, batch_id)].append(s)
             else:
-                logger.warning(f"[GapFill] No centre_id in meta for student {s.get('id')} — skipping.")
+                logger.warning(f"[GapFill] Cannot determine scope for student {s.get('id')} (no centre_id, batch {batch_id} not in batch_status) — skipping.")
 
         scopes_updated: set = set()
         for (scope_key, batch_id), grp in groups.items():
             att_queue.upsert_students_for_batch(scope_key, batch_id, grp)
             scopes_updated.add(scope_key)
 
-        # Handle no-photo students — same grouping logic
+        # Handle no-photo students — same grouping logic with same fallback
         for s in no_photo:
             try:
                 meta = json.loads(s.get("meta_json", "{}"))
             except Exception:
                 meta = {}
             centre_id = meta.get("centre_id", "")
-            scope_key = _build_scope_key([centre_id], env) if centre_id else ""
+            batch_id  = s.get("batch_id", "")
+            if centre_id:
+                scope_key = _build_scope_key([centre_id], env)
+            else:
+                scope_key = att_queue.get_scope_key_for_batch(batch_id)
             if scope_key:
                 att_queue.save_no_photo_students(scope_key, [s])
                 scopes_updated.add(scope_key)

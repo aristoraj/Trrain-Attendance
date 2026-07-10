@@ -1571,6 +1571,17 @@ class AttendanceQueue:
             'with_emb_count':   len(cached_ids) - len(no_emb),
         }
 
+    def get_scope_key_for_batch(self, batch_id: str) -> str:
+        """Return the scope_key for a batch from batch_status, or '' if not found."""
+        if not batch_id:
+            return ""
+        with self._db() as conn:
+            row = conn.execute(
+                self._q("SELECT scope_key FROM batch_status WHERE batch_id = ? LIMIT 1"),
+                (batch_id,)
+            ).fetchone()
+        return row["scope_key"] if row else ""
+
     def get_all_student_ids(self) -> set:
         """Return the set of all student_ids present anywhere in student_cache."""
         with self._db() as conn:
