@@ -13,6 +13,7 @@ Also manages the face_embeddings table:
   - SQLite by default; PostgreSQL when DATABASE_URL env var is set
 """
 
+import json
 import logging
 import os
 import threading
@@ -1481,8 +1482,7 @@ class AttendanceQueue:
 
     def save_sync_audit(self, env: str, student_ids) -> None:
         """Upsert the latest gap-fill payload per environment (one row per env)."""
-        from datetime import datetime as _dt
-        now = _dt.now().strftime("%Y-%m-%dT%H:%M:%S")
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         ids_json = json.dumps(sorted(str(s) for s in student_ids))
         if self._is_postgres:
             sql = self._q("""
