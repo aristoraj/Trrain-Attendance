@@ -439,6 +439,24 @@
     }
     #btn-finish:hover { background: #1B5E20; }
     #btn-finish { flex-shrink: 0; }
+    #btn-refresh-cache {
+      background: transparent;
+      color: var(--text-secondary, #555);
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 40px;
+      transition: background 0.2s, color 0.2s;
+      flex-shrink: 0;
+    }
+    #btn-refresh-cache:hover { background: var(--border); color: var(--text); }
+    #btn-refresh-cache:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* ── Data loading screen ────────────────────────────────────────────────── */
     #data-loading-screen {
