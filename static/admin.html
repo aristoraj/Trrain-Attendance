@@ -98,6 +98,10 @@ tbody tr:hover td{background:#f8fafc}
 .emb-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .emb-chip{background:#f1f5f9;border-radius:6px;padding:4px 10px;font-size:12px;color:#475569}
 .emb-chip.verified{background:#dcfce7;color:#15803d}
+.photo-slot{display:flex;flex-direction:column;gap:4px}
+.photo-label{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px}
+.photo-thumb{width:120px;height:90px;background:#f1f5f9;border-radius:6px;border:1px solid #e2e8f0;display:flex;align-items:center;justify-content:center;font-size:11px;color:#94a3b8}
+@media(prefers-color-scheme:dark){.photo-thumb{background:#1e293b;border-color:#334155}}
 
 /* ── Misc ── */
 .placeholder{text-align:center;padding:60px 20px;color:#94a3b8}
@@ -348,6 +352,7 @@ async function loadStudents() {
     if (!rows) return;
     if (!rows.length) { document.getElementById('stu-result').innerHTML = placeholder('🔍','No student found','Not in student_cache — they may need to be synced'); return; }
     document.getElementById('stu-result').innerHTML = `<div class="sc-list">${rows.map(renderStudentCard).join('')}</div>`;
+    rows.forEach(r => loadStudentPhotos(r.student_id));
   } catch(e) { document.getElementById('stu-result').innerHTML = `<div class="err-msg">${esc(e.message)}</div>`; }
 }
 
@@ -363,7 +368,9 @@ function renderStudentCard(r) {
     const score = e.det_score ? ` · ${parseFloat(e.det_score).toFixed(2)}` : '';
     return `<span class="emb-chip ${verified?'verified':''}">${esc(e.source)}${score}</span>`;
   }).join('');
-  return `<div class="sc">
+  const cardId = 'sc-' + r.student_id.replace(/\D/g,'');
+  const photoId = 'photos-' + r.student_id.replace(/\D/g,'');
+  return `<div class="sc" id="${cardId}">
     <div class="sc-head">
       <h3>${esc(r.name||'Unknown')}</h3>
       ${embBadge}
@@ -378,7 +385,36 @@ function renderStudentCard(r) {
       <div class="sc-field"><label>Last Updated</label><span>${esc((r.updated_at||'').substring(0,16))}</span></div>
     </div>
     ${embs ? `<div><span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px">Embeddings</span><div class="emb-row">${embs}</div></div>` : ''}
+    <div id="${photoId}" style="margin-top:10px">
+      <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px">Today's Photos</span>
+      <div class="photo-row" style="display:flex;gap:12px;margin-top:6px">
+        <div class="photo-slot" id="${photoId}-ci"><span class="photo-label">Check-in</span><div class="photo-thumb">loading…</div></div>
+        <div class="photo-slot" id="${photoId}-co"><span class="photo-label">Check-out</span><div class="photo-thumb">loading…</div></div>
+      </div>
+    </div>
   </div>`;
+}
+
+async function loadStudentPhotos(studentId) {
+  const photoId = 'photos-' + studentId.replace(/\D/g,'');
+  try {
+    const data = await api('/student/' + studentId + '/photos');
+    const ciEl = document.getElementById(photoId + '-ci');
+    const coEl = document.getElementById(photoId + '-co');
+    if (!ciEl) return;
+    const render = (el, src, label) => {
+      if (src) {
+        el.innerHTML = `<span class="photo-label">${label}</span><img src="${src}" style="width:120px;height:90px;object-fit:cover;border-radius:6px;border:1px solid #334155;cursor:pointer" onclick="this.style.width=this.style.width==='100%'?'120px':'100%'">`;
+      } else {
+        el.innerHTML = `<span class="photo-label">${label}</span><div class="photo-thumb" style="color:#64748b;font-size:12px">No photo</div>`;
+      }
+    };
+    render(ciEl, data.checkin,  'Check-in');
+    render(coEl, data.checkout, 'Check-out');
+  } catch(_) {
+    const el = document.getElementById(photoId);
+    if (el) el.style.display = 'none';
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

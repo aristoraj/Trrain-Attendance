@@ -596,11 +596,46 @@ class AttendanceQueue:
                 (cutoff_date,),
             )
             checkin_deleted = cur.rowcount if hasattr(cur, "rowcount") else 0
+        photo_deleted = self.purge_old_checkin_photos(days=3)
         logger.info(
-            f"[WeeklyCleanup] Deleted {queue_deleted} queue record(s) "
-            f"and {checkin_deleted} checkin_state record(s) older than {days} days."
+            f"[WeeklyCleanup] Deleted {queue_deleted} queue record(s), "
+            f"{checkin_deleted} checkin_state record(s) older than {days} days, "
+            f"{photo_deleted} checkin photo(s) older than 3 days."
         )
-        return {"queue_deleted": queue_deleted, "checkin_deleted": checkin_deleted}
+        return {"queue_deleted": queue_deleted, "checkin_deleted": checkin_deleted, "photo_deleted": photo_deleted}
+
+    def purge_stale_production_students(self, valid_ids: set) -> dict:
+        """
+        Delete production student_cache rows whose student_id is NOT in valid_ids,
+        then delete orphaned face_embeddings. Only touches scope_key LIKE 'C:%'.
+        Returns {"students": n, "embeddings": n}.
+        """
+        if not valid_ids:
+            return {"students": 0, "embeddings": 0}
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT student_id FROM student_cache WHERE scope_key LIKE 'C:%'"
+            ).fetchall()
+            stale_ids = [r["student_id"] for r in rows if r["student_id"] not in valid_ids]
+            if not stale_ids:
+                logger.info("[PurgeStale] No stale production students to remove.")
+                return {"students": 0, "embeddings": 0}
+            ph = ", ".join([self._ph] * len(stale_ids))
+            cur1 = conn.execute(
+                f"DELETE FROM student_cache WHERE scope_key LIKE 'C:%' AND student_id IN ({ph})",
+                tuple(stale_ids),
+            )
+            removed_students = cur1.rowcount if hasattr(cur1, "rowcount") else len(stale_ids)
+            cur2 = conn.execute(
+                "DELETE FROM face_embeddings WHERE student_id NOT IN "
+                "(SELECT DISTINCT student_id FROM student_cache)"
+            )
+            removed_emb = cur2.rowcount if hasattr(cur2, "rowcount") else 0
+        logger.info(
+            f"[PurgeStale] Removed {removed_students} stale student(s) "
+            f"and {removed_emb} orphaned embedding(s) from production."
+        )
+        return {"students": removed_students, "embeddings": removed_emb}
 
     def remove_students_by_batch(self, batch_id: str, scope_key: str) -> tuple:
         """
@@ -1047,6 +1082,7 @@ class AttendanceQueue:
             self._create_checkin_state_table(conn)
             self._create_global_settings_table(conn)
             self._create_sync_audit_table(conn)
+            self._create_checkin_photos_table(conn)
             # Drop financial_year_master if it exists from a prior deployment
             conn.execute("DROP TABLE IF EXISTS financial_year_master")
 
@@ -1417,6 +1453,11 @@ class AttendanceQueue:
                 """),
                 (student_id, source, embedding_json, det_score, photo_url, now),
             )
+            # Keep has_embedding flag in sync across all scope rows for this student
+            conn.execute(
+                self._q("UPDATE student_cache SET has_embedding=TRUE WHERE student_id=?"),
+                (student_id,),
+            )
 
     def clear_enrollment_embeddings(self) -> int:
         """Delete ALL enrollment embeddings (used when no scope is known)."""
@@ -1470,6 +1511,24 @@ class AttendanceQueue:
                        True, s.get("batch_id", ""), s.get("meta_json", "{}"), now))
         logger.info(f"Saved {len(students)} students to local DB for scope '{scope_key}'.")
 
+    def _create_checkin_photos_table(self, conn):
+        blob_type = "BYTEA" if self._is_postgres else "BLOB"
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS checkin_photos (
+                student_id  TEXT NOT NULL,
+                event       TEXT NOT NULL,
+                date_str    TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                jpeg        {blob_type} NOT NULL,
+                zoho_id     TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (student_id, event, date_str)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cp_student "
+            "ON checkin_photos(student_id, date_str DESC)"
+        )
+
     def _create_sync_audit_table(self, conn):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sync_audit (
@@ -1500,6 +1559,87 @@ class AttendanceQueue:
             """)
         with self._db() as conn:
             conn.execute(sql, (env or '', now, len(student_ids), ids_json))
+
+    def save_checkin_photo(
+        self,
+        student_id: str,
+        event: str,
+        jpeg: bytes,
+        zoho_id: str = "",
+        date_str: str = "",
+    ) -> None:
+        """Upsert a check-in or checkout JPEG for (student_id, event, date_str). One row per student per event per day."""
+        if not jpeg:
+            return
+        try:
+            if date_str:
+                for fmt in ("%d-%b-%Y", "%Y-%m-%d"):
+                    try:
+                        date_key = datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    date_key = date_str[:10]
+            else:
+                date_key = datetime.now().strftime("%Y-%m-%d")
+            now = datetime.now().isoformat()
+            if self._is_postgres:
+                sql = self._q("""
+                    INSERT INTO checkin_photos (student_id, event, date_str, captured_at, jpeg, zoho_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (student_id, event, date_str) DO UPDATE
+                        SET captured_at=EXCLUDED.captured_at,
+                            jpeg=EXCLUDED.jpeg,
+                            zoho_id=EXCLUDED.zoho_id
+                """)
+            else:
+                sql = self._q("""
+                    INSERT OR REPLACE INTO checkin_photos (student_id, event, date_str, captured_at, jpeg, zoho_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """)
+            with self._db() as conn:
+                conn.execute(sql, (student_id, event, date_key, now, jpeg, zoho_id or ""))
+        except Exception as e:
+            logger.warning(f"save_checkin_photo failed for {student_id}/{event}: {e}")
+
+    def get_checkin_photos_b64(self, student_id: str, date_str: str = "") -> dict:
+        """Return today's check-in and checkout photos as base64 data URIs."""
+        import base64 as _b64
+        if date_str:
+            for fmt in ("%d-%b-%Y", "%Y-%m-%d"):
+                try:
+                    date_key = datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    continue
+            else:
+                date_key = date_str[:10]
+        else:
+            date_key = datetime.now().strftime("%Y-%m-%d")
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q("SELECT event, jpeg FROM checkin_photos WHERE student_id=? AND date_str=?"),
+                (student_id, date_key),
+            ).fetchall()
+        result: dict = {"checkin": None, "checkout": None, "date": date_key}
+        for row in rows:
+            if row["jpeg"]:
+                result[row["event"]] = "data:image/jpeg;base64," + _b64.b64encode(bytes(row["jpeg"])).decode()
+        return result
+
+    def purge_old_checkin_photos(self, days: int = 3) -> int:
+        """Delete checkin_photos older than `days` days. Returns count deleted."""
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        with self._db() as conn:
+            cur = conn.execute(
+                self._q("DELETE FROM checkin_photos WHERE date_str < ?"),
+                (cutoff,),
+            )
+            deleted = cur.rowcount if hasattr(cur, "rowcount") else 0
+        if deleted:
+            logger.info(f"[PhotoCleanup] Deleted {deleted} checkin_photos older than {days} days.")
+        return deleted
 
     def get_db_stats(self) -> dict:
         """Return student/batch counts for the stats panels."""
@@ -2164,6 +2304,11 @@ class AttendanceQueue:
                             args=(zoho_id, capture_jpeg, name, environment),
                             daemon=True,
                         ).start()
+                    if capture_jpeg:
+                        self.save_checkin_photo(
+                            student_id, "checkin", bytes(capture_jpeg),
+                            zoho_id or "", row["date_str"],
+                        )
                     logger.info(f"Queue: synced {name} → Zoho (#{rec_id}) zoho_id='{zoho_id}'")
                 else:
                     # POST failed — but Zoho may have already created a record

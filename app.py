@@ -998,6 +998,20 @@ def webhook_batch_gap_fill():
     except Exception as _ae:
         logger.warning(f"[GapFill] save_sync_audit failed (non-fatal): {_ae}")
 
+    # Purge production students no longer in Zoho's ongoing-batch list.
+    # Guard: only run if the incoming list is credibly large (≥100) to avoid
+    # wiping valid students on a partial/test trigger.
+    if (not env or env == "production") and len(incoming_set) >= 100:
+        try:
+            purge_result = att_queue.purge_stale_production_students(incoming_set)
+            if purge_result["students"] > 0:
+                logger.info(
+                    f"[GapFill] Purged {purge_result['students']} stale student(s) "
+                    f"and {purge_result['embeddings']} embedding(s) not in today's Zoho list."
+                )
+        except Exception as _pe:
+            logger.warning(f"[GapFill] purge_stale_production_students failed (non-fatal): {_pe}")
+
     if not missing_ids:
         return jsonify({
             "status":         "ok",
@@ -2137,6 +2151,10 @@ def record_checkin_api():
                 daemon=True,
             ).start()
             logger.info(f"Check-in photo upload queued for {student_name} (record {zoho_record_id})")
+            att_queue.save_checkin_photo(
+                student_id, "checkin", _jpeg,
+                zoho_record_id, today_str,
+            )
         else:
             logger.warning(f"Check-in photo not available for {student_name} (capture may have expired)")
 
@@ -2210,6 +2228,19 @@ def checkout():
     # Mark local DB checkout FIRST — independent of Zoho availability
     checkout_time = datetime.now(_IST).strftime("%H:%M:%S")
     att_queue.record_checkout(student_id, today_str)
+
+    # Save checkout face photo from pending captures (best-effort)
+    try:
+        with _captures_lock:
+            _co_entry = _pending_captures.get(student_id)
+        if _co_entry:
+            _co_jpeg, _ = _co_entry
+            att_queue.save_checkin_photo(
+                student_id, "checkout", _co_jpeg,
+                zoho_rec_id or "", today_str,
+            )
+    except Exception as _cope:
+        logger.warning(f"[Checkout] save_checkin_photo failed (non-fatal): {_cope}")
 
     if not zoho_rec_id:
         logger.warning(f"Checked out locally: {student_name} at {checkout_time} — no Zoho record ID found, Zoho PATCH skipped")
@@ -4031,6 +4062,15 @@ def admin_student():
             row["embedding_count"] = sum(1 for e in embs if e["source"] != "no_photo")
             result.append(row)
     return jsonify(result)
+
+
+@app.route("/api/admin/student/<student_id>/photos")
+def admin_student_photos(student_id):
+    err = _admin_auth()
+    if err: return err
+    date_str = request.args.get("date", "").strip()
+    photos = att_queue.get_checkin_photos_b64(student_id, date_str)
+    return jsonify(photos)
 
 
 @app.route("/api/admin/batches")
