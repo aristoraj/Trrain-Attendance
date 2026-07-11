@@ -654,6 +654,7 @@
       <button id="btn-allow" onclick="startCamera()">
         <i class="bi bi-camera-video"></i> Allow Camera
       </button>
+      <div id="cam-diag" style="display:none;margin-top:12px;font-size:11px;line-height:1.5;color:#999;font-family:monospace;text-align:left;word-break:break-all;"></div>
     </div>
     <video id="video" autoplay muted playsinline></video>
     <canvas id="canvas-overlay"></canvas>
@@ -1259,15 +1260,15 @@ async function startCamera() {
   canvasEl = document.getElementById('canvas-overlay');
   ctx      = canvasEl.getContext('2d');
 
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    permScreen.style.display = 'flex';
-    permScreen.querySelector('p').textContent =
-      'Camera is not available in this browser context. On iPhone, please open this link in Safari instead of inside the Zoho Creator app.';
-    setStatus('error', 'Camera unavailable — open in Safari');
-    return;
-  }
-
   try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      // Throw so the catch block can show the right iOS-specific message.
+      // Do NOT return early — on some iOS versions the API initialises only
+      // after a user-gesture tap, so we must fall through to the catch.
+      const e = new Error('Camera API unavailable');
+      e.name = 'NotSupportedError';
+      throw e;
+    }
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
       audio: false,
@@ -1283,18 +1284,51 @@ async function startCamera() {
     initFaceMesh();
   } catch (err) {
     permScreen.style.display = 'flex';
-    const isDenied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
-    const isUnavailable = err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError';
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isDenied      = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+    const isUnavailable = err.name === 'NotFoundError'   || err.name === 'DevicesNotFoundError';
+    const isUnsupported = err.name === 'NotSupportedError';
     let msg;
     if (isDenied) {
-      msg = 'Camera permission denied. Open your phone Settings → Safari → Camera → Allow, then tap Allow Camera again.';
+      msg = isIOS
+        ? 'Camera permission denied. On your iPhone go to: Settings → Privacy & Security → Camera → enable Safari. Then tap Allow Camera again.'
+        : 'Camera permission denied. Click the camera icon in your browser address bar and allow access.';
     } else if (isUnavailable) {
       msg = 'No camera found on this device. Please use a device with a front camera.';
+    } else if (isUnsupported) {
+      msg = isIOS
+        ? 'Camera is blocked. On your iPhone: Settings → Privacy & Security → Camera → turn ON Safari. Also make sure you opened this link directly in Safari, not inside the Zoho app.'
+        : 'Your browser does not support camera access. Please use Chrome or Safari.';
     } else {
       msg = 'Camera error: ' + err.message + '. Please close other camera apps and try again.';
     }
     permScreen.querySelector('p').textContent = msg;
     setStatus('error', 'Camera access denied — see instructions above');
+
+    // Diagnostic readout — helps identify OS-level blocks (Screen Time, MDM,
+    // feature flags) on devices where mediaDevices is undefined even in Safari.
+    // Ask the user to screenshot this block.
+    try {
+      const diag = document.getElementById('cam-diag');
+      const lines = [
+        'DIAG v1 — screenshot this:',
+        'error: ' + err.name + ' / ' + err.message,
+        'mediaDevices: ' + typeof navigator.mediaDevices,
+        'getUserMedia: ' + typeof navigator.mediaDevices?.getUserMedia,
+        'legacy webkitGUM: ' + typeof navigator.webkitGetUserMedia,
+        'secureContext: ' + window.isSecureContext,
+        'inIframe: ' + (window !== window.top),
+        'permissionsAPI: ' + typeof navigator.permissions,
+        'UA: ' + navigator.userAgent,
+      ];
+      // Permissions API camera state, if queryable
+      navigator.permissions?.query?.({ name: 'camera' })
+        .then(s => { diag.textContent += '\ncamPermission: ' + s.state; })
+        .catch(() => {});
+      diag.textContent = lines.join('\n');
+      diag.style.whiteSpace = 'pre-wrap';
+      diag.style.display = 'block';
+    } catch (_) { /* diagnostics must never break the page */ }
   }
 }
 
@@ -2031,13 +2065,6 @@ function closeFinishModal() {
       }).catch(() => {});
   })();
 
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    permScreen.querySelector('p').textContent = isIOS
-      ? 'Camera is not available in this browser context. On iPhone, please open this link directly in Safari (not inside the Zoho Creator app).'
-      : 'Your browser does not support camera access. Please use Chrome or Edge.';
-    return;
-  }
   // Camera start is deferred until initDataLoadingScreen confirms data is ready.
   // This prevents face-scan attempts before trainee embeddings are cached.
   // If the loading flow is bypassed (no email / feature gate), the user sees
