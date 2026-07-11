@@ -2137,23 +2137,11 @@ class AttendanceQueue:
                     self._set_posted(rec_id)
                     zoho_id = result.get("data", {}).get("data", {}).get("ID", "")
                     if not zoho_id:
-                        logger.warning(
-                            f"Queue #{rec_id}: Zoho response missing ID for {name} — "
-                            f"falling back to find_attendance_record"
+                        logger.error(
+                            f"Queue #{rec_id}: Zoho response missing ID for {name} on "
+                            f"{row['date_str']}. Check-in recorded without Zoho ID. "
+                            f"Photo will NOT be uploaded."
                         )
-                        zoho_id = self._zoho.find_attendance_record(
-                            student_id, row["date_str"], environment
-                        ) or ""
-                        if zoho_id:
-                            logger.info(
-                                f"Queue #{rec_id}: fallback found Zoho ID '{zoho_id}' for {name}"
-                            )
-                        else:
-                            logger.error(
-                                f"Queue #{rec_id}: fallback also failed — "
-                                f"no Zoho record found for {name} on {row['date_str']}. "
-                                f"Check-in recorded without Zoho ID. Photo will NOT be uploaded."
-                            )
                     # Write checkin_state with the correct zoho_id — idempotent, so safe
                     # if SDK path already wrote it (UNIQUE constraint will just return False).
                     wrote = self.record_checkin(student_id, name, row["date_str"], environment, zoho_id,
@@ -2169,18 +2157,6 @@ class AttendanceQueue:
                         logger.info(
                             f"Queue #{rec_id}: checkin_state zoho_id updated to '{zoho_id}' for {name}"
                         )
-                    # SAFETY NET: Zoho can return code=3000 yet silently drop
-                    # Check_In/Action (thin record). Read the record back and
-                    # repair until the fields are confirmed present in Zoho.
-                    if zoho_id:
-                        if not self._zoho.ensure_checkin_fields(
-                            zoho_id, checkin_time, action_field, environment
-                        ):
-                            logger.critical(
-                                f"Queue #{rec_id}: THIN RECORD — Check_In/Action could not be "
-                                f"confirmed on Zoho record '{zoho_id}' for {name} after repair. "
-                                f"Needs manual review."
-                            )
                     if zoho_id and capture_jpeg and ENABLE_LIVE_PHOTO_PATCH:
                         import threading as _threading
                         _threading.Thread(
@@ -2190,26 +2166,18 @@ class AttendanceQueue:
                         ).start()
                     logger.info(f"Queue: synced {name} → Zoho (#{rec_id}) zoho_id='{zoho_id}'")
                 else:
-                    # POST failed — but Zoho may have already created a thin record
-                    # (e.g. via the SDK client-side, or a prior retry that timed out).
-                    # Try to find it, patch in Check_In + Action, write checkin_state, upload photo.
+                    # POST failed — but Zoho may have already created a record
+                    # (e.g. a prior retry that timed out before we got the response).
+                    # Find it so we can write checkin_state and upload the photo.
                     existing_id = self._zoho.find_attendance_record(
                         student_id, row["date_str"], environment
                     ) or ""
                     if existing_id:
                         logger.warning(
                             f"Queue #{rec_id}: POST failed for {name} but existing Zoho record "
-                            f"'{existing_id}' found — patching Check_In/Action and uploading photo"
+                            f"'{existing_id}' found — writing checkin_state and uploading photo"
                         )
                         self._set_posted(rec_id)
-                        if not self._zoho.ensure_checkin_fields(
-                            existing_id, checkin_time, action_field, environment
-                        ):
-                            logger.critical(
-                                f"Queue #{rec_id}: THIN RECORD — Check_In/Action could not be "
-                                f"confirmed on existing Zoho record '{existing_id}' for {name}. "
-                                f"Needs manual review."
-                            )
                         self.record_checkin(student_id, name, row["date_str"], environment, existing_id,
                                             checkin_time_hhmm=checkin_time)
                         if capture_jpeg and ENABLE_LIVE_PHOTO_PATCH:
@@ -2224,8 +2192,7 @@ class AttendanceQueue:
             except Exception as e:
                 logger.error(f"Queue #{rec_id}: drain exception for {name}: {e}")
                 # If post_attendance already created a Zoho record before the exception,
-                # patch it with Check_In/Action fields and write checkin_state so the
-                # student isn't left with a thin record or able to duplicate check-in.
+                # find it and write checkin_state so the student can still check out.
                 try:
                     existing_id = self._zoho.find_attendance_record(
                         student_id, row["date_str"], environment
@@ -2233,17 +2200,9 @@ class AttendanceQueue:
                     if existing_id:
                         logger.warning(
                             f"Queue #{rec_id}: exception mid-drain but found Zoho record "
-                            f"'{existing_id}' for {name} — patching and completing"
+                            f"'{existing_id}' for {name} — writing checkin_state and completing"
                         )
                         self._set_posted(rec_id)
-                        if not self._zoho.ensure_checkin_fields(
-                            existing_id, checkin_time, action_field, environment
-                        ):
-                            logger.critical(
-                                f"Queue #{rec_id}: THIN RECORD — Check_In/Action could not be "
-                                f"confirmed on existing Zoho record '{existing_id}' for {name}. "
-                                f"Needs manual review."
-                            )
                         self.record_checkin(
                             student_id, name, row["date_str"], environment, existing_id,
                             checkin_time_hhmm=checkin_time,
