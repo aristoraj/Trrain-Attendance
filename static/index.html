@@ -1253,6 +1253,28 @@ function reactivateCamera() {
 // ── Camera ────────────────────────────────────────────────────────────────────
 
 async function startCamera() {
+  // Safari blocks camera API inside cross-origin iframes — detect and break out
+  let inIframe = false;
+  try { inIframe = window !== window.top; } catch (_) { inIframe = true; }
+  if (inIframe) {
+    permScreen.style.display = 'flex';
+    permScreen.querySelector('p').textContent =
+      'Camera is blocked inside the Zoho app. You must open this page directly in Safari.';
+    if (!document.getElementById('btn-open-safari')) {
+      const a = document.createElement('a');
+      a.id = 'btn-open-safari';
+      a.href = window.location.href;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-top:10px;padding:13px 28px;background:#c0392b;color:#fff;border-radius:8px;text-decoration:none;font-size:16px;font-weight:600;';
+      a.innerHTML = '<i class="bi bi-box-arrow-up-right"></i> Open in Safari';
+      document.getElementById('btn-allow').insertAdjacentElement('afterend', a);
+    }
+    document.getElementById('btn-allow').style.display = 'none';
+    setStatus('error', 'Open in Safari to enable camera');
+    return;
+  }
+
   permScreen.style.display = 'none';
   setStatus('dot', 'Requesting camera access…');
 

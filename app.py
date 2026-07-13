@@ -855,7 +855,34 @@ def _gap_fill_students(missing_ids: list, env: str) -> None:
             logger.warning(f"[GapFill] No data returned for {len(missing_ids)} missing IDs.")
             return
 
-        # Group by (scope_key, batch_id) — derived from meta_json, with batch_status fallback
+        # Pre-fetch all ongoing batches so manually-started mid-day batches (which
+        # haven't been seen by any centre login yet) can still be resolved to a scope.
+        # Saves new batch→scope mappings to batch_status so future runs don't need
+        # the extra API call.
+        _live_batch_scope: dict[str, str] = {}
+        try:
+            all_ongoing = zoho.get_all_ongoing_batches(env=env)
+            new_batches_by_scope: dict[str, list] = {}
+            for b in all_ongoing:
+                cid = b.get("centre_id", "")
+                bid = b.get("batch_id", "")
+                if not cid or not bid:
+                    continue
+                sk = _build_scope_key([cid], env)
+                _live_batch_scope[bid] = sk
+                if not att_queue.get_scope_key_for_batch(bid):
+                    new_batches_by_scope.setdefault(sk, []).append({
+                        "id": bid, "name": "", "status": "Ongoing",
+                        "start_date": "", "end_date": "",
+                    })
+            for sk, batches in new_batches_by_scope.items():
+                att_queue.save_batch_statuses(sk, batches)
+                logger.info(f"[GapFill] Seeded batch_status with {len(batches)} new batch(es) for scope '{sk}'.")
+        except Exception as _be:
+            logger.warning(f"[GapFill] Live batch pre-fetch failed (non-fatal): {_be}")
+
+        # Group by (scope_key, batch_id) — derived from meta_json, with batch_status
+        # fallback, then live batch map as final fallback for mid-day manual batches.
         from collections import defaultdict
         groups: dict = defaultdict(list)
         for s in students:
@@ -868,11 +895,12 @@ def _gap_fill_students(missing_ids: list, env: str) -> None:
             if centre_id:
                 scope_key = _build_scope_key([centre_id], env)
             else:
-                # Zoho REST API returns Centre_Name as a display string, not a dict —
-                # fall back to the scope already stored for this batch in batch_status.
                 scope_key = att_queue.get_scope_key_for_batch(batch_id)
                 if scope_key:
                     logger.info(f"[GapFill] Derived scope '{scope_key}' from batch_status for student {s.get('id')}")
+                elif batch_id in _live_batch_scope:
+                    scope_key = _live_batch_scope[batch_id]
+                    logger.info(f"[GapFill] Derived scope '{scope_key}' from live batch map for student {s.get('id')}")
             if scope_key:
                 groups[(scope_key, batch_id)].append(s)
             else:
@@ -894,7 +922,7 @@ def _gap_fill_students(missing_ids: list, env: str) -> None:
             if centre_id:
                 scope_key = _build_scope_key([centre_id], env)
             else:
-                scope_key = att_queue.get_scope_key_for_batch(batch_id)
+                scope_key = att_queue.get_scope_key_for_batch(batch_id) or _live_batch_scope.get(batch_id, "")
             if scope_key:
                 att_queue.save_no_photo_students(scope_key, [s])
                 scopes_updated.add(scope_key)
@@ -1559,6 +1587,12 @@ def cache_refresh():
             scope_key = _build_scope_key(centers, env)
             with _batch_ids_lock:
                 _batch_ids_cache.pop(scope_key, None)
+            # Also clear L2 DB daily cache — without this, get_batch_ids_cached
+            # falls through to the DB and returns the stale 0-batch result even
+            # after L1 is cleared (root cause of "Student data loading" after a
+            # mid-day manual batch start).
+            att_queue.clear_daily_cache(f"batches:{scope_key}")
+            att_queue.clear_daily_cache(f"batch_names:{scope_key}")
 
     try:
         cache = _get_cache(centers=centers, env=env)
