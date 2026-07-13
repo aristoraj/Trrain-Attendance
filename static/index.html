@@ -1981,7 +1981,11 @@ async function refreshStudentCache() {
   btn.disabled = true;
   btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refreshing…';
   try {
-    const resp = await authFetch('/api/cache/refresh', { method: 'POST' });
+    const resp = await authFetch('/api/cache/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_email: USER_EMAIL, zoho_environment: ZOHO_ENV || '' }),
+    });
     const data = await resp.json();
     btn.innerHTML = '<i class="bi bi-check-circle"></i> Refreshed';
     setStatus('ok', data.message || 'Student list refreshed from DB');
