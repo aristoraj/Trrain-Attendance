@@ -630,6 +630,9 @@
       There are no ongoing batches assigned to your centre right now.<br>
       Please come back when a new batch has started.
     </div>
+    <button id="btn-refresh-no-batches" onclick="refreshAndRecheck()" style="margin-top:16px;">
+      <i class="bi bi-arrow-clockwise"></i> Refresh
+    </button>
   </div>
 </div>
 
@@ -1998,6 +2001,23 @@ async function refreshStudentCache() {
     btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
     setStatus('error', 'Refresh failed — ' + e.message);
   }
+}
+
+async function refreshAndRecheck() {
+  const btn = document.getElementById('btn-refresh-no-batches');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Checking…';
+  try {
+    await authFetch('/api/cache/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_email: USER_EMAIL, zoho_environment: ZOHO_ENV || '' }),
+    });
+  } catch (_) {}
+  document.getElementById('no-batches-screen').style.display = 'none';
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
+  initDataLoadingScreen();
 }
 
 async function showFinishModal() {
