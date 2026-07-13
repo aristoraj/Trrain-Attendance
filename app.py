@@ -807,6 +807,14 @@ def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> N
             att_queue.save_no_photo_students(scope_key, no_photo)
             logger.info(f"[BatchWebhook] {len(no_photo)} student(s) have no photo yet for batch {batch_id}.")
 
+        # Bust L1 + L2 batch ID cache so the next widget open sees the new batch
+        # instead of the stale 0-batch snapshot from before the batch started.
+        with _batch_ids_lock:
+            _batch_ids_cache.pop(scope_key, None)
+        att_queue.clear_daily_cache(f"batches:{scope_key}")
+        att_queue.clear_daily_cache(f"batch_names:{scope_key}")
+        logger.info(f"[BatchWebhook] Busted batch ID cache for scope '{scope_key}'.")
+
         # Rebuild in-memory face cache from DB so new students are live immediately
         raw = att_queue.load_students_from_db(scope_key)
         if raw:
