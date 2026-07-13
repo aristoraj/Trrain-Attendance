@@ -1598,10 +1598,7 @@ def cache_refresh():
         cache = _get_cache(centers=centers, env=env)
         cache.invalidate()
         scope_key = _build_scope_key(centers, env)
-        # Clear only this scope's embeddings — don't wipe other centres' data
-        cleared_emb = att_queue.clear_enrollment_embeddings_for_scope(scope_key)
-        cleared_sc = att_queue.clear_student_scope(scope_key)
-        logger.info(f"Refresh: cleared {cleared_emb} embeddings + {cleared_sc} cached students — will re-fetch from Zoho.")
+        logger.info(f"Refresh: evicted in-memory cache for scope '{scope_key}' — will restore from local DB.")
         # Trigger background reload so the HTTP response isn't blocked
         key = _build_scope_key(centers, env)
         with _preloading_lock:
