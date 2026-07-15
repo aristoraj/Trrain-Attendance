@@ -1903,7 +1903,7 @@ def verify():
       7. Background worker syncs to Zoho asynchronously
     """
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True)
 
         if not data:
             return jsonify({"success": False, "error": "Empty request body."}), 400
