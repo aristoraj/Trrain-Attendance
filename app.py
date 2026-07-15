@@ -61,7 +61,7 @@ from face_utils import (
     FaceCache, decode_base64_image,
     encode_face_with_bbox, find_best_match, embedding_to_json, json_to_embedding,
 )
-from liveness_utils import check_liveness
+from liveness_utils import check_liveness, LIVENESS_THRESHOLD
 from zoho_api import ZohoCreatorAPI
 from attendance_queue import AttendanceQueue
 
@@ -4180,6 +4180,58 @@ def admin_sync_audit():
     except Exception as e:
         logger.error(f"[AdminSyncAudit] {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+
+# ─── Dev-only: liveness test endpoint ────────────────────────────────────────
+
+@app.route("/api/dev/test-liveness", methods=["POST"])
+def dev_test_liveness():
+    """
+    Upload an image (multipart field 'image') and get back raw MiniFASNet scores.
+    Disabled in production (DEBUG must be True).
+
+    curl -X POST http://localhost:5000/api/dev/test-liveness \
+         -F "image=@spoofed.jpg"
+    """
+    if not DEBUG:
+        return jsonify({"error": "Only available in DEBUG mode."}), 403
+
+    file = request.files.get("image")
+    if not file:
+        return jsonify({"error": "No 'image' file in request."}), 400
+
+    try:
+        import numpy as np
+        file_bytes = np.frombuffer(file.read(), dtype=np.uint8)
+        import cv2
+        bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return jsonify({"error": "Could not decode image."}), 422
+        image_array = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    except Exception as e:
+        return jsonify({"error": f"Image decode failed: {e}"}), 422
+
+    # Face detection
+    submitted_encoding, bbox, det_score, err = encode_face_with_bbox(image_array)
+    if err or submitted_encoding is None:
+        return jsonify({
+            "face_detected": False,
+            "error": err or "No face found in image.",
+        }), 422
+
+    # Liveness check
+    is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
+
+    return jsonify({
+        "face_detected":   True,
+        "detection_score": round(float(det_score), 4) if det_score is not None else None,
+        "bbox":            [round(float(v), 1) for v in bbox],
+        "liveness_score":  round(liveness_score, 4),
+        "liveness_reason": liveness_reason,
+        "is_live":         is_live,
+        "threshold":       LIVENESS_THRESHOLD,
+        "verdict":         "LIVE" if is_live else "SPOOF DETECTED",
+    })
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
