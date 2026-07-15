@@ -622,8 +622,8 @@ class AttendanceQueue:
                 return {"students": 0, "embeddings": 0}
             ph = ", ".join([self._ph] * len(stale_ids))
             cur1 = conn.execute(
-                f"DELETE FROM student_cache WHERE scope_key LIKE 'C:%' AND student_id IN ({ph})",
-                tuple(stale_ids),
+                self._q(f"DELETE FROM student_cache WHERE scope_key LIKE ? AND student_id IN ({ph})"),
+                ("C:%", *stale_ids),
             )
             removed_students = cur1.rowcount if hasattr(cur1, "rowcount") else len(stale_ids)
             cur2 = conn.execute(
