@@ -1185,20 +1185,22 @@ const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let state = {
-  cameraReady:    false,
-  faceDetected:   false,
-  step1Done:      false,
-  blinkCount:     0,
-  closedFrames:   0,
-  eyeWasClosed:   false,
-  smoothedEAR:    0.3,
-  blinkVerified:  false,
-  verifying:      false,
-  done:           false,
-  faceLostFrames: 0,
-  livenessMode:   'blink',  // 'blink' | 'smile'
-  smileFrames:    0,
-  captureAction:  '',       // 'Blink' | 'Smile' — set on success, ready for Action_field
+  cameraReady:       false,
+  faceDetected:      false,
+  step1Done:         false,
+  blinkCount:        0,
+  closedFrames:      0,
+  eyeWasClosed:      false,
+  smoothedEAR:       0.3,
+  blinkVerified:     false,
+  verifying:         false,
+  done:              false,
+  faceLostFrames:    0,
+  livenessMode:      'blink',  // 'blink' | 'smile'
+  smileFrames:       0,
+  captureAction:     '',       // 'Blink' | 'Smile' — set on success, ready for Action_field
+  verifyStreak:      0,        // consecutive server liveness+match passes required before posting
+  pendingVerifyData: null,     // last matched verify response during streak
 };
 
 let videoEl, canvasEl, ctx, faceMeshInstance, cameraInstance;
@@ -1286,6 +1288,13 @@ async function startCamera() {
     resetInactivityTimer();
     initFaceMesh();
   } catch (err) {
+    // AbortError from video.play() means the browser interrupted the camera
+    // start (e.g. permission prompt appeared mid-load). This is harmless —
+    // the user sees the Allow Camera button and clicks it to retry cleanly.
+    if (err.name === 'AbortError') {
+      permScreen.style.display = 'flex';
+      return;
+    }
     permScreen.style.display = 'flex';
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const isDenied      = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
@@ -1682,6 +1691,29 @@ async function captureAndVerify(cachedImage = null) {
     }
 
     // checkinStatus === 'none' → normal check-in flow
+    // Require 3 consecutive server-verified liveness passes before posting attendance.
+    // Blocks video/photo replay attacks that get one lucky frame above threshold.
+    const VERIFY_STREAK_NEEDED = 3;
+    if (state.pendingVerifyData && state.pendingVerifyData.student.id !== data.student.id) {
+      // Different student matched — reset streak for the new student
+      state.verifyStreak = 0;
+    }
+    state.pendingVerifyData = data;
+    state.verifyStreak++;
+
+    if (state.verifyStreak < VERIFY_STREAK_NEEDED) {
+      showSpinner(false);
+      setFrameClass('detected');
+      setStatus('active', `Hold still — confirming (${state.verifyStreak}/${VERIFY_STREAK_NEEDED})`);
+      showBanner('Hold still…', 'info', null, `Confirming identity (${state.verifyStreak} of ${VERIFY_STREAK_NEEDED})`);
+      state.verifying = false;
+      setTimeout(() => { if (!state.done) captureAndVerify(); }, 1000);
+      return;
+    }
+
+    // All 3 verifies passed — post attendance
+    state.verifyStreak      = 0;
+    state.pendingVerifyData = null;
     activateStep(4);
     try {
       await postAttendanceHybrid(data, imageData);
@@ -1904,16 +1936,18 @@ function showSpinner(on) {
 function resetForRetry() {
   clearTimeout(_livenessTimer);
   setTimeout(() => {
-    state.verifying      = false;
-    state.faceDetected   = false;
-    state.step1Done      = false;
-    state.blinkVerified  = false;
-    state.blinkCount     = 0;
-    state.closedFrames   = 0;
-    state.eyeWasClosed   = false;
-    state.smoothedEAR    = 0.3;
-    state.faceLostFrames = 0;
-    state.livenessMode   = 'blink';
+    state.verifying         = false;
+    state.faceDetected      = false;
+    state.step1Done         = false;
+    state.blinkVerified     = false;
+    state.blinkCount        = 0;
+    state.closedFrames      = 0;
+    state.eyeWasClosed      = false;
+    state.smoothedEAR       = 0.3;
+    state.faceLostFrames    = 0;
+    state.livenessMode      = 'blink';
+    state.verifyStreak      = 0;
+    state.pendingVerifyData = null;
     state.smileFrames    = 0;
     state.captureAction  = '';
     document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
@@ -1934,6 +1968,7 @@ function _fullReset() {
     blinkCount: 0, closedFrames: 0, eyeWasClosed: false, smoothedEAR: 0.3,
     blinkVerified: false, verifying: false, done: false, faceLostFrames: 0,
     livenessMode: 'blink', smileFrames: 0, captureAction: '',
+    verifyStreak: 0, pendingVerifyData: null,
   };
   document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
   blinkOverlay.classList.remove('show');
