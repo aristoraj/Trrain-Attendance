@@ -1097,6 +1097,7 @@ class AttendanceQueue:
             self._create_sync_audit_table(conn)
             self._create_checkin_photos_table(conn)
             self._create_spoof_attempts_table(conn)
+            self._create_spoof_blocks_table(conn)
             # Drop financial_year_master if it exists from a prior deployment
             conn.execute("DROP TABLE IF EXISTS financial_year_master")
 
@@ -1638,18 +1639,151 @@ class AttendanceQueue:
 
     def cleanup_old_spoof_attempts(self) -> int:
         today = datetime.now(_IST).strftime("%Y-%m-%d")
+        deleted = 0
         try:
             with self._db() as conn:
                 cur = conn.execute(
                     "DELETE FROM spoof_attempts WHERE date_str < ?", (today,)
                 )
-                deleted = cur.rowcount if hasattr(cur, "rowcount") else 0
+                deleted += cur.rowcount if hasattr(cur, "rowcount") else 0
+                cur2 = conn.execute(
+                    "DELETE FROM spoof_blocks WHERE date_str < ?", (today,)
+                )
+                deleted += cur2.rowcount if hasattr(cur2, "rowcount") else 0
             if deleted:
-                logger.info(f"Cleaned up {deleted} old spoof attempt(s).")
-            return deleted
+                logger.info(f"Cleaned up {deleted} old spoof record(s).")
         except Exception as e:
             logger.warning(f"cleanup_old_spoof_attempts failed: {e}")
-            return 0
+        return deleted
+
+    # ── Spoof blocks (progressive strike system) ──────────────────────────────
+
+    def _create_spoof_blocks_table(self, conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS spoof_blocks (
+                student_id    TEXT NOT NULL,
+                date_str      TEXT NOT NULL,
+                spoof_count   INTEGER NOT NULL DEFAULT 0,
+                blocked_until TEXT,
+                day_blocked   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (student_id, date_str)
+            )
+        """)
+
+    def get_spoof_block_status(self, student_id: str, date_str: str) -> dict:
+        """
+        Returns the current block state for a trainee on a given day.
+
+        Possible returns:
+          {"blocked": False, "count": 0}
+          {"blocked": True, "day_block": True,  "count": 5}
+          {"blocked": True, "day_block": False, "count": 3, "minutes_remaining": 7}
+        """
+        now = datetime.now(_IST).replace(tzinfo=None)
+        try:
+            with self._db() as conn:
+                row = conn.execute(
+                    "SELECT spoof_count, blocked_until, day_blocked "
+                    "FROM spoof_blocks WHERE student_id=? AND date_str=?",
+                    (student_id, date_str),
+                ).fetchone()
+        except Exception:
+            return {"blocked": False, "count": 0}
+
+        if not row:
+            return {"blocked": False, "count": 0}
+
+        if row["day_blocked"]:
+            return {"blocked": True, "day_block": True, "count": row["spoof_count"]}
+
+        if row["blocked_until"]:
+            try:
+                blocked_until_dt = datetime.fromisoformat(row["blocked_until"])
+                if now < blocked_until_dt:
+                    remaining = max(1, int((blocked_until_dt - now).total_seconds() / 60) + 1)
+                    return {
+                        "blocked":           True,
+                        "day_block":         False,
+                        "count":             row["spoof_count"],
+                        "minutes_remaining": remaining,
+                    }
+            except Exception:
+                pass
+
+        return {"blocked": False, "count": row["spoof_count"]}
+
+    def record_spoof_and_apply_block(self, student_id: str, date_str: str) -> dict:
+        """
+        Increment spoof count and apply progressive block.
+
+        Block schedule (3 free attempts before first block):
+          count 1-2: no block (safety buffer for real trainees)
+          count 3:   10-minute block
+          count 4:   30-minute block
+          count >= 5: day-blocked (even real face rejected)
+
+        Returns: {"count": int, "day_block": bool, "blocked_until": str|None}
+        """
+        from datetime import timedelta
+        now = datetime.now(_IST).replace(tzinfo=None)
+
+        try:
+            with self._db() as conn:
+                row = conn.execute(
+                    "SELECT spoof_count, day_blocked FROM spoof_blocks "
+                    "WHERE student_id=? AND date_str=?",
+                    (student_id, date_str),
+                ).fetchone()
+
+                old_count   = row["spoof_count"] if row else 0
+                day_blocked = bool(row and row["day_blocked"])
+                new_count   = old_count + 1
+
+                if day_blocked or new_count >= 5:
+                    day_blocked   = True
+                    blocked_until = None
+                elif new_count == 4:
+                    blocked_until = (now + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+                elif new_count == 3:
+                    blocked_until = (now + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    blocked_until = None
+
+                conn.execute(
+                    self._q("""
+                        INSERT INTO spoof_blocks
+                            (student_id, date_str, spoof_count, blocked_until, day_blocked)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(student_id, date_str) DO UPDATE SET
+                            spoof_count   = excluded.spoof_count,
+                            blocked_until = excluded.blocked_until,
+                            day_blocked   = excluded.day_blocked
+                    """),
+                    (student_id, date_str, new_count, blocked_until, 1 if day_blocked else 0),
+                )
+        except Exception as e:
+            logger.warning(f"record_spoof_and_apply_block failed: {e}")
+            return {"count": 1, "day_block": False, "blocked_until": None}
+
+        return {
+            "count":         new_count,
+            "day_block":     day_blocked,
+            "blocked_until": blocked_until,
+        }
+
+    def clear_spoof_block(self, student_id: str, date_str: str) -> bool:
+        """Admin: remove all spoof blocks and reset count for a trainee today."""
+        try:
+            with self._db() as conn:
+                conn.execute(
+                    "DELETE FROM spoof_blocks WHERE student_id=? AND date_str=?",
+                    (student_id, date_str),
+                )
+            logger.info(f"Spoof block cleared for student {student_id} on {date_str}.")
+            return True
+        except Exception as e:
+            logger.warning(f"clear_spoof_block failed: {e}")
+            return False
 
     def _create_sync_audit_table(self, conn):
         conn.execute("""

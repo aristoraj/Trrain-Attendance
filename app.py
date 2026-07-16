@@ -1897,11 +1897,13 @@ def verify():
     Performance path (all hot-path Zoho API calls eliminated):
       1. Decode image
       2. InsightFace: detect face + extract 512-d embedding + bounding box
-      3. MiniFASNet: passive liveness check (rejects video/screen attacks)
-      4. Match against cached student embeddings (numpy dot, ~0.5ms)
-      5. Dedup: in-memory set O(1) → SQLite fallback (~0.5ms)
-      6. Enqueue to SQLite (~1ms) → return success immediately
-      7. Background worker syncs to Zoho asynchronously
+      3. Match against cached student embeddings (numpy dot, ~0.5ms)
+      4. Spoof block check — reject if trainee is currently blocked
+      5. MiniFASNet: passive liveness check (rejects video/screen attacks)
+         On failure: apply progressive block (free×2 → 10m → 30m → day), log attempt
+      6. Dedup: in-memory set O(1) → SQLite fallback (~0.5ms)
+      7. Enqueue to SQLite (~1ms) → return success immediately
+      8. Background worker syncs to Zoho asynchronously
     """
     try:
         data = request.get_json(force=True, silent=True)
@@ -1949,70 +1951,10 @@ def verify():
                 "error": "Could not generate face embedding. Please try again.",
             }), 422
 
-        # ── 3. Passive liveness check (MiniFASNet) ────────────────────────────
-        is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
-        if liveness_reason == "model_unavailable" and not DEBUG:
-            # Model file missing in production — block rather than fail open
-            logger.critical(
-                "Liveness model (MiniFASNetV2.onnx) is missing in production. "
-                "Anti-spoofing is disabled. Rebuild the Docker image to re-download the model."
-            )
-            return jsonify({
-                "success": False,
-                "error":   "Anti-spoofing model unavailable. Contact your administrator.",
-            }), 503
-        if not is_live:
-            logger.warning(
-                f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason}"
-            )
-            # Log spoof attempt — try to identify who is being impersonated
-            def _log_spoof():
-                try:
-                    spoof_match = None
-                    spoof_students = None
-                    if scope_key_in:
-                        with _scope_caches_lock:
-                            _c = _scope_caches.get(scope_key_in)
-                        if _c:
-                            spoof_students = _c.get()
-                    elif user_email:
-                        try:
-                            _ctr = get_user_centers_cached(user_email, env=env)
-                            if _ctr:
-                                spoof_students = _get_cache(centers=_ctr, env=env).get()
-                        except Exception:
-                            pass
-                    if spoof_students:
-                        spoof_match, _ = find_best_match(
-                            submitted_encoding, spoof_students, tolerance=FACE_MATCH_TOLERANCE
-                        )
-                    # Re-encode image at reduced quality for storage
-                    spoof_jpeg = None
-                    try:
-                        from PIL import Image as _PIL
-                        _buf = io.BytesIO()
-                        _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=70)
-                        spoof_jpeg = _buf.getvalue()
-                    except Exception:
-                        pass
-                    att_queue.log_spoof_attempt(
-                        student_id        = spoof_match.get("id")   if spoof_match else None,
-                        student_name      = spoof_match.get("name") if spoof_match else "Unknown",
-                        liveness_score    = liveness_score,
-                        capture_jpeg      = spoof_jpeg,
-                        device_session_id = device_session_id,
-                    )
-                except Exception as _e:
-                    logger.debug(f"Spoof log error: {_e}")
-            threading.Thread(target=_log_spoof, daemon=True).start()
-            return jsonify({
-                "success": False,
-                "error":   "Live face not detected. Please ensure you are in front of the camera.",
-            }), 400
-
-        # ── 4. Load student encodings ─────────────────────────────────────────
+        # ── 3. Load student encodings ─────────────────────────────────────────
+        # (moved before liveness so we can identify who is being spoofed and
+        #  enforce per-trainee progressive blocks before running MiniFASNet)
         if scope_key_in:
-            # SDK pre-seeded the cache — look up directly by scope_key
             with _scope_caches_lock:
                 cache = _scope_caches.get(scope_key_in)
             if cache is None:
@@ -2024,7 +1966,6 @@ def verify():
                 }), 503
             students = cache.get()
         else:
-            # Server-side loading — resolve centres then fetch from Zoho API
             centers = None
             if user_email:
                 try:
@@ -2064,7 +2005,7 @@ def verify():
                 "error":   "No students with face photos found.",
             }), 404
 
-        # ── 5. Match ──────────────────────────────────────────────────────────
+        # ── 4. Match ──────────────────────────────────────────────────────────
         best_match, confidence = find_best_match(
             submitted_encoding, students, tolerance=FACE_MATCH_TOLERANCE
         )
@@ -2075,6 +2016,108 @@ def verify():
                 "matched": False,
                 "message": "Face not recognised. Please try again or contact admin.",
             })
+
+        # ── 5. Spoof block check ──────────────────────────────────────────────
+        _today_date = datetime.now(_IST).strftime("%Y-%m-%d")
+        _block = att_queue.get_spoof_block_status(best_match["id"], _today_date)
+        if _block["blocked"]:
+            if _block.get("day_block"):
+                logger.warning(
+                    f"Day-blocked trainee attempted: {best_match['name']} ({best_match['id']})"
+                )
+                return jsonify({
+                    "success":       False,
+                    "spoof_blocked": True,
+                    "error": (
+                        f"Attendance for {best_match['name']} is blocked for today after "
+                        f"{_block['count']} spoof attempt(s). Please contact the administrator."
+                    ),
+                }), 403
+            else:
+                mins = _block.get("minutes_remaining", 10)
+                logger.warning(
+                    f"Temp-blocked trainee attempted: {best_match['name']} — {mins}m remaining"
+                )
+                return jsonify({
+                    "success":       False,
+                    "spoof_blocked": True,
+                    "error": (
+                        f"Attendance for {best_match['name']} is temporarily blocked. "
+                        f"Please try again in {mins} minute{'s' if mins != 1 else ''}."
+                    ),
+                }), 403
+
+        # ── 6. Passive liveness check (MiniFASNet) ────────────────────────────
+        is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
+        if liveness_reason == "model_unavailable" and not DEBUG:
+            logger.critical(
+                "Liveness model (MiniFASNetV2.onnx) is missing in production. "
+                "Anti-spoofing is disabled. Rebuild the Docker image to re-download the model."
+            )
+            return jsonify({
+                "success": False,
+                "error":   "Anti-spoofing model unavailable. Contact your administrator.",
+            }), 503
+        if not is_live:
+            logger.warning(
+                f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason} "
+                f"trainee={best_match['name']} ({best_match['id']})"
+            )
+            # Apply progressive block and log — both run in background
+            _sid   = best_match["id"]
+            _sname = best_match["name"]
+            def _handle_spoof():
+                try:
+                    block = att_queue.record_spoof_and_apply_block(_sid, _today_date)
+                    spoof_jpeg = None
+                    try:
+                        from PIL import Image as _PIL
+                        _buf = io.BytesIO()
+                        _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=70)
+                        spoof_jpeg = _buf.getvalue()
+                    except Exception:
+                        pass
+                    att_queue.log_spoof_attempt(
+                        student_id        = _sid,
+                        student_name      = _sname,
+                        liveness_score    = liveness_score,
+                        capture_jpeg      = spoof_jpeg,
+                        device_session_id = device_session_id,
+                    )
+                    logger.info(
+                        f"Spoof logged: {_sname} count={block['count']} "
+                        f"day_block={block['day_block']} blocked_until={block['blocked_until']}"
+                    )
+                except Exception as _e:
+                    logger.debug(f"Spoof handler error: {_e}")
+            threading.Thread(target=_handle_spoof, daemon=True).start()
+
+            # Build user-facing message based on the NEW count (after increment)
+            # We peek at what record_spoof_and_apply_block will produce:
+            _current_count = (_block.get("count") or 0) + 1
+            if _current_count >= 5:
+                err_msg = (
+                    f"Attendance for {_sname} is now blocked for today after "
+                    f"repeated spoof attempts. Please contact the administrator."
+                )
+            elif _current_count == 4:
+                err_msg = (
+                    f"Spoof attempt #{_current_count} detected for {_sname}. "
+                    f"Attendance blocked for 30 minutes."
+                )
+            elif _current_count == 3:
+                err_msg = (
+                    f"Spoof attempt #{_current_count} detected for {_sname}. "
+                    f"Attendance blocked for 10 minutes."
+                )
+            else:
+                err_msg = "Live face not detected. Please ensure you are in front of the camera."
+
+            return jsonify({
+                "success":       False,
+                "spoof_blocked": _current_count >= 3,
+                "error":         err_msg,
+            }), 400
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
@@ -4148,6 +4191,19 @@ def admin_student_photos(student_id):
     date_str = request.args.get("date", "").strip()
     photos = att_queue.get_checkin_photos_b64(student_id, date_str)
     return jsonify(photos)
+
+
+@app.route("/api/admin/clear-spoof-block", methods=["POST"])
+def admin_clear_spoof_block():
+    err = _admin_auth()
+    if err: return err
+    body       = request.get_json(silent=True) or {}
+    student_id = (body.get("student_id") or "").strip()
+    date_str   = (body.get("date_str") or datetime.now(_IST).strftime("%Y-%m-%d")).strip()
+    if not student_id:
+        return jsonify({"error": "student_id required"}), 400
+    ok = att_queue.clear_spoof_block(student_id, date_str)
+    return jsonify({"cleared": ok, "student_id": student_id, "date_str": date_str})
 
 
 @app.route("/api/admin/spoof-log")
