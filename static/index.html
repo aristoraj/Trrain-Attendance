@@ -608,6 +608,39 @@
 </style>
 
 
+<!-- GPS Permission Gate — blocks everything until location is granted -->
+<div id="gps-gate" style="display:none;position:fixed;inset:0;z-index:9999;
+  background:#FBF8F6;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px;">
+
+  <!-- Prompt / acquiring state -->
+  <div class="dl-card" id="gps-prompt-card">
+    <div class="dl-spinner" id="gps-spinner" style="display:none"></div>
+    <div class="dl-icon" id="gps-icon" style="font-size:34px">📍</div>
+    <div class="dl-title">Location Required</div>
+    <div class="dl-sub" id="gps-prompt-sub">
+      Location access is required to mark attendance. Tap the button below and allow when prompted.
+    </div>
+    <button class="dl-retry-btn" id="btn-allow-gps" onclick="requestGPS()" style="margin-top:20px">
+      <i class="bi bi-geo-alt-fill"></i> Allow Location
+    </button>
+  </div>
+
+  <!-- Denied state -->
+  <div class="dl-card" id="gps-denied-card" style="display:none">
+    <div class="dl-icon" style="font-size:34px">🚫</div>
+    <div class="dl-title">Location Access Blocked</div>
+    <div class="dl-sub" style="text-align:left">
+      You have blocked location access. To use this system, enable it in your browser settings:<br><br>
+      <strong>Chrome / Edge:</strong> Tap the lock icon in the address bar → Site settings → Location → Allow<br><br>
+      <strong>Safari (iOS):</strong> Settings → Privacy &amp; Security → Location Services → Safari → While Using<br><br>
+      Then reload this page.
+    </div>
+    <button class="dl-retry-btn" onclick="requestGPS()" style="margin-top:20px">
+      <i class="bi bi-arrow-clockwise"></i> I've Enabled It — Try Again
+    </button>
+  </div>
+</div>
+
 <!-- Data loading screen: blocks camera until trainee data is ready -->
 <div id="data-loading-screen">
   <div class="dl-card">
@@ -803,16 +836,103 @@ let USER_EMAIL    = (urlParams.get('user_email') || urlParams.get('email') || ''
 let ZOHO_ENV      = (urlParams.get('zoho_env') || '').trim();
 let _SESSION_TOKEN = null;   // set by /api/session after SDK init
 
-// GPS singleton — updated continuously, read at attendance-post time
-const _gpsState = { lat: null, lng: null };
-if (navigator.geolocation) {
-  const _gpsOpts = { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 };
-  navigator.geolocation.watchPosition(
+// GPS — mandatory gate: blocks the app until the first location fix is acquired
+const _gpsState      = { lat: null, lng: null };
+let _gpsGateCleared  = false;
+let _pendingDataLoad = false;
+let _gpsWatchId      = null;
+
+function _startGPSWatch() {
+  if (_gpsWatchId !== null || !navigator.geolocation) return;
+  _gpsWatchId = navigator.geolocation.watchPosition(
     (pos) => { _gpsState.lat = pos.coords.latitude; _gpsState.lng = pos.coords.longitude; },
-    () => {},   // silent fail — GPS is best-effort
-    _gpsOpts
+    () => {},
+    { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 }
   );
 }
+
+function _clearGPSGate() {
+  _gpsGateCleared = true;
+  document.getElementById('gps-gate').style.display = 'none';
+  _startGPSWatch();
+  if (_pendingDataLoad) { _pendingDataLoad = false; initDataLoadingScreen(); }
+}
+
+async function requestGPS() {
+  if (!navigator.geolocation) { _clearGPSGate(); return; }
+  try {
+    const p = await navigator.permissions.query({ name: 'geolocation' });
+    if (p.state === 'denied') {
+      document.getElementById('gps-prompt-card').style.display = 'none';
+      document.getElementById('gps-denied-card').style.display  = 'flex';
+      return;
+    }
+  } catch (_) {}
+  const btn     = document.getElementById('btn-allow-gps');
+  const spinner = document.getElementById('gps-spinner');
+  const icon    = document.getElementById('gps-icon');
+  const sub     = document.getElementById('gps-prompt-sub');
+  document.getElementById('gps-prompt-card').style.display = 'flex';
+  document.getElementById('gps-denied-card').style.display  = 'none';
+  if (btn)     { btn.disabled = true; btn.innerHTML = '<i class="bi bi-geo-alt-fill"></i> Requesting…'; }
+  if (spinner) spinner.style.display = 'block';
+  if (icon)    icon.style.display    = 'none';
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      _gpsState.lat = pos.coords.latitude;
+      _gpsState.lng = pos.coords.longitude;
+      _clearGPSGate();
+    },
+    (err) => {
+      if (spinner) spinner.style.display = 'none';
+      if (icon)    icon.style.display    = 'flex';
+      if (err.code === 1) {   // PERMISSION_DENIED
+        document.getElementById('gps-prompt-card').style.display = 'none';
+        document.getElementById('gps-denied-card').style.display  = 'flex';
+      } else {                // POSITION_UNAVAILABLE or TIMEOUT
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-geo-alt"></i> Allow Location'; }
+        if (sub) sub.textContent = 'Could not get location. Ensure GPS is on and try again.';
+      }
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  );
+}
+
+(async function initGPS() {
+  if (!navigator.geolocation) { _gpsGateCleared = true; return; }
+  const gate = document.getElementById('gps-gate');
+  let permState = 'prompt';
+  try {
+    const p = await navigator.permissions.query({ name: 'geolocation' });
+    permState = p.state;
+    p.addEventListener('change', () => { if (p.state === 'granted' && !_gpsGateCleared) requestGPS(); });
+  } catch (_) {}
+  if (permState === 'granted') {
+    // Already granted — acquire silently; show gate with spinner while waiting for first fix
+    const btn     = document.getElementById('btn-allow-gps');
+    const spinner = document.getElementById('gps-spinner');
+    const icon    = document.getElementById('gps-icon');
+    const sub     = document.getElementById('gps-prompt-sub');
+    if (btn)     btn.style.display     = 'none';
+    if (spinner) spinner.style.display = 'block';
+    if (icon)    icon.style.display    = 'none';
+    if (sub)     sub.textContent       = 'Getting your location…';
+    gate.style.display = 'flex';
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { _gpsState.lat = pos.coords.latitude; _gpsState.lng = pos.coords.longitude; _clearGPSGate(); },
+      ()    => { _clearGPSGate(); },   // fail-open if hardware error despite permission
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+    );
+  } else if (permState === 'denied') {
+    document.getElementById('gps-prompt-card').style.display = 'none';
+    document.getElementById('gps-denied-card').style.display  = 'flex';
+    gate.style.display = 'flex';
+  } else {
+    // 'prompt' — show gate and auto-trigger the browser permission dialog
+    gate.style.display = 'flex';
+    requestGPS();
+  }
+})();
 
 // Authenticated fetch — attaches Bearer token to every request.
 // Falls back gracefully if no session yet (pre-init calls like /api/config).
@@ -963,7 +1083,7 @@ function tryInitZohoUser() {
           } catch (e) {
             console.warn('[FaceVerify] Session init failed (allowing through):', e);
           }
-          initDataLoadingScreen();
+          if (_gpsGateCleared) { initDataLoadingScreen(); } else { _pendingDataLoad = true; }
         })();
       }
     })
