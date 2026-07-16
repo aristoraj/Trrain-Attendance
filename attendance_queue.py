@@ -1600,9 +1600,11 @@ class AttendanceQueue:
         try:
             with self._db() as conn:
                 rows = conn.execute(
-                    "SELECT id, student_id, student_name, attempted_at, "
-                    "liveness_score, device_session_id "
-                    "FROM spoof_attempts WHERE date_str = ? ORDER BY attempted_at DESC",
+                    self._q(
+                        "SELECT id, student_id, student_name, attempted_at, "
+                        "liveness_score, device_session_id "
+                        "FROM spoof_attempts WHERE date_str = ? ORDER BY attempted_at DESC"
+                    ),
                     (today,),
                 ).fetchall()
         except Exception:
@@ -1630,7 +1632,7 @@ class AttendanceQueue:
         try:
             with self._db() as conn:
                 row = conn.execute(
-                    "SELECT capture_jpeg FROM spoof_attempts WHERE id = ?",
+                    self._q("SELECT capture_jpeg FROM spoof_attempts WHERE id = ?"),
                     (attempt_id,),
                 ).fetchone()
             return bytes(row["capture_jpeg"]) if row and row["capture_jpeg"] else None
@@ -1643,11 +1645,11 @@ class AttendanceQueue:
         try:
             with self._db() as conn:
                 cur = conn.execute(
-                    "DELETE FROM spoof_attempts WHERE date_str < ?", (today,)
+                    self._q("DELETE FROM spoof_attempts WHERE date_str < ?"), (today,)
                 )
                 deleted += cur.rowcount if hasattr(cur, "rowcount") else 0
                 cur2 = conn.execute(
-                    "DELETE FROM spoof_blocks WHERE date_str < ?", (today,)
+                    self._q("DELETE FROM spoof_blocks WHERE date_str < ?"), (today,)
                 )
                 deleted += cur2.rowcount if hasattr(cur2, "rowcount") else 0
             if deleted:
@@ -1683,8 +1685,10 @@ class AttendanceQueue:
         try:
             with self._db() as conn:
                 row = conn.execute(
-                    "SELECT spoof_count, blocked_until, day_blocked "
-                    "FROM spoof_blocks WHERE student_id=? AND date_str=?",
+                    self._q(
+                        "SELECT spoof_count, blocked_until, day_blocked "
+                        "FROM spoof_blocks WHERE student_id=? AND date_str=?"
+                    ),
                     (student_id, date_str),
                 ).fetchone()
         except Exception:
@@ -1730,8 +1734,10 @@ class AttendanceQueue:
         try:
             with self._db() as conn:
                 row = conn.execute(
-                    "SELECT spoof_count, day_blocked FROM spoof_blocks "
-                    "WHERE student_id=? AND date_str=?",
+                    self._q(
+                        "SELECT spoof_count, day_blocked FROM spoof_blocks "
+                        "WHERE student_id=? AND date_str=?"
+                    ),
                     (student_id, date_str),
                 ).fetchone()
 
@@ -1776,7 +1782,7 @@ class AttendanceQueue:
         try:
             with self._db() as conn:
                 conn.execute(
-                    "DELETE FROM spoof_blocks WHERE student_id=? AND date_str=?",
+                    self._q("DELETE FROM spoof_blocks WHERE student_id=? AND date_str=?"),
                     (student_id, date_str),
                 )
             logger.info(f"Spoof block cleared for student {student_id} on {date_str}.")
