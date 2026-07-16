@@ -664,13 +664,24 @@ async function renderSpoofTab() {
     body.innerHTML = data.groups.map(g => {
       const badge = `<span style="background:#fee2e2;color:#991b1b;font-size:11px;font-weight:700;
         padding:2px 8px;border-radius:999px;margin-left:8px">${g.count} attempt${g.count!==1?'s':''}</span>`;
+      const regChip = g.student_number
+        ? `<span style="background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:600;
+             padding:2px 8px;border-radius:6px">Reg: ${esc(g.student_number)}</span>`
+        : '';
+      const batchChip = g.batch_name
+        ? `<span style="background:#f0fdf4;color:#166534;font-size:11px;font-weight:600;
+             padding:2px 8px;border-radius:6px">${esc(g.batch_name)}</span>`
+        : '';
       const imgs = g.attempts.map(a => {
-        const score = a.liveness_score != null ? (a.liveness_score*100).toFixed(0)+'%' : '—';
-        const time  = fmtTime(a.attempted_at);
+        const imgSrc = `/api/admin/spoof-image/${a.id}?secret=${encodeURIComponent(AUTH)}`;
+        const score  = a.liveness_score != null ? (a.liveness_score*100).toFixed(0)+'%' : '—';
+        const time   = fmtTime(a.attempted_at);
         return `<div style="display:inline-block;margin:6px;vertical-align:top;text-align:center">
-          <img src="/api/admin/spoof-image/${a.id}?secret=${encodeURIComponent(AUTH)}"
-               style="width:100px;height:100px;object-fit:cover;border-radius:8px;border:1px solid #fee2e2;display:block"
-               onerror="this.style.background='#f3f4f6';this.removeAttribute('src')">
+          <img src="${imgSrc}"
+               style="width:100px;height:100px;object-fit:cover;border-radius:8px;border:1px solid #fee2e2;
+                      display:block;cursor:zoom-in"
+               onclick="openSpoofLightbox('${imgSrc}','${esc(g.student_name)}','${esc(time)}','${esc(score)}')"
+               onerror="this.style.background='#f3f4f6';this.style.cursor='default';this.removeAttribute('src');this.removeAttribute('onclick')">
           <div style="font-size:10px;color:#94a3b8;margin-top:3px">${time}</div>
           <div style="font-size:10px;color:#dc2626;font-weight:600">score ${score}</div>
         </div>`;
@@ -684,9 +695,10 @@ async function renderSpoofTab() {
         : '';
       return `<div class="card" style="margin-bottom:14px">
         <div class="card-head">
-          <h3 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            ${esc(g.student_name)}${badge}
-          </h3>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <h3 style="margin:0">${esc(g.student_name)}</h3>
+            ${badge}${regChip}${batchChip}
+          </div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <small style="color:#94a3b8;font-size:11px">${g.student_id ? 'ID: '+esc(g.student_id) : 'Face not matched'}</small>
             ${clearBtn}
@@ -698,6 +710,28 @@ async function renderSpoofTab() {
   } catch(e) {
     body.innerHTML = `<div class="card"><div style="padding:32px;text-align:center;color:#dc2626">Error: ${esc(e.message)}</div></div>`;
   }
+}
+
+function openSpoofLightbox(src, name, time, score) {
+  let lb = document.getElementById('spoof-lightbox');
+  if (!lb) {
+    lb = document.createElement('div');
+    lb.id = 'spoof-lightbox';
+    lb.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.88);display:flex;' +
+      'flex-direction:column;align-items:center;justify-content:center;cursor:zoom-out;padding:20px';
+    lb.onclick = () => lb.style.display = 'none';
+    lb.innerHTML =
+      '<img id="spoof-lb-img" style="max-width:90vw;max-height:75vh;border-radius:10px;object-fit:contain;box-shadow:0 8px 40px #0008">' +
+      '<div id="spoof-lb-caption" style="margin-top:14px;text-align:center;color:#fff;font-size:13px;line-height:1.6"></div>' +
+      '<button onclick="event.stopPropagation();document.getElementById(\'spoof-lightbox\').style.display=\'none\'" ' +
+        'style="margin-top:16px;background:#fff1;color:#fff;border:1px solid #fff4;border-radius:8px;' +
+        'padding:6px 20px;font-size:13px;cursor:pointer">Close</button>';
+    document.body.appendChild(lb);
+  }
+  document.getElementById('spoof-lb-img').src = src;
+  document.getElementById('spoof-lb-caption').innerHTML =
+    `<strong>${name}</strong><br>${time} &nbsp;|&nbsp; Liveness score: <span style="color:#fca5a5;font-weight:700">${score}</span>`;
+  lb.style.display = 'flex';
 }
 
 async function clearSpoofBlock(studentId, dateStr) {

@@ -1614,10 +1614,12 @@ class AttendanceQueue:
             key = row["student_id"] or "__unknown__"
             if key not in grouped:
                 grouped[key] = {
-                    "student_id":   row["student_id"],
-                    "student_name": row["student_name"] or "Unknown",
-                    "count":        0,
-                    "attempts":     [],
+                    "student_id":     row["student_id"],
+                    "student_name":   row["student_name"] or "Unknown",
+                    "student_number": "",
+                    "batch_name":     "",
+                    "count":          0,
+                    "attempts":       [],
                 }
             grouped[key]["count"] += 1
             grouped[key]["attempts"].append({
@@ -1626,6 +1628,39 @@ class AttendanceQueue:
                 "liveness_score":    row["liveness_score"],
                 "device_session_id": row["device_session_id"] or "",
             })
+
+        # Enrich with registration number and batch name from student_cache
+        known_ids = [v["student_id"] for v in grouped.values() if v["student_id"]]
+        if known_ids:
+            try:
+                ph = ", ".join([self._ph] * len(known_ids))
+                with self._db() as conn:
+                    meta_rows = conn.execute(
+                        self._q(f"""
+                            SELECT sc.student_id, sc.student_number, bs.batch_name
+                            FROM student_cache sc
+                            LEFT JOIN batch_status bs
+                                ON bs.batch_id = sc.batch_id
+                                AND bs.scope_key = sc.scope_key
+                            WHERE sc.student_id IN ({ph})
+                        """),
+                        tuple(known_ids),
+                    ).fetchall()
+                meta_map = {}
+                for m in meta_rows:
+                    sid = m["student_id"]
+                    if sid not in meta_map:
+                        meta_map[sid] = {
+                            "student_number": m["student_number"] or "",
+                            "batch_name":     m["batch_name"] or "",
+                        }
+                for v in grouped.values():
+                    if v["student_id"] and v["student_id"] in meta_map:
+                        v["student_number"] = meta_map[v["student_id"]]["student_number"]
+                        v["batch_name"]     = meta_map[v["student_id"]]["batch_name"]
+            except Exception as e:
+                logger.warning(f"get_spoof_attempts_today meta enrichment failed: {e}")
+
         return list(grouped.values())
 
     def get_spoof_image(self, attempt_id: int) -> bytes | None:
