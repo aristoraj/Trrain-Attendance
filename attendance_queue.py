@@ -1042,6 +1042,14 @@ class AttendanceQueue:
                 except Exception:
                     conn.execute("ROLLBACK TO SAVEPOINT add_capture_jpeg_col")
                     conn.execute("RELEASE SAVEPOINT add_capture_jpeg_col")
+                for _gps_col in ("checkin_lat", "checkin_lng"):
+                    try:
+                        conn.execute(f"SAVEPOINT add_{_gps_col}_col")
+                        conn.execute(f"ALTER TABLE attendance_queue ADD COLUMN {_gps_col} REAL")
+                        conn.execute(f"RELEASE SAVEPOINT add_{_gps_col}_col")
+                    except Exception:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT add_{_gps_col}_col")
+                        conn.execute(f"RELEASE SAVEPOINT add_{_gps_col}_col")
             else:
                 try:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN environment TEXT NOT NULL DEFAULT ''")
@@ -1063,6 +1071,11 @@ class AttendanceQueue:
                     conn.execute("ALTER TABLE attendance_queue ADD COLUMN capture_jpeg BLOB")
                 except Exception:
                     pass
+                for _gps_col in ("checkin_lat", "checkin_lng"):
+                    try:
+                        conn.execute(f"ALTER TABLE attendance_queue ADD COLUMN {_gps_col} REAL")
+                    except Exception:
+                        pass
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_status_retry "
                 "ON attendance_queue(status, next_retry_at)"
@@ -1144,7 +1157,9 @@ class AttendanceQueue:
                               device_session_id: str = "",
                               action_field: str = "",
                               checkin_time: str = "",
-                              capture_jpeg: bytes = None) -> tuple:
+                              capture_jpeg: bytes = None,
+                              checkin_lat: float = None,
+                              checkin_lng: float = None) -> tuple:
         """
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
@@ -1203,8 +1218,9 @@ class AttendanceQueue:
             INSERT INTO attendance_queue
                 (student_id, student_name, date_str,
                  status, attempts, created_at, updated_at, next_retry_at,
-                 environment, device_session_id, action_field, checkin_time, capture_jpeg)
-            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                 environment, device_session_id, action_field, checkin_time, capture_jpeg,
+                 checkin_lat, checkin_lng)
+            VALUES (?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """)
         if self._is_postgres:
             sql += " RETURNING id"
@@ -1212,6 +1228,7 @@ class AttendanceQueue:
             cur = conn.execute(sql, (
                 student_id, student_name, date_str, now, now, now,
                 environment, device_session_id, action_field, checkin_time, capture_jpeg,
+                checkin_lat, checkin_lng,
             ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
 
@@ -2224,7 +2241,8 @@ class AttendanceQueue:
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT id, student_id, student_name, date_str, attempts, environment, action_field, checkin_time, capture_jpeg "
+                    "SELECT id, student_id, student_name, date_str, attempts, environment, action_field, checkin_time, capture_jpeg, "
+                    "checkin_lat, checkin_lng "
                     "FROM attendance_queue "
                     "WHERE status='PENDING' AND next_retry_at <= ? "
                     "ORDER BY created_at ASC LIMIT 10"
@@ -2252,6 +2270,8 @@ class AttendanceQueue:
             action_field  = row["action_field"]  if "action_field"  in row.keys() else ""
             checkin_time  = row["checkin_time"]  if "checkin_time"  in row.keys() else ""
             capture_jpeg  = row["capture_jpeg"]  if "capture_jpeg"  in row.keys() else None
+            checkin_lat   = row["checkin_lat"]   if "checkin_lat"   in row.keys() else None
+            checkin_lng   = row["checkin_lng"]   if "checkin_lng"   in row.keys() else None
             # Fetch lookup IDs from student_cache for new attendance form
             student_meta = self.get_student_meta_any_scope(student_id)
             if student_meta.get("centre_id"):
@@ -2271,7 +2291,10 @@ class AttendanceQueue:
                     verification_type="face_blink_verified",
                     env=environment,
                     checkin_time=checkin_time,
+                    action_field=action_field,
                     meta=student_meta or None,
+                    checkin_lat=checkin_lat,
+                    checkin_lng=checkin_lng,
                 )
                 if result.get("success"):
                     self._set_posted(rec_id)

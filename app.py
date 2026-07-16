@@ -2110,6 +2110,14 @@ def post_attendance():
     if not student_id or not student_name:
         return jsonify({"success": False, "error": "student_id and student_name required"}), 400
 
+    # GPS coordinates from the browser
+    try:
+        checkin_lat = float(data["lat"]) if data.get("lat") is not None else None
+        checkin_lng = float(data["lng"]) if data.get("lng") is not None else None
+    except (TypeError, ValueError):
+        checkin_lat, checkin_lng = None, None
+
+
     today_str = now_ist.strftime("%d-%b-%Y")
 
     # Prefer JPEG sent directly in the request body (base64) — cross-worker-safe.
@@ -2140,6 +2148,8 @@ def post_attendance():
         action_field=action_field,
         checkin_time=checkin_time,
         capture_jpeg=capture_jpeg,
+        checkin_lat=checkin_lat,
+        checkin_lng=checkin_lng,
     )
     if is_duplicate:
         return jsonify({
@@ -2222,6 +2232,14 @@ def checkout():
     if not student_id or not student_name:
         return jsonify({"success": False, "error": "student_id and student_name required"}), 400
 
+    # GPS coordinates
+    try:
+        checkout_lat = float(data["lat"]) if data.get("lat") is not None else None
+        checkout_lng = float(data["lng"]) if data.get("lng") is not None else None
+    except (TypeError, ValueError):
+        checkout_lat, checkout_lng = None, None
+
+
     logger.info(f"[Checkout] request received — student={student_name}, env='{env}', sdk_zoho_id='{req_zoho_id}'")
 
     today_str    = datetime.now(_IST).strftime("%d-%b-%Y")
@@ -2295,8 +2313,9 @@ def checkout():
 
     logger.info(f"Checkout: using zoho_rec_id={zoho_rec_id} for {student_name} (source: {'sdk_request' if req_zoho_id else 'stored' if checkin_info.get('zoho_record_id') else 'search'})")
 
-    # PATCH Check_Out time + Auto_Checkout = No
-    result = zoho.patch_checkout(zoho_rec_id, checkout_time, env)
+    # PATCH Check_Out time + GPS
+    result = zoho.patch_checkout(zoho_rec_id, checkout_time, env,
+                                 checkout_lat=checkout_lat, checkout_lng=checkout_lng)
     if not result.get("success"):
         logger.error(f"Checkout PATCH failed for {student_name}: {result.get('error')} — local state already updated")
         return jsonify({

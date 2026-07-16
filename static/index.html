@@ -803,6 +803,17 @@ let USER_EMAIL    = (urlParams.get('user_email') || urlParams.get('email') || ''
 let ZOHO_ENV      = (urlParams.get('zoho_env') || '').trim();
 let _SESSION_TOKEN = null;   // set by /api/session after SDK init
 
+// GPS singleton — updated continuously, read at attendance-post time
+const _gpsState = { lat: null, lng: null };
+if (navigator.geolocation) {
+  const _gpsOpts = { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 };
+  navigator.geolocation.watchPosition(
+    (pos) => { _gpsState.lat = pos.coords.latitude; _gpsState.lng = pos.coords.longitude; },
+    () => {},   // silent fail — GPS is best-effort
+    _gpsOpts
+  );
+}
+
 // Authenticated fetch — attaches Bearer token to every request.
 // Falls back gracefully if no session yet (pre-init calls like /api/config).
 async function authFetch(url, opts = {}) {
@@ -1188,6 +1199,8 @@ let state = {
   cameraReady:       false,
   faceDetected:      false,
   step1Done:         false,
+  gpsLat:            null,
+  gpsLng:            null,
   blinkCount:        0,
   closedFrames:      0,
   eyeWasClosed:      false,
@@ -1756,6 +1769,8 @@ async function postAttendanceHybrid(verifyData, captureImageData = null) {
       device_session_id: DEVICE_SESSION_ID,
       action:            state.captureAction,
       capture_jpeg_b64:  captureImageData ? captureImageData.split(',')[1] : null,
+      lat:               _gpsState.lat,
+      lng:               _gpsState.lng,
     }),
   });
   const result = await resp.json();
@@ -1785,6 +1800,8 @@ async function doCheckout(verifyData) {
       student_id:       student.id,
       student_name:     student.name,
       zoho_environment: ZOHO_ENV || '',
+      lat:              _gpsState.lat,
+      lng:              _gpsState.lng,
     }),
   });
   const data = await serverResp.json();
@@ -1950,6 +1967,8 @@ function resetForRetry() {
     state.pendingVerifyData = null;
     state.smileFrames    = 0;
     state.captureAction  = '';
+    state.gpsLat         = _gpsState.lat;
+    state.gpsLng         = _gpsState.lng;
     document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
     blinkOverlay.classList.remove('show');
     smileOverlay.classList.remove('show');
@@ -1969,6 +1988,7 @@ function _fullReset() {
     blinkVerified: false, verifying: false, done: false, faceLostFrames: 0,
     livenessMode: 'blink', smileFrames: 0, captureAction: '',
     verifyStreak: 0, pendingVerifyData: null,
+    gpsLat: _gpsState.lat, gpsLng: _gpsState.lng,
   };
   document.querySelectorAll('.blink-dot').forEach(d => d.classList.remove('filled'));
   blinkOverlay.classList.remove('show');

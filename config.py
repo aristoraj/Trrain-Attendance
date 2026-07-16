@@ -56,8 +56,13 @@ FIELD_ATT_CHECKED_OUT  = os.environ.get("FIELD_ATT_CHECKED_OUT",  "Checked_out")
 FIELD_ATT_SOURCE       = os.environ.get("FIELD_ATT_SOURCE",       "Source")               # fixed text
 FIELD_ATT_VALUE        = os.environ.get("FIELD_ATT_VALUE",        "Value")                # fixed integer
 FIELD_ATT_CAPTURE      = os.environ.get("FIELD_ATT_CAPTURE",      "Live_Captured_Image")  # image upload field
-FIELD_CHECK_IN         = os.environ.get("FIELD_CHECK_IN",         "Check_In")             # time field
-FIELD_CHECK_OUT        = os.environ.get("FIELD_CHECK_OUT",        "Check_Out")            # time field
+FIELD_CHECK_IN          = os.environ.get("FIELD_CHECK_IN",          "Check_In")             # time field
+FIELD_CHECK_OUT         = os.environ.get("FIELD_CHECK_OUT",         "Check_Out")            # time field
+FIELD_ATT_ACTION        = os.environ.get("FIELD_ATT_ACTION",        "Action_field")
+FIELD_ATT_CHECKIN_LAT   = os.environ.get("FIELD_ATT_CHECKIN_LAT",   "Checkin_Latitude")
+FIELD_ATT_CHECKIN_LNG   = os.environ.get("FIELD_ATT_CHECKIN_LNG",   "Checkin_Longitude")
+FIELD_ATT_CHECKOUT_LAT  = os.environ.get("FIELD_ATT_CHECKOUT_LAT",  "Checkout_Latitude")
+FIELD_ATT_CHECKOUT_LNG  = os.environ.get("FIELD_ATT_CHECKOUT_LNG",  "Checkout_Longitude")
 
 # ─── Zoho Creator Environment ────────────────────────────────────────────────
 # Overridden per-request by envUrlFragment from the Widget SDK.

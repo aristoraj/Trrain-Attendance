@@ -26,7 +26,9 @@ from config import (
     FIELD_ATT_TRAINEE_REG, FIELD_ATT_DATE, FIELD_ATT_STATUS,
     FIELD_ATT_ZONE, FIELD_ATT_CENTRE, FIELD_ATT_BATCH,
     FIELD_ATT_CHECKED_OUT, FIELD_ATT_SOURCE, FIELD_ATT_VALUE, FIELD_ATT_CAPTURE,
-    FIELD_CHECK_IN, FIELD_CHECK_OUT,
+    FIELD_CHECK_IN, FIELD_CHECK_OUT, FIELD_ATT_ACTION,
+    FIELD_ATT_CHECKIN_LAT, FIELD_ATT_CHECKIN_LNG,
+    FIELD_ATT_CHECKOUT_LAT, FIELD_ATT_CHECKOUT_LNG,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
 
@@ -146,7 +148,7 @@ class ZohoCreatorAPI:
                 return []
 
             centers: list[str] = []
-            zone_names: dict = {}  # {rec_id: zone_name} collected for batch resolution
+            centre_data: dict = {}  # {rec_id: zone_name}
 
             for rec in records:
                 # Zoho system record ID (matches student Centre_Name lookup ID)
@@ -162,25 +164,22 @@ class ZohoCreatorAPI:
                 if name:
                     centers.append(name)
 
-                # Collect zone name — Select_Zone returns a plain string in All_Centres
                 if rec_id and self._embedding_cache:
                     zone_raw  = rec.get(FIELD_CENTRE_ZONE)
                     zone_name = zone_raw.strip() if isinstance(zone_raw, str) else (
                         str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
                     )
-                    if zone_name:
-                        zone_names[str(rec_id)] = zone_name
+                    centre_data[str(rec_id)] = zone_name
 
             # Resolve zone names → IDs in one zones fetch (only if needed)
-            if zone_names and self._embedding_cache:
-                zones_map = self._fetch_zones_map(env=env)
-                for cid, zone_name in zone_names.items():
+            if centre_data and self._embedding_cache:
+                zones_map = self._fetch_zones_map(env=env) if any(centre_data.values()) else {}
+                for cid, zone_name in centre_data.items():
                     zone_id = zones_map.get(zone_name, "")
-                    if zone_id:
-                        try:
-                            self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
-                        except Exception as _ze:
-                            logger.warning(f"get_user_centers: could not save centre_meta for {cid}: {_ze}")
+                    try:
+                        self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
+                    except Exception as _ze:
+                        logger.warning(f"get_user_centers: could not save centre_meta for {cid}: {_ze}")
 
             logger.info(f"User {email} found in centres: {centers}")
             return centers
@@ -1119,8 +1118,10 @@ class ZohoCreatorAPI:
         verification_type: str = "face_blink_verified",
         env:               str = "",
         checkin_time:      str = None,
-        action_field:      str = "",    # kept for backward compat; new form has no Action_field
+        action_field:      str = "",
         meta:              dict = None, # {centre_id, batch_id}
+        checkin_lat:       float = None,
+        checkin_lng:       float = None,
     ) -> dict:
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
@@ -1137,6 +1138,9 @@ class ZohoCreatorAPI:
             # Zoho Time fields require HH:MM:SS; queue stores HH:MM:SS already
             data_payload[FIELD_CHECK_IN] = checkin_time + ":00" if len(checkin_time) == 5 else checkin_time
 
+        if action_field:
+            data_payload[FIELD_ATT_ACTION] = action_field
+
         if meta:
             if meta.get("centre_id"):
                 data_payload[FIELD_ATT_CENTRE] = meta["centre_id"]
@@ -1144,6 +1148,11 @@ class ZohoCreatorAPI:
                 data_payload[FIELD_ATT_ZONE] = meta["zone_id"]
             if meta.get("batch_id"):
                 data_payload[FIELD_ATT_BATCH] = meta["batch_id"]
+
+        if checkin_lat is not None:
+            data_payload[FIELD_ATT_CHECKIN_LAT] = round(checkin_lat, 6)
+        if checkin_lng is not None:
+            data_payload[FIELD_ATT_CHECKIN_LNG] = round(checkin_lng, 6)
 
         try:
             payload = {"data": data_payload}
@@ -1202,9 +1211,10 @@ class ZohoCreatorAPI:
             logger.warning(f"find_attendance_record failed for {student_id}: {e}")
             return None
 
-    def patch_checkout(self, zoho_rec_id: str, checkout_time: str, env: str = "") -> dict:
+    def patch_checkout(self, zoho_rec_id: str, checkout_time: str, env: str = "",
+                       checkout_lat: float = None, checkout_lng: float = None) -> dict:
         """
-        PATCH an existing Face_Attendance record with Check_Out time and Auto_Checkout=No.
+        PATCH an existing Face_Attendance record with Check_Out time and GPS coords.
         checkout_time must be formatted as "HH:MM".
         """
         url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
@@ -1214,6 +1224,10 @@ class ZohoCreatorAPI:
             FIELD_ATT_CHECKED_OUT: "Yes",
             FIELD_CHECK_OUT:       zoho_checkout,
         }
+        if checkout_lat is not None:
+            data_payload[FIELD_ATT_CHECKOUT_LAT] = round(checkout_lat, 6)
+        if checkout_lng is not None:
+            data_payload[FIELD_ATT_CHECKOUT_LNG] = round(checkout_lng, 6)
         logger.info(
             f"Checkout PATCH — record_id={zoho_rec_id} | "
             f"payload: {FIELD_CHECK_OUT}={zoho_checkout}, {FIELD_ATT_CHECKED_OUT}=Yes | env='{env}'"
@@ -1563,11 +1577,18 @@ class ZohoCreatorAPI:
             zone_name = zone_raw.strip() if isinstance(zone_raw, str) else (
                 str(zone_raw.get("display_value") or "") if isinstance(zone_raw, dict) else ""
             )
+            try:
+                _lat = rec.get(FIELD_CENTRE_LATITUDE)
+                _lng = rec.get(FIELD_CENTRE_LONGITUDE)
+                _lat = float(_lat) if _lat is not None and _lat != "" else None
+                _lng = float(_lng) if _lng is not None and _lng != "" else None
+            except (TypeError, ValueError):
+                _lat, _lng = None, None
             zone_id = zones_map.get(zone_name, "")
             if zone_id:
-                self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name)
+                self._embedding_cache.upsert_centre_meta(cid, zone_id, zone_name, lat=_lat, lng=_lng)
                 resolved += 1
-                logger.info(f"sync_centres_meta: centre {cid} → zone='{zone_name}' id={zone_id}")
+                logger.info(f"sync_centres_meta: centre {cid} → zone='{zone_name}' id={zone_id} gps=({_lat},{_lng})")
             else:
                 logger.warning(
                     f"sync_centres_meta: centre {cid} zone '{zone_name}' not in zones_map "
