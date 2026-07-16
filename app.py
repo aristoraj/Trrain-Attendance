@@ -1572,6 +1572,7 @@ def preload_students():
             return jsonify({"triggered": False, "message": "Already loading"})
         _preloading_keys.add(key)
     threading.Thread(target=_load_students_bg, args=(centers, env), daemon=True).start()
+    threading.Thread(target=att_queue.cleanup_old_spoof_attempts, daemon=True).start()
     logger.info(f"Preload triggered for {user_email} (scope {key})")
     return jsonify({"triggered": True})
 
@@ -1964,6 +1965,46 @@ def verify():
             logger.warning(
                 f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason}"
             )
+            # Log spoof attempt — try to identify who is being impersonated
+            def _log_spoof():
+                try:
+                    spoof_match = None
+                    spoof_students = None
+                    if scope_key_in:
+                        with _scope_caches_lock:
+                            _c = _scope_caches.get(scope_key_in)
+                        if _c:
+                            spoof_students = _c.get()
+                    elif user_email:
+                        try:
+                            _ctr = get_user_centers_cached(user_email, env=env)
+                            if _ctr:
+                                spoof_students = _get_cache(centers=_ctr, env=env).get()
+                        except Exception:
+                            pass
+                    if spoof_students:
+                        spoof_match, _ = find_best_match(
+                            submitted_encoding, spoof_students, tolerance=FACE_MATCH_TOLERANCE
+                        )
+                    # Re-encode image at reduced quality for storage
+                    spoof_jpeg = None
+                    try:
+                        from PIL import Image as _PIL
+                        _buf = io.BytesIO()
+                        _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=70)
+                        spoof_jpeg = _buf.getvalue()
+                    except Exception:
+                        pass
+                    att_queue.log_spoof_attempt(
+                        student_id        = spoof_match.get("id")   if spoof_match else None,
+                        student_name      = spoof_match.get("name") if spoof_match else "Unknown",
+                        liveness_score    = liveness_score,
+                        capture_jpeg      = spoof_jpeg,
+                        device_session_id = device_session_id,
+                    )
+                except Exception as _e:
+                    logger.debug(f"Spoof log error: {_e}")
+            threading.Thread(target=_log_spoof, daemon=True).start()
             return jsonify({
                 "success": False,
                 "error":   "Live face not detected. Please ensure you are in front of the camera.",
@@ -4107,6 +4148,30 @@ def admin_student_photos(student_id):
     date_str = request.args.get("date", "").strip()
     photos = att_queue.get_checkin_photos_b64(student_id, date_str)
     return jsonify(photos)
+
+
+@app.route("/api/admin/spoof-log")
+def admin_spoof_log():
+    err = _admin_auth()
+    if err: return err
+    groups = att_queue.get_spoof_attempts_today()
+    today  = datetime.now(_IST).strftime("%Y-%m-%d")
+    return jsonify({"date": today, "groups": groups})
+
+
+@app.route("/api/admin/spoof-image/<int:attempt_id>")
+def admin_spoof_image(attempt_id):
+    # Image endpoint — secret passed as query param so <img src> works
+    secret = request.args.get("secret", "")
+    if not secret or secret != ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    jpeg = att_queue.get_spoof_image(attempt_id)
+    if not jpeg:
+        return "", 404
+    return jpeg, 200, {
+        "Content-Type":  "image/jpeg",
+        "Cache-Control": "no-store",
+    }
 
 
 @app.route("/api/admin/batches")

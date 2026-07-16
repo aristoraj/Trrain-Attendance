@@ -1096,6 +1096,7 @@ class AttendanceQueue:
             self._create_global_settings_table(conn)
             self._create_sync_audit_table(conn)
             self._create_checkin_photos_table(conn)
+            self._create_spoof_attempts_table(conn)
             # Drop financial_year_master if it exists from a prior deployment
             conn.execute("DROP TABLE IF EXISTS financial_year_master")
 
@@ -1545,6 +1546,110 @@ class AttendanceQueue:
             "CREATE INDEX IF NOT EXISTS idx_cp_student "
             "ON checkin_photos(student_id, date_str DESC)"
         )
+
+    def _create_spoof_attempts_table(self, conn):
+        blob_type = "BYTEA" if self._is_postgres else "BLOB"
+        serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
+        autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS spoof_attempts (
+                id                {serial} PRIMARY KEY {autoincrement},
+                student_id        TEXT,
+                student_name      TEXT,
+                date_str          TEXT NOT NULL,
+                attempted_at      TEXT NOT NULL,
+                liveness_score    REAL,
+                device_session_id TEXT,
+                capture_jpeg      {blob_type}
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spoof_date "
+            "ON spoof_attempts(date_str)"
+        )
+
+    def log_spoof_attempt(
+        self,
+        student_id: str = None,
+        student_name: str = None,
+        liveness_score: float = None,
+        capture_jpeg: bytes = None,
+        device_session_id: str = "",
+    ) -> None:
+        now = datetime.now(_IST)
+        date_str     = now.strftime("%Y-%m-%d")
+        attempted_at = now.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with self._db() as conn:
+                conn.execute(
+                    self._q("""
+                        INSERT INTO spoof_attempts
+                            (student_id, student_name, date_str, attempted_at,
+                             liveness_score, device_session_id, capture_jpeg)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """),
+                    (student_id, student_name or "Unknown", date_str, attempted_at,
+                     liveness_score, device_session_id or "", capture_jpeg),
+                )
+        except Exception as e:
+            logger.warning(f"log_spoof_attempt failed: {e}")
+
+    def get_spoof_attempts_today(self) -> list:
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
+        try:
+            with self._db() as conn:
+                rows = conn.execute(
+                    "SELECT id, student_id, student_name, attempted_at, "
+                    "liveness_score, device_session_id "
+                    "FROM spoof_attempts WHERE date_str = ? ORDER BY attempted_at DESC",
+                    (today,),
+                ).fetchall()
+        except Exception:
+            return []
+        grouped: dict = {}
+        for row in rows:
+            key = row["student_id"] or "__unknown__"
+            if key not in grouped:
+                grouped[key] = {
+                    "student_id":   row["student_id"],
+                    "student_name": row["student_name"] or "Unknown",
+                    "count":        0,
+                    "attempts":     [],
+                }
+            grouped[key]["count"] += 1
+            grouped[key]["attempts"].append({
+                "id":                row["id"],
+                "attempted_at":      row["attempted_at"],
+                "liveness_score":    row["liveness_score"],
+                "device_session_id": row["device_session_id"] or "",
+            })
+        return list(grouped.values())
+
+    def get_spoof_image(self, attempt_id: int) -> bytes | None:
+        try:
+            with self._db() as conn:
+                row = conn.execute(
+                    "SELECT capture_jpeg FROM spoof_attempts WHERE id = ?",
+                    (attempt_id,),
+                ).fetchone()
+            return bytes(row["capture_jpeg"]) if row and row["capture_jpeg"] else None
+        except Exception:
+            return None
+
+    def cleanup_old_spoof_attempts(self) -> int:
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
+        try:
+            with self._db() as conn:
+                cur = conn.execute(
+                    "DELETE FROM spoof_attempts WHERE date_str < ?", (today,)
+                )
+                deleted = cur.rowcount if hasattr(cur, "rowcount") else 0
+            if deleted:
+                logger.info(f"Cleaned up {deleted} old spoof attempt(s).")
+            return deleted
+        except Exception as e:
+            logger.warning(f"cleanup_old_spoof_attempts failed: {e}")
+            return 0
 
     def _create_sync_audit_table(self, conn):
         conn.execute("""
