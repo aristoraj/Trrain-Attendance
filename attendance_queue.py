@@ -1599,6 +1599,19 @@ class AttendanceQueue:
         except Exception as e:
             logger.warning(f"log_spoof_attempt failed: {e}")
 
+    def has_spoof_today(self, student_id: str) -> bool:
+        """Return True if this student already has a logged spoof attempt today."""
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
+        try:
+            with self._db() as conn:
+                row = conn.execute(
+                    self._q("SELECT 1 FROM spoof_attempts WHERE student_id=? AND date_str=? LIMIT 1"),
+                    (student_id, today),
+                ).fetchone()
+            return row is not None
+        except Exception:
+            return False
+
     def get_spoof_attempts_today(self) -> list:
         today = datetime.now(_IST).strftime("%Y-%m-%d")
         try:

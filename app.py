@@ -62,6 +62,7 @@ from face_utils import (
     encode_face_with_bbox, find_best_match, embedding_to_json, json_to_embedding,
 )
 from liveness_utils import check_liveness, LIVENESS_THRESHOLD
+from aws_rekognition import check_face_quality as aws_check_face_quality
 from zoho_api import ZohoCreatorAPI
 from attendance_queue import AttendanceQueue
 
@@ -2059,7 +2060,32 @@ def verify():
             )
             _sid   = best_match["id"]
             _sname = best_match["name"]
-            if liveness_score < 0.30:
+
+            # ── AWS is the final judge on every MiniFASNet rejection ─────────
+            # MiniFASNet = fast local pre-filter.
+            # AWS = authoritative second opinion every time MiniFASNet fails.
+            # AWS approves → attendance marked. AWS also rejects → log + block.
+            _aws_override = False
+            try:
+                from PIL import Image as _PIL
+                _buf = io.BytesIO()
+                _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=85)
+                _aws = aws_check_face_quality(_buf.getvalue())
+                _aws_override = _aws.get("override", False)
+                logger.info(
+                    f"AWS verdict for {_sname}: override={_aws_override} "
+                    f"reason={_aws.get('reason')} conf={_aws.get('confidence')} "
+                    f"sharp={_aws.get('sharpness')} bright={_aws.get('brightness')}"
+                )
+            except Exception as _e:
+                logger.warning(f"AWS quality check error: {_e}")
+
+            if _aws_override:
+                logger.info(f"AWS approved {_sname} — MiniFASNet false reject, continuing")
+                liveness_score  = LIVENESS_THRESHOLD
+                liveness_reason = "aws_override"
+            else:
+                # Both MiniFASNet and AWS rejected — confirmed spoof, log it
                 def _handle_spoof():
                     try:
                         spoof_jpeg = None
@@ -2077,15 +2103,15 @@ def verify():
                             capture_jpeg      = spoof_jpeg,
                             device_session_id = device_session_id,
                         )
-                        logger.info(f"Spoof logged: {_sname} score={liveness_score:.1f}%")
+                        logger.info(f"Spoof confirmed by both systems: {_sname} score={liveness_score:.3f}")
                     except Exception as _e:
                         logger.debug(f"Spoof handler error: {_e}")
                 threading.Thread(target=_handle_spoof, daemon=True).start()
 
-            return jsonify({
-                "success": False,
-                "error":   "Live face not detected. Please ensure you are in front of the camera.",
-            }), 400
+                return jsonify({
+                    "success": False,
+                    "error":   "Live face not detected. Please ensure you are in front of the camera.",
+                }), 400
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
