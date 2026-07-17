@@ -607,23 +607,27 @@ class AttendanceQueue:
     def purge_stale_production_students(self, valid_ids: set) -> dict:
         """
         Delete production student_cache rows whose student_id is NOT in valid_ids,
-        then delete orphaned face_embeddings. Only touches scope_key LIKE 'C:%'.
+        then delete orphaned face_embeddings.
+        Matches both old-style scope keys (C:id) and env-prefixed (production:C:id).
         Returns {"students": n, "embeddings": n}.
         """
         if not valid_ids:
             return {"students": 0, "embeddings": 0}
         with self._db() as conn:
+            # Hardcode LIKE pattern in SQL — avoids psycopg2 % parameter confusion.
+            # '%C:%' matches both 'C:id1,id2' and 'production:C:id1,id2'.
             rows = conn.execute(
-                "SELECT DISTINCT student_id FROM student_cache WHERE scope_key LIKE 'C:%'"
+                "SELECT DISTINCT student_id FROM student_cache WHERE scope_key LIKE '%C:%'"
             ).fetchall()
             stale_ids = [r["student_id"] for r in rows if r["student_id"] not in valid_ids]
             if not stale_ids:
                 logger.info("[PurgeStale] No stale production students to remove.")
                 return {"students": 0, "embeddings": 0}
             ph = ", ".join([self._ph] * len(stale_ids))
+            # Delete by student_id only — we already filtered by scope_key in Python
             cur1 = conn.execute(
-                self._q(f"DELETE FROM student_cache WHERE scope_key LIKE ? AND student_id IN ({ph})"),
-                ("C:%", *stale_ids),
+                self._q(f"DELETE FROM student_cache WHERE student_id IN ({ph})"),
+                tuple(stale_ids),
             )
             removed_students = cur1.rowcount if hasattr(cur1, "rowcount") else len(stale_ids)
             cur2 = conn.execute(
