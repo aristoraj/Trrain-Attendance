@@ -1062,6 +1062,11 @@ def webhook_batch_gap_fill():
         daemon=True,
         name="gap-fill",
     ).start()
+    threading.Thread(
+        target=att_queue.cleanup_old_spoof_attempts,
+        daemon=True,
+        name="spoof-cleanup",
+    ).start()
 
     return jsonify({
         "status":         "ok",
@@ -1377,6 +1382,7 @@ def _weekly_cleanup_worker():
         time.sleep(sleep_secs)
         try:
             result = att_queue.cleanup_old_records(days=7)
+            att_queue.cleanup_old_spoof_attempts()
             logger.info(
                 f"[WeeklyCleanup] Done — freed queue: {result['queue_deleted']} row(s), "
                 f"checkin_state: {result['checkin_deleted']} row(s)."
