@@ -973,6 +973,28 @@ def _gap_fill_students(missing_ids: list, env: str) -> None:
         logger.error(f"[GapFill] Error: {e}")
 
 
+def _daily_cleanup():
+    """Runs every morning at 7 AM via gap-fill webhook. Keeps DB lean."""
+    try:
+        att_queue.cleanup_old_spoof_attempts()
+        logger.info("[DailyCleanup] Spoof attempts/blocks cleaned.")
+    except Exception as e:
+        logger.warning(f"[DailyCleanup] spoof cleanup failed: {e}")
+    try:
+        photo_deleted = att_queue.purge_old_checkin_photos(days=3)
+        logger.info(f"[DailyCleanup] Checkin photos purged: {photo_deleted} row(s).")
+    except Exception as e:
+        logger.warning(f"[DailyCleanup] checkin photo purge failed: {e}")
+    try:
+        result = att_queue.cleanup_old_records(days=7)
+        logger.info(
+            f"[DailyCleanup] Queue: {result['queue_deleted']} row(s) deleted, "
+            f"checkin_state: {result['checkin_deleted']} row(s) deleted."
+        )
+    except Exception as e:
+        logger.warning(f"[DailyCleanup] queue cleanup failed: {e}")
+
+
 @app.route("/api/webhook/batch-gap-fill", methods=["POST"])
 @limiter.limit("20 per minute")
 def webhook_batch_gap_fill():
@@ -1063,9 +1085,9 @@ def webhook_batch_gap_fill():
         name="gap-fill",
     ).start()
     threading.Thread(
-        target=att_queue.cleanup_old_spoof_attempts,
+        target=_daily_cleanup,
         daemon=True,
-        name="spoof-cleanup",
+        name="daily-cleanup",
     ).start()
 
     return jsonify({
@@ -1381,12 +1403,8 @@ def _weekly_cleanup_worker():
         )
         time.sleep(sleep_secs)
         try:
-            result = att_queue.cleanup_old_records(days=7)
-            att_queue.cleanup_old_spoof_attempts()
-            logger.info(
-                f"[WeeklyCleanup] Done — freed queue: {result['queue_deleted']} row(s), "
-                f"checkin_state: {result['checkin_deleted']} row(s)."
-            )
+            _daily_cleanup()
+            logger.info("[WeeklyCleanup] Done.")
         except Exception as e:
             logger.error(f"[WeeklyCleanup] Failed: {e}")
 
@@ -1578,7 +1596,6 @@ def preload_students():
             return jsonify({"triggered": False, "message": "Already loading"})
         _preloading_keys.add(key)
     threading.Thread(target=_load_students_bg, args=(centers, env), daemon=True).start()
-    threading.Thread(target=att_queue.cleanup_old_spoof_attempts, daemon=True).start()
     logger.info(f"Preload triggered for {user_email} (scope {key})")
     return jsonify({"triggered": True})
 
