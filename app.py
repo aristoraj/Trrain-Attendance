@@ -2040,37 +2040,8 @@ def verify():
                 "message": "Face not recognised. Please try again or contact admin.",
             })
 
-        # ── 5. Spoof block check ──────────────────────────────────────────────
+        # ── 5. Passive liveness check (MiniFASNet) ────────────────────────────
         _today_date = datetime.now(_IST).strftime("%Y-%m-%d")
-        _block = att_queue.get_spoof_block_status(best_match["id"], _today_date)
-        if _block["blocked"]:
-            if _block.get("day_block"):
-                logger.warning(
-                    f"Day-blocked trainee attempted: {best_match['name']} ({best_match['id']})"
-                )
-                return jsonify({
-                    "success":       False,
-                    "spoof_blocked": True,
-                    "error": (
-                        f"Attendance for {best_match['name']} is blocked for today after "
-                        f"{_block['count']} spoof attempt(s). Please contact the administrator."
-                    ),
-                }), 403
-            else:
-                mins = _block.get("minutes_remaining", 10)
-                logger.warning(
-                    f"Temp-blocked trainee attempted: {best_match['name']} — {mins}m remaining"
-                )
-                return jsonify({
-                    "success":       False,
-                    "spoof_blocked": True,
-                    "error": (
-                        f"Attendance for {best_match['name']} is temporarily blocked. "
-                        f"Please try again in {mins} minute{'s' if mins != 1 else ''}."
-                    ),
-                }), 403
-
-        # ── 6. Passive liveness check (MiniFASNet) ────────────────────────────
         is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
         if liveness_reason == "model_unavailable" and not DEBUG:
             logger.critical(
@@ -2086,12 +2057,10 @@ def verify():
                 f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason} "
                 f"trainee={best_match['name']} ({best_match['id']})"
             )
-            # Apply progressive block and log — both run in background
             _sid   = best_match["id"]
             _sname = best_match["name"]
             def _handle_spoof():
                 try:
-                    block = att_queue.record_spoof_and_apply_block(_sid, _today_date)
                     spoof_jpeg = None
                     try:
                         from PIL import Image as _PIL
@@ -2107,39 +2076,14 @@ def verify():
                         capture_jpeg      = spoof_jpeg,
                         device_session_id = device_session_id,
                     )
-                    logger.info(
-                        f"Spoof logged: {_sname} count={block['count']} "
-                        f"day_block={block['day_block']} blocked_until={block['blocked_until']}"
-                    )
+                    logger.info(f"Spoof logged: {_sname}")
                 except Exception as _e:
                     logger.debug(f"Spoof handler error: {_e}")
             threading.Thread(target=_handle_spoof, daemon=True).start()
 
-            # Build user-facing message based on the NEW count (after increment)
-            # We peek at what record_spoof_and_apply_block will produce:
-            _current_count = (_block.get("count") or 0) + 1
-            if _current_count >= 5:
-                err_msg = (
-                    f"Attendance for {_sname} is now blocked for today after "
-                    f"repeated spoof attempts. Please contact the administrator."
-                )
-            elif _current_count == 4:
-                err_msg = (
-                    f"Spoof attempt #{_current_count} detected for {_sname}. "
-                    f"Attendance blocked for 30 minutes."
-                )
-            elif _current_count == 3:
-                err_msg = (
-                    f"Spoof attempt #{_current_count} detected for {_sname}. "
-                    f"Attendance blocked for 10 minutes."
-                )
-            else:
-                err_msg = "Live face not detected. Please ensure you are in front of the camera."
-
             return jsonify({
-                "success":       False,
-                "spoof_blocked": _current_count >= 3,
-                "error":         err_msg,
+                "success": False,
+                "error":   "Live face not detected. Please ensure you are in front of the camera.",
             }), 400
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")

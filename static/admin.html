@@ -686,23 +686,13 @@ async function renderSpoofTab() {
           <div style="font-size:10px;color:#dc2626;font-weight:600">score ${score}</div>
         </div>`;
       }).join('');
-      const clearBtn = g.student_id
-        ? `<button onclick="clearSpoofBlock('${esc(g.student_id)}','${data.date}')"
-             style="background:#fff;border:1px solid #fca5a5;color:#dc2626;border-radius:6px;
-                    padding:4px 10px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">
-             ✕ Clear Block
-           </button>`
-        : '';
       return `<div class="card" style="margin-bottom:14px">
         <div class="card-head">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <h3 style="margin:0">${esc(g.student_name)}</h3>
             ${badge}${regChip}${batchChip}
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <small style="color:#94a3b8;font-size:11px">${g.student_id ? 'ID: '+esc(g.student_id) : 'Face not matched'}</small>
-            ${clearBtn}
-          </div>
+          <small style="color:#94a3b8;font-size:11px">${g.student_id ? 'ID: '+esc(g.student_id) : 'Face not matched'}</small>
         </div>
         <div style="padding:14px 16px;overflow-x:auto;white-space:nowrap">${imgs}</div>
       </div>`;
