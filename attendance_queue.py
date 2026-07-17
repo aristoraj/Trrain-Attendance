@@ -1665,7 +1665,55 @@ class AttendanceQueue:
             except Exception as e:
                 logger.warning(f"get_spoof_attempts_today meta enrichment failed: {e}")
 
+        # Enrich with checkin status from checkin_state
+        if known_ids:
+            try:
+                today_dmy = datetime.now(_IST).strftime("%d-%b-%Y")
+                ph = ", ".join([self._ph] * len(known_ids))
+                with self._db() as conn:
+                    cs_rows = conn.execute(
+                        self._q(f"""
+                            SELECT student_id, checkin_at, is_checked_out, zoho_record_id
+                            FROM checkin_state
+                            WHERE student_id IN ({ph}) AND date_str = {self._ph}
+                        """),
+                        tuple(known_ids) + (today_dmy,),
+                    ).fetchall()
+                cs_map = {}
+                for r in cs_rows:
+                    cs_map[r["student_id"]] = {
+                        "checkin_status":  "checked_out" if r["is_checked_out"] else "checked_in",
+                        "zoho_record_id":  r["zoho_record_id"] or "",
+                    }
+                for v in grouped.values():
+                    if v["student_id"] and v["student_id"] in cs_map:
+                        v["checkin_status"]  = cs_map[v["student_id"]]["checkin_status"]
+                        v["zoho_record_id"]  = cs_map[v["student_id"]]["zoho_record_id"]
+                    else:
+                        v["checkin_status"]  = "not_marked"
+                        v["zoho_record_id"]  = ""
+            except Exception as e:
+                logger.warning(f"get_spoof_attempts_today checkin enrichment failed: {e}")
+
         return list(grouped.values())
+
+    def cancel_attendance_locally(self, student_id: str, date_str_dmy: str) -> None:
+        """Remove a student's attendance records for today (used when marking absent)."""
+        try:
+            with self._db() as conn:
+                conn.execute(
+                    self._q("DELETE FROM attendance_queue WHERE student_id=? AND date_str=?"),
+                    (student_id, date_str_dmy),
+                )
+                conn.execute(
+                    self._q("DELETE FROM checkin_state WHERE student_id=? AND date_str=?"),
+                    (student_id, date_str_dmy),
+                )
+            with self._lock:
+                self._marked.discard(student_id)
+            logger.info(f"Cancelled local attendance for {student_id} on {date_str_dmy}")
+        except Exception as e:
+            logger.warning(f"cancel_attendance_locally failed for {student_id}: {e}")
 
     def get_spoof_image(self, attempt_id: int) -> bytes | None:
         try:

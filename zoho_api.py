@@ -1246,6 +1246,24 @@ class ZohoCreatorAPI:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def patch_attendance_status(self, zoho_rec_id: str, status: str, env: str = "") -> dict:
+        """PATCH Attendance_Status on an existing attendance record (e.g. 'Absent')."""
+        url = f"{self._base_url}/report/{ZOHO_ATTENDANCE_REPORT}/{zoho_rec_id}"
+        logger.info(f"Attendance status PATCH — record_id={zoho_rec_id} status={status}")
+        try:
+            resp = self._request("patch", url, env=env, json={"data": {FIELD_ATT_STATUS: status}}, timeout=15)
+            resp.raise_for_status()
+            result = resp.json()
+            zoho_code = result.get("code")
+            if zoho_code is not None and zoho_code != 3000:
+                return {"success": False, "error": f"Zoho error {zoho_code}: {result.get('message', '')}"}
+            logger.info(f"Attendance status PATCH successful — record {zoho_rec_id} → {status}")
+            return {"success": True}
+        except requests.HTTPError as e:
+            return {"success": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:300]}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def patch_checkin_fields(self, zoho_rec_id: str, checkin_time: str, action_field: str = "", env: str = "") -> bool:
         """
         PATCH Check_In onto an existing attendance record.

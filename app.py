@@ -4174,6 +4174,32 @@ def admin_clear_spoof_block():
     return jsonify({"cleared": ok, "student_id": student_id, "date_str": date_str})
 
 
+@app.route("/api/admin/mark-absent", methods=["POST"])
+def admin_mark_absent():
+    err = _admin_auth()
+    if err: return err
+    body       = request.get_json(silent=True) or {}
+    student_id = (body.get("student_id") or "").strip()
+    if not student_id:
+        return jsonify({"error": "student_id required"}), 400
+
+    today_dmy = datetime.now(_IST).strftime("%d-%b-%Y")
+    checkin   = att_queue.get_checkin_status(student_id, today_dmy)
+    zoho_rec  = checkin.get("zoho_record_id", "")
+
+    zoho_result = None
+    if zoho_rec:
+        env = checkin.get("environment", "")
+        zoho_result = zoho_api.patch_attendance_status(zoho_rec, "Absent", env=env)
+        if not zoho_result.get("success"):
+            logger.warning(f"mark-absent Zoho PATCH failed for {student_id}: {zoho_result.get('error')}")
+            return jsonify({"success": False, "error": zoho_result.get("error")}), 502
+
+    att_queue.cancel_attendance_locally(student_id, today_dmy)
+    logger.info(f"Admin marked absent: {student_id} zoho_rec={zoho_rec or 'none (pending cancelled)'}")
+    return jsonify({"success": True, "zoho_updated": bool(zoho_rec)})
+
+
 @app.route("/api/admin/spoof-log")
 def admin_spoof_log():
     err = _admin_auth()
