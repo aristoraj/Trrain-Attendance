@@ -2059,7 +2059,7 @@ def verify():
             )
             _sid   = best_match["id"]
             _sname = best_match["name"]
-            if liveness_score < 20:
+            if liveness_score < 30:
                 def _handle_spoof():
                     try:
                         spoof_jpeg = None
