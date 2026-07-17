@@ -2059,27 +2059,28 @@ def verify():
             )
             _sid   = best_match["id"]
             _sname = best_match["name"]
-            def _handle_spoof():
-                try:
-                    spoof_jpeg = None
+            if liveness_score < 20:
+                def _handle_spoof():
                     try:
-                        from PIL import Image as _PIL
-                        _buf = io.BytesIO()
-                        _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=70)
-                        spoof_jpeg = _buf.getvalue()
-                    except Exception:
-                        pass
-                    att_queue.log_spoof_attempt(
-                        student_id        = _sid,
-                        student_name      = _sname,
-                        liveness_score    = liveness_score,
-                        capture_jpeg      = spoof_jpeg,
-                        device_session_id = device_session_id,
-                    )
-                    logger.info(f"Spoof logged: {_sname}")
-                except Exception as _e:
-                    logger.debug(f"Spoof handler error: {_e}")
-            threading.Thread(target=_handle_spoof, daemon=True).start()
+                        spoof_jpeg = None
+                        try:
+                            from PIL import Image as _PIL
+                            _buf = io.BytesIO()
+                            _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=70)
+                            spoof_jpeg = _buf.getvalue()
+                        except Exception:
+                            pass
+                        att_queue.log_spoof_attempt(
+                            student_id        = _sid,
+                            student_name      = _sname,
+                            liveness_score    = liveness_score,
+                            capture_jpeg      = spoof_jpeg,
+                            device_session_id = device_session_id,
+                        )
+                        logger.info(f"Spoof logged: {_sname} score={liveness_score:.1f}%")
+                    except Exception as _e:
+                        logger.debug(f"Spoof handler error: {_e}")
+                threading.Thread(target=_handle_spoof, daemon=True).start()
 
             return jsonify({
                 "success": False,
