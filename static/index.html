@@ -2197,10 +2197,8 @@ async function refreshStudentCache() {
     const data = await resp.json();
     btn.innerHTML = '<i class="bi bi-check-circle"></i> Refreshed';
     setStatus('ok', data.message || 'Student list refreshed from DB');
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
-    }, 3000);
+    // Stays disabled for the session — hard wipe + Zoho re-fetch; re-clicking would
+    // interrupt the background load. User must reload the page to refresh again.
   } catch (e) {
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh';
