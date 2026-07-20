@@ -1557,10 +1557,13 @@ def cache_status():
         enc_snapshot = dict(_scope_encoding)
     with _scope_caches_lock:
         caches_snapshot = dict(_scope_caches)
+    with _preloading_lock:
+        preloading_snapshot = set(_preloading_keys)
     for key, cache in caches_snapshot.items():
         enc = enc_snapshot.get(key, {})
         status[key] = {
             "students_cached": cache.size,
+            "is_loading":      key in preloading_snapshot,
             "age_seconds":     cache.age_seconds,
             "ttl_seconds":     CACHE_TTL_SECONDS,
             "encoding": {
@@ -1569,7 +1572,7 @@ def cache_status():
                 "running": enc.get("running", False),
             } if enc else None,
         }
-    return jsonify(status if status else {"ALL": {"students_cached": 0}})
+    return jsonify(status if status else {"ALL": {"students_cached": 0, "is_loading": False}})
 
 
 @app.route("/api/preload", methods=["POST"])
