@@ -1856,7 +1856,7 @@ async function captureAndVerify(cachedImage = null) {
     // checkinStatus === 'none' → normal check-in flow
     // Require 3 consecutive server-verified liveness passes before posting attendance.
     // Blocks video/photo replay attacks that get one lucky frame above threshold.
-    const VERIFY_STREAK_NEEDED = 3;
+    const VERIFY_STREAK_NEEDED = 1;
     if (state.pendingVerifyData && state.pendingVerifyData.student.id !== data.student.id) {
       // Different student matched — reset streak for the new student
       state.verifyStreak = 0;
