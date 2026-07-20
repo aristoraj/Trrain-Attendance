@@ -1846,11 +1846,10 @@ async function captureAndVerify(cachedImage = null) {
 
     showSpinner(false);
 
-    // 503: cache not ready — show full loading screen until data is ready
+    // 503: cache not ready — show full loading screen until data is ready,
+    // then reset the whole verification flow back to step 1.
     if (resp.status === 503 && data.loading) {
-      _awaitCacheReady(() => {
-        showBanner('Trainee data loaded — please look at the camera.', 'ok');
-      });
+      _awaitCacheReady(() => resetForRetry());
       return;
     }
 
