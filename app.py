@@ -782,6 +782,12 @@ def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> N
     Triggered by /api/webhook/batch-started.
     Fetches students for a newly-started batch from Zoho and merges them into the
     local DB and face cache immediately — without waiting for the nightly scheduler.
+
+    The batch webhook payload carries only the batch's own centre IDs, which may be
+    a subset of the face-recognition user's full centre list.  For example the batch
+    may sit at centre C:111 while the operator's widget scope is C:111,C:222.  We
+    resolve this by also upserting into every overlapping scope already in the DB so
+    the correct multi-centre scope_key is always kept in sync.
     """
     try:
         logger.info(
@@ -794,47 +800,56 @@ def _sync_batch_now(batch_id: str, centers: list, env: str, scope_key: str) -> N
             no_photo_out=no_photo, fresh_load=True,
         )
 
-        # Upsert batch_status as Ongoing (insert if new, overwrite if Hold/other)
-        att_queue.save_batch_statuses(
-            scope_key, [{"id": batch_id, "name": "", "status": "Ongoing"}]
-        )
+        # Collect every scope_key in the DB that shares at least one centre with
+        # this batch — handles the common case where the operator's widget uses a
+        # multi-centre scope key (C:111,C:222) but the webhook only knows C:111.
+        centre_ids = [c for c in centers if str(c).strip().isdigit()]
+        overlapping_scopes = att_queue.get_scope_keys_overlapping_centres(centre_ids, env=env)
+        all_scopes = list({scope_key} | set(overlapping_scopes))
+        logger.info(f"[BatchWebhook] Upserting batch {batch_id} into scopes: {all_scopes}")
 
-        if students:
-            # Non-destructive upsert — doesn't wipe other batches in the same scope
-            att_queue.upsert_students_for_batch(scope_key, batch_id, students)
+        for sk in all_scopes:
+            # Upsert batch_status as Ongoing for each affected scope
+            att_queue.save_batch_statuses(
+                sk, [{"id": batch_id, "name": "", "status": "Ongoing"}]
+            )
+            if students:
+                att_queue.upsert_students_for_batch(sk, batch_id, students)
+            if no_photo:
+                att_queue.save_no_photo_students(sk, no_photo)
+
+            # Bust batch ID caches so the next widget open sees the new batch
+            with _batch_ids_lock:
+                _batch_ids_cache.pop(sk, None)
+            att_queue.clear_daily_cache(f"batches:{sk}")
+            att_queue.clear_daily_cache(f"batch_names:{sk}")
+
+            # Derive centre list for this scope so we can address the right L1 cache
+            sk_centers, sk_env = _parse_scope_key(sk)
+
+            # Rebuild in-memory face cache from DB so new students are live immediately
+            raw = att_queue.load_students_from_db(sk)
+            if raw:
+                decoded = []
+                for s in raw:
+                    encs = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+                    encs = [e for e in encs if e is not None]
+                    if encs:
+                        decoded.append({
+                            "id":             s["id"],
+                            "name":           s["name"],
+                            "student_number": s["student_number"],
+                            "encodings":      encs,
+                        })
+                if decoded:
+                    _get_cache(sk_centers, sk_env).set(decoded)
+                    logger.info(
+                        f"[BatchWebhook] Face cache rebuilt for scope '{sk}' — "
+                        f"{len(decoded)} student(s) live."
+                    )
 
         if no_photo:
-            att_queue.save_no_photo_students(scope_key, no_photo)
             logger.info(f"[BatchWebhook] {len(no_photo)} student(s) have no photo yet for batch {batch_id}.")
-
-        # Bust L1 + L2 batch ID cache so the next widget open sees the new batch
-        # instead of the stale 0-batch snapshot from before the batch started.
-        with _batch_ids_lock:
-            _batch_ids_cache.pop(scope_key, None)
-        att_queue.clear_daily_cache(f"batches:{scope_key}")
-        att_queue.clear_daily_cache(f"batch_names:{scope_key}")
-        logger.info(f"[BatchWebhook] Busted batch ID cache for scope '{scope_key}'.")
-
-        # Rebuild in-memory face cache from DB so new students are live immediately
-        raw = att_queue.load_students_from_db(scope_key)
-        if raw:
-            decoded = []
-            for s in raw:
-                encs = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
-                encs = [e for e in encs if e is not None]
-                if encs:
-                    decoded.append({
-                        "id":             s["id"],
-                        "name":           s["name"],
-                        "student_number": s["student_number"],
-                        "encodings":      encs,
-                    })
-            if decoded:
-                _get_cache(centers, env).set(decoded)
-                logger.info(
-                    f"[BatchWebhook] Face cache rebuilt — {len(decoded)} student(s) live "
-                    f"for scope '{scope_key}'."
-                )
 
         if not students and not no_photo:
             logger.warning(
