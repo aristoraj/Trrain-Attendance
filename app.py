@@ -1633,55 +1633,31 @@ def cache_refresh():
         fetched = get_user_centers_cached(user_email, env=env)
         if fetched:
             centers = fetched
+            # Bust batch IDs cache so fresh batches are picked up
+            scope_key = _build_scope_key(centers, env)
+            with _batch_ids_lock:
+                _batch_ids_cache.pop(scope_key, None)
+            att_queue.clear_daily_cache(f"batches:{scope_key}")
+            att_queue.clear_daily_cache(f"batch_names:{scope_key}")
 
     try:
+        cache = _get_cache(centers=centers, env=env)
+        cache.invalidate()
         scope_key = _build_scope_key(centers, env)
-
-        # Hard wipe: delete DB rows for this user's scope AND any stale overlapping
-        # scopes (handles mismatched scope_key when centre assignments changed or
-        # students were stored under a single-centre key instead of a multi-centre one).
-        if centers:
-            centre_ids = [c for c in centers if str(c).strip().isdigit()]
-            stale_scopes = att_queue.get_scope_keys_overlapping_centres(centre_ids, env=env)
-            all_scopes = set(stale_scopes) | {scope_key}
-        else:
-            all_scopes = {scope_key}
-
-        for sk in all_scopes:
-            result = att_queue.delete_center_data(sk)
-            att_queue.clear_daily_cache(f"batches:{sk}")
-            att_queue.clear_daily_cache(f"batch_names:{sk}")
-            att_queue.clear_daily_cache(f"catalogued:{sk}")
-            logger.info(
-                f"[HardRefresh] Wiped scope '{sk}': "
-                f"{result.get('deleted_students',0)} students, "
-                f"{result.get('deleted_embeddings',0)} embeddings."
-            )
-
-        # Clear in-memory caches
-        with _batch_ids_lock:
-            _batch_ids_cache.pop(scope_key, None)
-        _get_cache(centers=centers, env=env).invalidate()
-
-        logger.info(
-            f"[HardRefresh] Cleared {len(all_scopes)} scope(s) for user={user_email or 'ALL'} — "
-            "triggering fresh Zoho fetch."
-        )
-
-        # Trigger background fresh fetch from Zoho
+        logger.info(f"Refresh: evicted in-memory cache for scope '{scope_key}' — will restore from local DB.")
+        key = _build_scope_key(centers, env)
         with _preloading_lock:
-            if scope_key not in _preloading_keys:
-                _preloading_keys.add(scope_key)
+            if key not in _preloading_keys:
+                _preloading_keys.add(key)
                 threading.Thread(
                     target=_load_students_bg, args=(centers,), kwargs={"env": env}, daemon=True
                 ).start()
-
         scope = f"centres {centers}" if centers else "ALL"
         return jsonify({
             "success":         True,
             "students_loaded": 0,
             "scope":           scope,
-            "message":         "Hard refresh — cleared local DB and fetching fresh from Zoho. Students ready in ~15s.",
+            "message":         "Cache refresh started in background. Students will be ready in ~15s.",
         })
     except Exception as e:
         logger.exception("Cache refresh failed")
