@@ -1251,6 +1251,48 @@ function _finishLoading() {
   startCamera();
 }
 
+// Show the loading screen and poll until cache is ready, then call onReady().
+// Used when a 503 is returned mid-session (data still loading after refresh).
+function _awaitCacheReady(onReady) {
+  const dlScreen = document.getElementById('data-loading-screen');
+  const dlTitle  = document.querySelector('#data-loading-screen .dl-title');
+  const dlSub    = document.querySelector('#data-loading-screen .dl-sub');
+  dlTitle.textContent = 'Loading Trainee Data';
+  dlSub.textContent   = 'Please wait…';
+  document.getElementById('dl-retry-area').style.display = 'none';
+  dlScreen.style.display = 'flex';
+
+  const start = Date.now();
+  let attempts = 0;
+  const MAX_ATTEMPTS = 36; // 36 × 5s = 3 minutes
+
+  async function poll() {
+    try {
+      const st     = await authFetch('/api/cache/status').then(r => r.json());
+      const cached = Object.values(st).reduce((s, v) => s + (v.students_cached || 0), 0);
+      if (cached > 0) {
+        dlScreen.style.display = 'none';
+        dlTitle.textContent = 'Preparing Attendance Data';
+        dlSub.textContent   = 'Please wait…';
+        onReady();
+        return;
+      }
+    } catch (_) {}
+
+    attempts++;
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    dlSub.textContent = `Loading trainee data… (${elapsed}s)`;
+
+    if (attempts >= MAX_ATTEMPTS) {
+      document.getElementById('dl-retry-area').style.display = 'block';
+      return;
+    }
+    setTimeout(poll, 5000);
+  }
+
+  setTimeout(poll, 3000);
+}
+
 function retryDataLoad() {
   _loadingAttempts  = 0;
   _loadingStartTime = Date.now();
@@ -1804,20 +1846,11 @@ async function captureAndVerify(cachedImage = null) {
 
     showSpinner(false);
 
-    // 503: cache not ready — auto-retry after countdown
+    // 503: cache not ready — show full loading screen until data is ready
     if (resp.status === 503 && data.loading) {
-      let secs = 5;
-      showBanner(`Student data loading… retrying in ${secs}s`, 'info');
-      const iv = setInterval(() => {
-        secs--;
-        if (secs > 0) {
-          showBanner(`Student data loading… retrying in ${secs}s`, 'info');
-        } else {
-          clearInterval(iv);
-          showBanner('Retrying…', 'info');
-          captureAndVerify(imageData);
-        }
-      }, 1000);
+      _awaitCacheReady(() => {
+        showBanner('Trainee data loaded — please look at the camera.', 'ok');
+      });
       return;
     }
 
