@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Face Attendance – How It Works</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f7fa;
+      color: #1a1a2e;
+      padding: 40px 24px;
+    }
+
+    .page {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    header .badge {
+      display: inline-block;
+      background: #e8f5e9;
+      color: #2e7d32;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 4px 12px;
+      border-radius: 20px;
+      margin-bottom: 12px;
+    }
+
+    header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: #1a1a2e;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      font-size: 15px;
+      color: #666;
+      max-width: 560px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      margin-bottom: 32px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #555;
+    }
+
+    .legend-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .dot-green  { background: #c8e6c9; border: 1.5px solid #66bb6a; }
+    .dot-red    { background: #ffcdd2; border: 1.5px solid #ef5350; }
+    .dot-blue   { background: #bbdefb; border: 1.5px solid #42a5f5; }
+    .dot-grey   { background: #f5f5f5; border: 1.5px solid #bdbdbd; }
+    .dot-yellow { background: #fff9c4; border: 1.5px solid #fdd835; }
+
+    .diagram-card {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+      padding: 32px 24px;
+      margin-bottom: 32px;
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .step-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 8px rgba(0,0,0,0.07);
+      border-left: 4px solid #42a5f5;
+    }
+
+    .step-card.success { border-left-color: #66bb6a; }
+    .step-card.warning { border-left-color: #ffa726; }
+    .step-card.danger  { border-left-color: #ef5350; }
+
+    .step-number {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #999;
+      margin-bottom: 6px;
+    }
+
+    .step-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #1a1a2e;
+      margin-bottom: 6px;
+    }
+
+    .step-desc {
+      font-size: 13px;
+      color: #666;
+      line-height: 1.5;
+    }
+
+    footer {
+      text-align: center;
+      font-size: 12px;
+      color: #aaa;
+      padding-top: 16px;
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="badge">EdZola – Zoho Face Attendance</div>
+    <h1>How the Attendance System Works</h1>
+    <p>A step-by-step walkthrough — from the moment a student stands in front of the camera to the moment their attendance is saved in Zoho Creator.</p>
+  </header>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot dot-blue"></div> Normal step</div>
+    <div class="legend-item"><div class="legend-dot dot-green"></div> Success / attendance marked</div>
+    <div class="legend-item"><div class="legend-dot dot-red"></div> Blocked / not allowed</div>
+    <div class="legend-item"><div class="legend-dot dot-yellow"></div> Already done today</div>
+    <div class="legend-item"><div class="legend-dot dot-grey"></div> Background (invisible to user)</div>
+  </div>
+
+  <!-- Mermaid Diagram -->
+  <div class="diagram-card">
+    <div class="mermaid">
+flowchart TD
+    A([" 🧑‍💼  Trainer opens\nZoho Creator app "]) --> B
+
+    B["🔐 System detects who is\nlogged in via Zoho SDK"]
+    B --> C{"Is this user\nallowed to take\nattendance?"}
+
+    C -- "No access" --> GATE[/"🚫 'Feature not enabled'\nscreen shown — contact admin"/]
+    C -- "Access confirmed" --> D
+
+    D["📷 Webcam turns on\nStudent stands in front of camera"]
+    D --> E{"👁️ Did the student blink\nnaturally?"}
+
+    E -- "No blink detected" --> E2[/"⚠️ 'Please blink naturally'\nRetry prompt shown"/]
+    E2 --> D
+
+    E -- "Blink confirmed" --> F["📸 Photo captured\nand sent to server"]
+
+    F --> G{"🤖 Is this a real\nlive face?\n(Anti-spoof check)"}
+
+    G -- "Looks like a photo\nor screen replay" --> G2[/"🚫 'Live face not detected'\nAttendance blocked"/]
+    G -- "Real live face" --> H
+
+    H["🧠 System compares face\nagainst student photo database"]
+    H --> I{"👤 Was a student\nrecognised?"}
+
+    I -- "No match found" --> I2[/"❓ 'Face not recognised'\nAsked to try again or contact admin"/]
+    I -- "Match found" --> J
+
+    J["✅ Student identified\nName displayed on screen"]
+    J --> K{"📅 Has this student\nalready been marked\npresent today?"}
+
+    K -- "Already marked" --> K2[/"💛 'Already marked present today'\nNo duplicate created"/]
+    K -- "Not yet marked" --> L
+
+    L["🎉 'Welcome! Attendance marked'\nSuccess screen shown to trainer"]
+
+    L --> M[["☁️ Background: Attendance\nsaved to Zoho Creator\n(happens silently, no wait)"]]
+
+    M --> N["🔄 Camera resets\nReady for next student"]
+    N --> D
+
+    style A fill:#e3f2fd,stroke:#42a5f5,color:#0d47a1
+    style GATE fill:#ffcdd2,stroke:#ef5350,color:#b71c1c
+    style E2 fill:#fff3e0,stroke:#ffa726,color:#e65100
+    style G2 fill:#ffcdd2,stroke:#ef5350,color:#b71c1c
+    style I2 fill:#fff3e0,stroke:#ffa726,color:#e65100
+    style K2 fill:#fff9c4,stroke:#fdd835,color:#f57f17
+    style L fill:#c8e6c9,stroke:#66bb6a,color:#1b5e20
+    style M fill:#f5f5f5,stroke:#bdbdbd,color:#616161
+    style N fill:#e3f2fd,stroke:#42a5f5,color:#0d47a1
+    </div>
+  </div>
+
+  <!-- Plain-English step cards -->
+  <div class="steps-grid">
+
+    <div class="step-card">
+      <div class="step-number">Step 1</div>
+      <div class="step-title">🔐 Login Detection</div>
+      <div class="step-desc">The system automatically reads who is logged into Zoho Creator. No separate login is needed for the attendance tool.</div>
+    </div>
+
+    <div class="step-card">
+      <div class="step-number">Step 2</div>
+      <div class="step-title">✅ Access Check</div>
+      <div class="step-desc">Only trainers with the Face Recognition feature enabled can use the tool. Unauthorized users see a clear message to contact admin.</div>
+    </div>
+
+    <div class="step-card">
+      <div class="step-number">Step 3</div>
+      <div class="step-title">👁️ Blink Test</div>
+      <div class="step-desc">The student is asked to blink naturally. This confirms a real person is in front of the camera — not a photograph being held up.</div>
+    </div>
+
+    <div class="step-card">
+      <div class="step-number">Step 4</div>
+      <div class="step-title">🤖 Anti-Spoof Check</div>
+      <div class="step-desc">An AI model checks that the captured image is a live face — blocking attempts to fool the system with printed photos or phone screens.</div>
+    </div>
+
+    <div class="step-card">
+      <div class="step-number">Step 5</div>
+      <div class="step-title">🧠 Face Matching</div>
+      <div class="step-desc">The captured face is compared against all student photos stored in Zoho Creator. Matching takes less than 1 second.</div>
+    </div>
+
+    <div class="step-card success">
+      <div class="step-number">Step 6</div>
+      <div class="step-title">🎉 Attendance Marked</div>
+      <div class="step-desc">Once a student is recognised, their attendance is confirmed instantly on screen and quietly saved to Zoho Creator in the background — no waiting.</div>
+    </div>
+
+    <div class="step-card warning">
+      <div class="step-number">Duplicate Guard</div>
+      <div class="step-title">💛 Already Marked</div>
+      <div class="step-desc">If the same student is scanned again on the same day, the system shows a friendly message and does not create a duplicate record.</div>
+    </div>
+
+    <div class="step-card">
+      <div class="step-number">Step 7</div>
+      <div class="step-title">🔄 Next Student</div>
+      <div class="step-desc">The camera resets automatically after each successful scan. The trainer does not need to press any button — just wave the next student forward.</div>
+    </div>
+
+  </div>
+
+  <footer>
+    EdZola · Zoho Face Recognition Attendance · Internal Documentation
+  </footer>
+
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      primaryColor: '#e3f2fd',
+      primaryTextColor: '#1a1a2e',
+      primaryBorderColor: '#42a5f5',
+      lineColor: '#90a4ae',
+      secondaryColor: '#f5f5f5',
+      tertiaryColor: '#fff',
+      fontSize: '14px',
+    },
+    flowchart: {
+      curve: 'basis',
+      padding: 20,
+    },
+  });
+</script>
+</body>
+</html>

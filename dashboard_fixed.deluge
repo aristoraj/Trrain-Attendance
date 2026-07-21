@@ -1,0 +1,171 @@
+<%{
+	// ── Date range filter ──────────────────────────────────────────────────
+	hasDateFilter = false;
+	fromDate = null;
+	toDate = null;
+	selectedDays = 0;
+
+	if(input.p_from != null && input.p_from != "" && input.p_to != null && input.p_to != "")
+	{
+		hasDateFilter = true;
+		fromDate = input.p_from.toDate();
+		toDate = input.p_to.toDate();
+		selectedDays = fromDate.daysBetween(toDate) + 1;
+	}
+
+	// ── Optional filters — normalize empty strings to null ─────────────────
+	filterBranch = input.p_branch;
+	filterBU     = input.p_bu;
+	filterdep    = input.p_dep;
+	filterItem   = input.p_item;
+
+	if(filterBranch == "") { filterBranch = null; }
+	if(filterBU     == "") { filterBU     = null; }
+	if(filterdep    == "") { filterdep    = null; }
+	if(filterItem   == "") { filterItem   = null; }
+
+	// ── Base query — ALL filters pushed to ZOQL (no Deluge-level filtering) ─
+	//
+	// Pattern: (filterX == null || field == filterX)
+	//   • When filterX is null  → condition is always true  → field not filtered
+	//   • When filterX has value → condition checks the field → DB filters it
+	//
+	// This lets the database do the work before any records enter Deluge memory,
+	// eliminating the per-record filter checks that were blowing the statement limit.
+	//
+	// No-date-filter case gets a hard limit of 500 rows to stay within the
+	// statement budget. A note is shown to the user when the cap is hit.
+
+	rowLimit = 500;
+
+	if(hasDateFilter == true)
+	{
+		baseItems = Scrap_Disposal_Items[
+			link.Branch_Location != null
+			&& Total_Amount != null
+			&& link.Request_Date >= fromDate
+			&& link.Request_Date <= toDate
+			&& (filterBranch == null || link.Branch_Location == filterBranch)
+			&& (filterBU     == null || link.Business_Unit   == filterBU)
+			&& (filterdep    == null || link.Division         == filterdep)
+			&& (filterItem   == null || Item_Name             == filterItem)
+		];
+	}
+	else
+	{
+		baseItems = Scrap_Disposal_Items[
+			link.Branch_Location != null
+			&& Total_Amount != null
+			&& (filterBranch == null || link.Branch_Location == filterBranch)
+			&& (filterBU     == null || link.Business_Unit   == filterBU)
+			&& (filterdep    == null || link.Division         == filterdep)
+			&& (filterItem   == null || Item_Name             == filterItem)
+		] limit rowLimit;
+	}
+
+	// ── Aggregate by branch ────────────────────────────────────────────────
+	// No filter checks inside the loop — the ZOQL above already applied them.
+	totalsMap = Map();
+	perDayMap = Map();
+	nameMap   = Map();
+	itemMap   = Map();
+	buMap     = Map();
+	depMap    = Map();
+
+	for each rec in baseItems
+	{
+		branchId = rec.link.Branch_Location.ID.toString();
+		amt = ifnull(rec.Total_Amount, 0);
+
+		if(totalsMap.contains(branchId))
+		{
+			totalsMap.put(branchId, totalsMap.get(branchId) + amt);
+		}
+		else
+		{
+			totalsMap.put(branchId, amt);
+			perDayMap.put(branchId, ifnull(rec.PerDayScrap, 0));
+			nameMap.put(branchId, rec.link.Branch_Location);
+			itemMap.put(branchId, rec.Item_Name);
+			buMap.put(branchId, rec.link.Business_Unit);
+			depMap.put(branchId, rec.link.Division);
+		}
+	}
+
+	// ── Header line ────────────────────────────────────────────────────────
+	if(hasDateFilter == true)
+	{
+		%>
+<p>Showing results for: <%=fromDate%> to <%=toDate%> (<%=selectedDays%> days)</p>
+<%
+	}
+	else
+	{
+		%>
+<p>Showing all records — no date range applied (capped at <%=rowLimit%> rows; apply a date filter for full results)</p>
+<%
+	}
+
+	// ── Table or empty-state ───────────────────────────────────────────────
+	if(totalsMap.size() > 0)
+	{
+		%>
+<table border="1" cellpadding="6">
+<tr>
+	<th>Branch</th>
+	<th>Business Unit</th>
+	<th>Department</th>
+	<th>Item</th>
+	<th>Actual Revenue</th>
+<%
+		// Expected Revenue and Efficiency only make sense when a date range is known
+		if(hasDateFilter == true)
+		{
+			%>
+	<th>Expected Revenue</th>
+	<th>Efficiency %</th>
+<%
+		}
+		%>
+</tr>
+<%
+		for each branchId in totalsMap.keys()
+		{
+			actual = totalsMap.get(branchId);
+			%>
+<tr>
+	<td><%=nameMap.get(branchId)%></td>
+	<td><%=buMap.get(branchId)%></td>
+	<td><%=depMap.get(branchId)%></td>
+	<td><%=itemMap.get(branchId)%></td>
+	<td><%=actual%></td>
+<%
+			if(hasDateFilter == true)
+			{
+				perDay   = perDayMap.get(branchId);
+				expected = perDay * selectedDays;
+				eff = 0;
+				if(expected > 0)
+				{
+					eff = actual / expected * 100;
+				}
+				%>
+	<td><%=expected.round(2)%></td>
+	<td><%=eff.round(2)%>%</td>
+<%
+			}
+			%>
+</tr>
+<%
+		}
+		%>
+</table>
+<%
+	}
+	else
+	{
+		%>
+<p>No records found matching the selected filters.</p>
+<%
+	}
+}%>

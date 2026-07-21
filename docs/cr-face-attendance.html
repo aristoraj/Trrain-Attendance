@@ -1,0 +1,347 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CR — Face Attendance Enhancements</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6f8; color: #1a1d23; line-height: 1.6; }
+
+  .page { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  /* Header */
+  .header { background: #1a1d23; color: #fff; border-radius: 12px; padding: 36px 40px; margin-bottom: 32px; }
+  .header .label { font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #7c8494; margin-bottom: 8px; }
+  .header h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
+  .header .subtitle { color: #adb5c2; font-size: 14px; }
+  .meta-row { display: flex; gap: 32px; margin-top: 24px; flex-wrap: wrap; }
+  .meta-item { display: flex; flex-direction: column; gap: 3px; }
+  .meta-item .key { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #7c8494; }
+  .meta-item .val { font-size: 13px; color: #e2e6ec; font-weight: 500; }
+  .badge { display: inline-block; background: #f59e0b; color: #1a1d23; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 20px; letter-spacing: 0.5px; margin-left: 10px; vertical-align: middle; }
+
+  /* Sections */
+  .section { background: #fff; border-radius: 12px; padding: 32px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+  .section-title { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #7c8494; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #f0f1f4; }
+  h2 { font-size: 18px; font-weight: 700; color: #1a1d23; margin-bottom: 12px; }
+  p { color: #4b5263; font-size: 14px; margin-bottom: 12px; }
+  p:last-child { margin-bottom: 0; }
+
+  /* Comparison table */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .compare-col { border-radius: 10px; padding: 20px; }
+  .compare-col.before { background: #fff7f7; border: 1.5px solid #fecaca; }
+  .compare-col.after  { background: #f0fdf4; border: 1.5px solid #86efac; }
+  .compare-col .col-title { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 14px; }
+  .compare-col.before .col-title { color: #ef4444; }
+  .compare-col.after  .col-title { color: #16a34a; }
+  .compare-col ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .compare-col li { font-size: 13px; color: #374151; display: flex; align-items: flex-start; gap: 8px; }
+  .compare-col li::before { flex-shrink: 0; margin-top: 2px; }
+  .compare-col.before li::before { content: "✕"; color: #ef4444; font-weight: 700; font-size: 12px; }
+  .compare-col.after  li::before { content: "✓"; color: #16a34a; font-weight: 700; font-size: 12px; }
+
+  /* Flow steps */
+  .flow { display: flex; flex-direction: column; gap: 0; }
+  .flow-step { display: flex; gap: 16px; align-items: flex-start; }
+  .flow-line { display: flex; flex-direction: column; align-items: center; }
+  .flow-dot { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; }
+  .flow-connector { width: 2px; flex: 1; min-height: 24px; background: #e5e7eb; margin: 4px 0; }
+  .flow-body { padding-bottom: 24px; flex: 1; }
+  .flow-body h3 { font-size: 15px; font-weight: 700; color: #1a1d23; margin-bottom: 4px; }
+  .flow-body p { font-size: 13px; color: #6b7280; margin: 0; }
+  .flow-body .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; vertical-align: middle; }
+  .tag-new   { background: #dbeafe; color: #1d4ed8; }
+  .tag-changed { background: #fef9c3; color: #92400e; }
+
+  .dot-blue   { background: #dbeafe; color: #1d4ed8; }
+  .dot-green  { background: #dcfce7; color: #15803d; }
+  .dot-purple { background: #f3e8ff; color: #7c3aed; }
+  .dot-orange { background: #fff7ed; color: #c2410c; }
+  .dot-teal   { background: #ccfbf1; color: #0f766e; }
+  .dot-gray   { background: #f1f5f9; color: #475569; }
+
+  /* Fields table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { background: #f8f9fb; color: #7c8494; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; padding: 10px 14px; text-align: left; border-bottom: 2px solid #e5e7eb; }
+  tbody td { padding: 12px 14px; border-bottom: 1px solid #f0f1f4; color: #374151; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
+  .pill-new     { background: #dbeafe; color: #1d4ed8; }
+  .pill-changed { background: #fef9c3; color: #92400e; }
+  .pill-exist   { background: #f1f5f9; color: #475569; }
+  .code { font-family: "SF Mono", "Consolas", monospace; font-size: 12px; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; color: #374151; }
+
+  /* Liveness callout */
+  .callout { border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
+  .callout.changed { background: #fefce8; border-left: 4px solid #f59e0b; }
+  .callout.new     { background: #eff6ff; border-left: 4px solid #3b82f6; }
+  .callout h4 { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+  .callout.changed h4 { color: #92400e; }
+  .callout.new     h4 { color: #1d4ed8; }
+  .callout p { font-size: 13px; color: #374151; margin: 0; }
+
+  /* Approval box */
+  .approval { background: #f8f9fb; border: 2px dashed #cbd5e1; border-radius: 12px; padding: 32px; text-align: center; }
+  .approval h3 { font-size: 16px; font-weight: 700; color: #1a1d23; margin-bottom: 8px; }
+  .approval p { font-size: 13px; color: #6b7280; margin-bottom: 24px; }
+  .sig-row { display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; }
+  .sig-box { flex: 1; min-width: 160px; max-width: 220px; }
+  .sig-line { border-top: 1.5px solid #94a3b8; padding-top: 8px; margin-top: 40px; font-size: 12px; color: #64748b; }
+
+  /* Footer */
+  .footer { text-align: center; font-size: 12px; color: #94a3b8; margin-top: 40px; }
+
+  @media (max-width: 600px) {
+    .compare { grid-template-columns: 1fr; }
+    .meta-row { gap: 16px; }
+    .sig-row { flex-direction: column; align-items: center; }
+  }
+</style>
+
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="label">Change Request Document</div>
+    <h1>Face Attendance System — Phase 3 Enhancements <span class="badge">Pending Approval</span></h1>
+    <div class="subtitle">Check-In / Check-Out Flow · Liveness Improvements · Live Capture Photo</div>
+    <div class="meta-row">
+      <div class="meta-item"><span class="key">CR Reference</span><span class="val">CR-FACE-003</span></div>
+      <div class="meta-item"><span class="key">Prepared By</span><span class="val">EdZola Technologies</span></div>
+      <div class="meta-item"><span class="key">Date</span><span class="val">19 June 2026</span></div>
+      <div class="meta-item"><span class="key">Platform</span><span class="val">Zoho Creator · Mobile WebView</span></div>
+      <div class="meta-item"><span class="key">Status</span><span class="val">Implemented — Awaiting Client Sign-off</span></div>
+    </div>
+  </div>
+
+  <!-- Purpose -->
+  <div class="section">
+    <div class="section-title">1. Purpose &amp; Scope</div>
+    <h2>What is this Change Request?</h2>
+    <p>This document describes the enhancements made to the existing Face Recognition Attendance System integrated with Zoho Creator. The changes introduce a structured <strong>Check-In / Check-Out workflow</strong>, improved liveness detection, and live photo capture — making attendance records more complete, auditable, and compliant.</p>
+    <p>All changes have been implemented and tested in the development environment. This document serves as a formal record of those changes and requests client approval to consider them accepted and live in production.</p>
+  </div>
+
+  <!-- Before vs After -->
+  <div class="section">
+    <div class="section-title">2. Before vs After — Summary</div>
+    <div class="compare">
+      <div class="compare-col before">
+        <div class="col-title">Existing System (Before)</div>
+        <ul>
+          <li>Single scan marks attendance as "Present" — no time recorded</li>
+          <li>No check-out mechanism</li>
+          <li>Liveness required two blinks — slower, more friction</li>
+          <li>No alternative liveness action (blink only)</li>
+          <li>No live photo captured or stored</li>
+          <li>No Action field — liveness method not recorded</li>
+          <li>No way to confirm if trainee attended the full session</li>
+          <li>Duplicate scans silently blocked with no feedback</li>
+        </ul>
+      </div>
+      <div class="compare-col after">
+        <div class="col-title">Enhanced System (After)</div>
+        <ul>
+          <li>First scan records Check-In time (HH:MM in IST)</li>
+          <li>Second scan (min. 5 min later) records Check-Out time</li>
+          <li>Liveness now requires only one blink — faster experience</li>
+          <li>Smile added as an alternative liveness action</li>
+          <li>Live face photo captured and attached to attendance record</li>
+          <li>Action field records which liveness action was performed</li>
+          <li>Duration tracking possible via Check-In and Check-Out times</li>
+          <li>Clear user feedback for each scan state</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- New Fields -->
+  <div class="section">
+    <div class="section-title">3. New &amp; Modified Fields — Zoho Creator</div>
+    <p style="margin-bottom:16px">The following fields are added to or modified in the <strong>Face_Attendance</strong> form in Zoho Creator:</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Field Name</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="code">Trainee</span></td>
+          <td>Lookup</td>
+          <td><span class="pill pill-exist">Existing</span></td>
+          <td>Links to the student record. Unchanged.</td>
+        </tr>
+        <tr>
+          <td><span class="code">Date_field</span></td>
+          <td>Date</td>
+          <td><span class="pill pill-exist">Existing</span></td>
+          <td>Date of attendance. Unchanged.</td>
+        </tr>
+        <tr>
+          <td><span class="code">Attendance</span></td>
+          <td>Dropdown</td>
+          <td><span class="pill pill-exist">Existing</span></td>
+          <td>Present / Absent. Unchanged — still set to "Present" on check-in.</td>
+        </tr>
+        <tr>
+          <td><span class="code">Check_In</span></td>
+          <td>Time</td>
+          <td><span class="pill pill-new">New</span></td>
+          <td>Records the time the trainee completed their check-in scan (HH:MM, 24-hour IST).</td>
+        </tr>
+        <tr>
+          <td><span class="code">Check_Out</span></td>
+          <td>Time</td>
+          <td><span class="pill pill-new">New</span></td>
+          <td>Records the time the trainee completed their check-out scan (HH:MM, 24-hour IST).</td>
+        </tr>
+        <tr>
+          <td><span class="code">Auto_Checkout</span> <em style="font-size:11px;color:#6b7280">(displayed as "Checked Out")</em></td>
+          <td>Dropdown (Yes / No)</td>
+          <td><span class="pill pill-new">New</span></td>
+          <td>Set to <strong>Yes</strong> when the trainee successfully completes a check-out scan. Defaults to No (empty) until checked out.</td>
+        </tr>
+        <tr>
+          <td><span class="code">Action_field</span></td>
+          <td>Text</td>
+          <td><span class="pill pill-new">New</span></td>
+          <td>Records the liveness action performed during check-in: <strong>Blink</strong> or <strong>Smile</strong>.</td>
+        </tr>
+        <tr>
+          <td><span class="code">Live_Captured_Image</span></td>
+          <td>File / Image</td>
+          <td><span class="pill pill-new">New</span></td>
+          <td>The live face photo taken at the moment of check-in. Attached directly to the attendance record in Zoho Creator.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Liveness Changes -->
+  <div class="section">
+    <div class="section-title">4. Liveness Detection Changes</div>
+
+    <div class="callout changed">
+      <h4>Change — Blink Count Reduced: 2 Blinks → 1 Blink</h4>
+      <p>Previously, the system required the trainee to blink <strong>twice</strong> to pass liveness verification. This has been reduced to <strong>one blink</strong>. The change reduces the time spent on the liveness step and improves the experience for trainees who found the two-blink requirement confusing or slow, while maintaining anti-spoofing reliability.</p>
+    </div>
+
+    <div class="callout new">
+      <h4>New — Smile as Alternative Liveness Action</h4>
+      <p>In addition to blinking, trainees can now pass liveness by <strong>smiling at the camera</strong>. The system automatically detects a genuine smile using facial landmark analysis. The method used (Blink or Smile) is recorded in the <span class="code">Action_field</span> of the attendance record, providing an audit trail of how liveness was verified for each scan.</p>
+    </div>
+  </div>
+
+  <!-- New Attendance Flow -->
+  <div class="section">
+    <div class="section-title">5. New Attendance Flow — Step by Step</div>
+
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot dot-blue">1</div><div class="flow-connector"></div></div>
+        <div class="flow-body">
+          <h3>Face Detection</h3>
+          <p>Trainee opens the attendance widget on their mobile device. The camera activates and detects a face automatically.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot dot-purple">2</div><div class="flow-connector"></div></div>
+        <div class="flow-body">
+          <h3>Liveness Verification <span class="tag tag-changed">Updated</span></h3>
+          <p>Trainee performs <strong>one blink</strong> or <strong>smiles</strong> at the camera. The system confirms the person is physically present (anti-spoofing). The liveness action is noted for the record.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot dot-teal">3</div><div class="flow-connector"></div></div>
+        <div class="flow-body">
+          <h3>Face Recognition</h3>
+          <p>The verified face is matched against enrolled student photos. The system identifies the trainee and shows their name and match confidence.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot dot-green">4a</div><div class="flow-connector"></div></div>
+        <div class="flow-body">
+          <h3>Check-In (First Scan of the Day) <span class="tag tag-new">New</span></h3>
+          <p>If the trainee has <strong>not yet checked in today</strong>, the system:<br>
+          • Marks Attendance = <strong>Present</strong><br>
+          • Records <strong>Check_In</strong> time (current IST time)<br>
+          • Sets <strong>Action_field</strong> = Blink or Smile<br>
+          • Captures and uploads a <strong>Live_Captured_Image</strong> (face photo)<br>
+          • Shows a check-in success banner on screen</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot dot-orange">4b</div><div class="flow-connector"></div></div>
+        <div class="flow-body">
+          <h3>Check-Out (Second Scan — min. 5 minutes later) <span class="tag tag-new">New</span></h3>
+          <p>If the trainee has <strong>already checked in today</strong> and at least 5 minutes have passed, the system:<br>
+          • Records <strong>Check_Out</strong> time (current IST time)<br>
+          • Sets <strong>Checked Out (Auto_Checkout)</strong> = <strong>Yes</strong><br>
+          • Shows a check-out success banner on screen<br><br>
+          If the trainee scans within 5 minutes of check-in, they are shown a message: <em>"Checkout available in N minutes."</em></p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line"><div class="flow-dot dot-gray">4c</div></div>
+        <div class="flow-body">
+          <h3>Already Checked Out (Third Scan or Later)</h3>
+          <p>If the trainee has <strong>already completed both check-in and check-out</strong> today, the system shows an informational message: <em>"Already checked in &amp; out today."</em> No changes are made to the record.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sample Record -->
+  <div class="section">
+    <div class="section-title">6. Sample Attendance Record (After Enhancement)</div>
+    <p style="margin-bottom:16px">A fully completed attendance record in Zoho Creator will now look like this:</p>
+    <table>
+      <thead>
+        <tr><th>Field</th><th>Sample Value</th><th>Set By</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="code">Trainee</span></td><td>Rahul Sharma</td><td>System (face match)</td></tr>
+        <tr><td><span class="code">Date_field</span></td><td>19-Jun-2026</td><td>System (today's date)</td></tr>
+        <tr><td><span class="code">Attendance</span></td><td>Present</td><td>System (on check-in)</td></tr>
+        <tr><td><span class="code">Check_In</span></td><td>09:32</td><td>System (on check-in scan)</td></tr>
+        <tr><td><span class="code">Check_Out</span></td><td>17:15</td><td>System (on check-out scan)</td></tr>
+        <tr><td><span class="code">Auto_Checkout (Checked Out)</span></td><td>Yes</td><td>System (on check-out scan)</td></tr>
+        <tr><td><span class="code">Action_field</span></td><td>Blink</td><td>System (liveness action used)</td></tr>
+        <tr><td><span class="code">Live_Captured_Image</span></td><td><em>Face photo attached</em></td><td>System (on check-in scan)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- No Impact -->
+  <div class="section">
+    <div class="section-title">7. Impact on Existing Data &amp; Workflows</div>
+    <p><strong>Existing attendance records are not affected.</strong> The new fields are additive — historical records simply have these fields blank, which is expected. No existing Zoho Creator workflow, report, or configuration has been removed or changed.</p>
+    <p>The face recognition matching logic and student enrollment process remain unchanged. Only the post-match attendance recording behaviour has been enhanced.</p>
+  </div>
+
+  <!-- Approval -->
+  <div class="section">
+    <div class="section-title">8. Client Approval</div>
+    <div class="approval">
+      <h3>Approval &amp; Sign-off</h3>
+      <p>By signing below, the client confirms that the enhancements described in this Change Request document have been reviewed and are approved for production use.</p>
+      <div class="sig-row">
+        <div class="sig-box">
+          <div class="sig-line">Client Representative<br><em>Name &amp; Designation</em></div>
+        </div>
+        <div class="sig-box">
+          <div class="sig-line">Date</div>
+        </div>
+        <div class="sig-box">
+          <div class="sig-line">EdZola Technologies<br><em>Project Lead</em></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">CR-FACE-003 · EdZola Technologies · Confidential · For client review only</div>
+
+</div>

@@ -1,0 +1,207 @@
+{
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\settings.json": {
+    "mtime": 1780469093.5680003,
+    "ast_hash": "af5683cedca023035194f9ad92eb0eef",
+    "semantic_hash": "af5683cedca023035194f9ad92eb0eef"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\app\\js\\extension.js": {
+    "mtime": 1777970057.14157,
+    "ast_hash": "51e870b2e4bcc6f01f4ee37076e0c968",
+    "semantic_hash": "51e870b2e4bcc6f01f4ee37076e0c968"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\app\\translations\\en.json": {
+    "mtime": 1777970057.359289,
+    "ast_hash": "8a80554c91d9fca8acb82f023de02f11",
+    "semantic_hash": "8a80554c91d9fca8acb82f023de02f11"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\package.json": {
+    "mtime": 1777970057.4081545,
+    "ast_hash": "4c01e2069531b15e77c8223eca59cb11",
+    "semantic_hash": "4c01e2069531b15e77c8223eca59cb11"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\plugin-manifest.json": {
+    "mtime": 1777988765.7752047,
+    "ast_hash": "a1298c0bca74b9ba4bd2075a0cfe3f7f",
+    "semantic_hash": "a1298c0bca74b9ba4bd2075a0cfe3f7f"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\resources.json": {
+    "mtime": 1777970057.483867,
+    "ast_hash": "99914b932bd37a50b983c5e7c90ae93b",
+    "semantic_hash": "99914b932bd37a50b983c5e7c90ae93b"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\server\\index.js": {
+    "mtime": 1777970057.2093396,
+    "ast_hash": "144a8528508e9c8854cd34e480c4f6a4",
+    "semantic_hash": "144a8528508e9c8854cd34e480c4f6a4"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\src\\index.js": {
+    "mtime": 1777970057.214044,
+    "ast_hash": "4be77ac93ddbf962993cf4e3dd6837c9",
+    "semantic_hash": "4be77ac93ddbf962993cf4e3dd6837c9"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\webpack.config.js": {
+    "mtime": 1777970057.359289,
+    "ast_hash": "e303258db76bfbf49ebb2e6c30b7d33c",
+    "semantic_hash": "e303258db76bfbf49ebb2e6c30b7d33c"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\app.py": {
+    "mtime": 1780379626.1374261,
+    "ast_hash": "6a8cc1fdcb312e2f922120eb608c04fa",
+    "semantic_hash": "6a8cc1fdcb312e2f922120eb608c04fa"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\attendance_queue.py": {
+    "mtime": 1780378058.6863432,
+    "ast_hash": "11a57536ecd02752fa1d861096669a06",
+    "semantic_hash": "11a57536ecd02752fa1d861096669a06"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\config.py": {
+    "mtime": 1780378089.2186117,
+    "ast_hash": "c5eb0754557000f57fca0b751db21e7b",
+    "semantic_hash": "c5eb0754557000f57fca0b751db21e7b"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\face_utils.py": {
+    "mtime": 1780302283.4944143,
+    "ast_hash": "ba7e5d351a95f38363d8ddb4669c3e4c",
+    "semantic_hash": "ba7e5d351a95f38363d8ddb4669c3e4c"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\liveness_utils.py": {
+    "mtime": 1780361496.0098932,
+    "ast_hash": "2ab6760a57258818a56a2224d691b787",
+    "semantic_hash": "2ab6760a57258818a56a2224d691b787"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\push_to_github.sh": {
+    "mtime": 1776327538.0,
+    "ast_hash": "277536253e853c827a4c2d88eaba363c",
+    "semantic_hash": "277536253e853c827a4c2d88eaba363c"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\tests\\__init__.py": {
+    "mtime": 1780333204.9698963,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\tests\\conftest.py": {
+    "mtime": 1780333221.5517838,
+    "ast_hash": "6d06dc3c1ad0f5ac1329e5a3c24ec4a5",
+    "semantic_hash": "6d06dc3c1ad0f5ac1329e5a3c24ec4a5"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\tests\\test_api.py": {
+    "mtime": 1780333330.868392,
+    "ast_hash": "bf4089df78fac155fd57125fe75c25c6",
+    "semantic_hash": "bf4089df78fac155fd57125fe75c25c6"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\tests\\test_attendance_queue.py": {
+    "mtime": 1780333280.597898,
+    "ast_hash": "71fb4ed0bccf7ab510315012f9705031",
+    "semantic_hash": "71fb4ed0bccf7ab510315012f9705031"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\tests\\test_config.py": {
+    "mtime": 1780333299.8540616,
+    "ast_hash": "589fe3c85cbde85313dc0dc114110842",
+    "semantic_hash": "589fe3c85cbde85313dc0dc114110842"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\tests\\test_face_utils.py": {
+    "mtime": 1780333250.1966093,
+    "ast_hash": "efc355e4d915c3f37694f67b001c8e9b",
+    "semantic_hash": "efc355e4d915c3f37694f67b001c8e9b"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\zoho_api.py": {
+    "mtime": 1780389465.2096665,
+    "ast_hash": "de09492013a436c9d91f9a5c1725205a",
+    "semantic_hash": "de09492013a436c9d91f9a5c1725205a"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\CLAUDE.md": {
+    "mtime": 1780469093.548292,
+    "ast_hash": "817fe671013b35ae0bc9301dfe449a87",
+    "semantic_hash": "817fe671013b35ae0bc9301dfe449a87"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\SKILL.md": {
+    "mtime": 1780469093.5438788,
+    "ast_hash": "c0ac08140ebbce36e6562f1a8d3a97b9",
+    "semantic_hash": "c0ac08140ebbce36e6562f1a8d3a97b9"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\add-watch.md": {
+    "mtime": 1780462542.0355346,
+    "ast_hash": "0df0589623217ca38a12bdcabfb42f4c",
+    "semantic_hash": "0df0589623217ca38a12bdcabfb42f4c"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\exports.md": {
+    "mtime": 1780462542.0365357,
+    "ast_hash": "7fb1a81aca17a462db70684a324fcfb0",
+    "semantic_hash": "7fb1a81aca17a462db70684a324fcfb0"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\extraction-spec.md": {
+    "mtime": 1780462542.038538,
+    "ast_hash": "24808b03abfeaf5f6435bb69c0125b2c",
+    "semantic_hash": "24808b03abfeaf5f6435bb69c0125b2c"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\github-and-merge.md": {
+    "mtime": 1780462542.043535,
+    "ast_hash": "cde13df085e4c492aeb7ba298a996d0d",
+    "semantic_hash": "cde13df085e4c492aeb7ba298a996d0d"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\hooks.md": {
+    "mtime": 1780462542.0445356,
+    "ast_hash": "3f545db6ce646650bb9de588f5512a27",
+    "semantic_hash": "3f545db6ce646650bb9de588f5512a27"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\query.md": {
+    "mtime": 1780462542.045534,
+    "ast_hash": "c2a8e798674a81b02aa9975f43023819",
+    "semantic_hash": "c2a8e798674a81b02aa9975f43023819"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\transcribe.md": {
+    "mtime": 1780462542.046543,
+    "ast_hash": "70f6aa30d6211f3a2c7e9fc45479f50c",
+    "semantic_hash": "70f6aa30d6211f3a2c7e9fc45479f50c"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.claude\\skills\\graphify\\references\\update.md": {
+    "mtime": 1780462542.0475266,
+    "ast_hash": "735932eaa4f0c8fef9566c538ae3e5f8",
+    "semantic_hash": "735932eaa4f0c8fef9566c538ae3e5f8"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\.github\\workflows\\test.yml": {
+    "mtime": 1780333367.5056162,
+    "ast_hash": "da92bb5fb2c522cf73245a2813df88f6",
+    "semantic_hash": "da92bb5fb2c522cf73245a2813df88f6"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\CLAUDE.md": {
+    "mtime": 1780469093.5630033,
+    "ast_hash": "8a6643a420fdad6bfb583523bc6cef16",
+    "semantic_hash": "8a6643a420fdad6bfb583523bc6cef16"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\app\\widget.html": {
+    "mtime": 1777970056.9697936,
+    "ast_hash": "b87bab3451ea70f2afde844552a9bfb8",
+    "semantic_hash": "b87bab3451ea70f2afde844552a9bfb8"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\README.md": {
+    "mtime": 1776863521.2522857,
+    "ast_hash": "00943434e231712aee7fadb808d8c680",
+    "semantic_hash": "00943434e231712aee7fadb808d8c680"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\render.yaml": {
+    "mtime": 1776329354.0,
+    "ast_hash": "ba7f74da43085801d58ebf441d3f369b",
+    "semantic_hash": "ba7f74da43085801d58ebf441d3f369b"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\requirements.txt": {
+    "mtime": 1780333020.9199765,
+    "ast_hash": "0d24aca3ea4b8f9b2cce54c8f7ae1e3f",
+    "semantic_hash": "0d24aca3ea4b8f9b2cce54c8f7ae1e3f"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\static\\index.html": {
+    "mtime": 1780365735.3152623,
+    "ast_hash": "f19ef94083c9f7e4d5c7a17d561baca9",
+    "semantic_hash": "f19ef94083c9f7e4d5c7a17d561baca9"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\app\\img\\icon.png": {
+    "mtime": 1777970057.4961245,
+    "ast_hash": "30ba0f708961c84e803b231c5648e4f9",
+    "semantic_hash": "30ba0f708961c84e803b231c5648e4f9"
+  },
+  "C:\\Users\\EdZola\\Desktop\\zoho-face-recognition\\F\\app\\img\\logo.png": {
+    "mtime": 1777970057.5095327,
+    "ast_hash": "30ba0f708961c84e803b231c5648e4f9",
+    "semantic_hash": "30ba0f708961c84e803b231c5648e4f9"
+  }
+}
