@@ -41,40 +41,11 @@ app = FaceAnalysis(name='buffalo_l', root='/app/.insightface', providers=['CPUEx
 app.prepare(ctx_id=0, det_size=(320, 320)); \
 print('InsightFace buffalo_l model ready.')"
 
-# ── Download MiniFASNet anti-spoofing model ───────────────────────────────────
-# 2.7_80x80_MiniFASNetV2: ~1.1 MB ONNX model from Silent-Face-Anti-Spoofing.
-# Detects screen/video replay attacks (real face vs phone screen) passively —
-# no user interaction needed, transparent to disabled students.
-# The || echo makes this layer non-fatal: if GitHub is unreachable during build,
-# the app still starts; check_liveness() returns (True, 1.0, "model_unavailable").
-RUN mkdir -p /app/.anti_spoof && python3 - <<'PYEOF'
-import sys, os
-
-MODEL_PATH = "/app/.anti_spoof/MiniFASNetV2.onnx"
-URLS = [
-    "https://github.com/yakhyo/face-anti-spoofing/releases/download/weights/MiniFASNetV2.onnx",
-]
-
-import requests
-for url in URLS:
-    try:
-        print(f"Downloading MiniFASNet liveness model from {url} ...")
-        r = requests.get(url, stream=True, timeout=120,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        data = r.content
-        if len(data) < 100_000:
-            print(f"  Response too small ({len(data)} bytes) — probably an error page, skipping")
-            continue
-        with open(MODEL_PATH, "wb") as f:
-            f.write(data)
-        print(f"MiniFASNet liveness model ready ({len(data):,} bytes)")
-        sys.exit(0)
-    except Exception as e:
-        print(f"  Failed: {e}")
-
-print("WARNING: MiniFASNet liveness model download failed — passive anti-spoofing disabled at runtime")
-PYEOF
+# ── Copy MiniFASNet anti-spoofing model ───────────────────────────────────────
+# Model is bundled in the repo (.anti_spoof/MiniFASNetV2.onnx, ~1.7 MB).
+# Copying directly avoids unreliable GitHub downloads during Render builds.
+RUN mkdir -p /app/.anti_spoof
+COPY .anti_spoof/MiniFASNetV2.onnx /app/.anti_spoof/MiniFASNetV2.onnx
 
 # ── Create SQLite queue directory ─────────────────────────────────────────────
 RUN mkdir -p /app/data
