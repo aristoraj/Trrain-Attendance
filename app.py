@@ -2073,8 +2073,7 @@ def verify():
             _sid   = best_match["id"]
             _sname = best_match["name"]
 
-            # Log as spoof only when score is clearly below threshold
-            if liveness_score < 0.30:
+            if True:
                 def _handle_spoof():
                     try:
                         spoof_jpeg = None
