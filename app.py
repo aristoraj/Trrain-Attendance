@@ -377,6 +377,42 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
                     _preloading_keys.discard(key)
                 return
 
+        # ── Sub-scope fallback: merge individual single-centre DB data ────────────
+        # If user has multiple centres [A, B, C] but the combined scope C:A,B,C has
+        # no DB data yet (e.g. after restart or new user), load each single-centre
+        # sub-scope from DB and merge. This means a student stored under C:A is still
+        # visible to a user whose scope is C:A,B,C — without a Zoho API call.
+        centre_ids = [c for c in (centers or []) if str(c).strip().isdigit()]
+        if len(centre_ids) > 1:
+            merged = []
+            seen_ids: set = set()
+            for cid in centre_ids:
+                sub_raw = att_queue.load_students_from_db(_build_scope_key([cid], env))
+                if not sub_raw:
+                    continue
+                for s in sub_raw:
+                    if s["id"] in seen_ids:
+                        continue
+                    encodings = [json_to_embedding(e["embedding"]) for e in s["raw_embeddings"]]
+                    encodings = [e for e in encodings if e is not None]
+                    if encodings:
+                        seen_ids.add(s["id"])
+                        merged.append({
+                            "id":             s["id"],
+                            "name":           s["name"],
+                            "student_number": s["student_number"],
+                            "encodings":      encodings,
+                        })
+            if merged:
+                _get_cache(centers, env).set(merged)
+                logger.info(
+                    f"[BG] Sub-scope merge: {len(merged)} students from "
+                    f"{len(centre_ids)} single-centre scopes → '{key}' (no Zoho fetch)."
+                )
+                with _preloading_lock:
+                    _preloading_keys.discard(key)
+                return
+
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
 
