@@ -383,12 +383,14 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
         # sub-scope from DB and merge. This means a student stored under C:A is still
         # visible to a user whose scope is C:A,B,C — without a Zoho API call.
         centre_ids = [c for c in (centers or []) if str(c).strip().isdigit()]
-        if len(centre_ids) > 1:
+        if len(centre_ids) > 1 and not removed_batches:
             merged = []
             seen_ids: set = set()
+            empty_sub_scopes = []
             for cid in centre_ids:
                 sub_raw = att_queue.load_students_from_db(_build_scope_key([cid], env))
                 if not sub_raw:
+                    empty_sub_scopes.append(cid)
                     continue
                 for s in sub_raw:
                     if s["id"] in seen_ids:
@@ -403,7 +405,12 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
                             "student_number": s["student_number"],
                             "encodings":      encodings,
                         })
-            if merged:
+            if empty_sub_scopes:
+                logger.warning(
+                    f"[BG] Sub-scope merge: {len(empty_sub_scopes)} centre(s) had no DB data "
+                    f"and will be skipped: {empty_sub_scopes}. Zoho fetch will cover them."
+                )
+            if merged and not empty_sub_scopes:
                 _get_cache(centers, env).set(merged)
                 logger.info(
                     f"[BG] Sub-scope merge: {len(merged)} students from "
@@ -412,6 +419,14 @@ def _load_students_bg(centers: list = None, env: str = "", fresh_load: bool = Fa
                 with _preloading_lock:
                     _preloading_keys.discard(key)
                 return
+            elif merged:
+                # Partial merge: some centres had data, some didn't.
+                # Fall through to Zoho for a complete authoritative load.
+                logger.info(
+                    f"[BG] Partial sub-scope merge ({len(merged)} students from "
+                    f"{len(centre_ids) - len(empty_sub_scopes)}/{len(centre_ids)} centres) "
+                    "— falling through to Zoho for full load."
+                )
 
         scope = f"{len(batch_ids)} batch(es)" if batch_ids else (f"centers {centers}" if centers else "all students")
         logger.info(f"[BG] Loading students ({scope}, env={env or 'production'})...")
