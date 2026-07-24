@@ -531,10 +531,11 @@ class ZohoCreatorAPI:
         # related-form fields through lookup fields.
         server_criteria   = None
         fallback_criteria = None   # centre-only: tried if centre+ongoing returns 404
+        _approved = '(Status1=="Approved")'
         if batch_ids:
             parts = [f"({FIELD_STUDENT_BATCH}=={bid})" for bid in batch_ids if bid]
             if parts:
-                server_criteria = "||".join(parts)
+                server_criteria = f"({('||'.join(parts))})&&{_approved}"
         elif centers:
             cids = [c for c in centers if str(c).strip().isdigit()]
             if cids:
@@ -542,8 +543,8 @@ class ZohoCreatorAPI:
                 if len(cids) > 1:
                     centre_clause = f"({centre_clause})"
                 batch_status_clause = f'({FIELD_STUDENT_BATCH}.{FIELD_BATCH_STATUS}=="Ongoing")'
-                server_criteria   = f"{centre_clause}&&{batch_status_clause}"
-                fallback_criteria = centre_clause   # no batch-status filter
+                server_criteria   = f"{centre_clause}&&{batch_status_clause}&&{_approved}"
+                fallback_criteria = f"{centre_clause}&&{_approved}"
 
         criteria_label = (f"batch criteria for {len(batch_ids)} batch(es)" if batch_ids
                           else (f"centre+ongoing criteria for {len(centers)} centre(s)" if server_criteria
@@ -662,7 +663,7 @@ class ZohoCreatorAPI:
         CHUNK = 20
         for i in range(0, len(student_ids), CHUNK):
             chunk = student_ids[i:i + CHUNK]
-            criteria = "||".join(f"(ID=={sid})" for sid in chunk)
+            criteria = f"({('||'.join(f'(ID=={sid})' for sid in chunk))})&&(Status1==\"Approved\")"
             logger.info(f"[GapFill] Fetching chunk {i//CHUNK + 1} ({len(chunk)} IDs)...")
             try:
                 resp = self._request("get", url, env=env,
@@ -708,7 +709,7 @@ class ZohoCreatorAPI:
         page_size = 200
 
         while True:
-            params = {"from": page_start, "limit": page_size}
+            params = {"from": page_start, "limit": page_size, "criteria": '(Status1=="Approved")'}
             resp = self._request("get", url, env=env, params=params, timeout=30)
             resp.raise_for_status()
             records = resp.json().get("data", [])

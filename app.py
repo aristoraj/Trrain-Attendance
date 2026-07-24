@@ -3543,7 +3543,8 @@ def admin_encode_all_students():
                 while True:
                     resp = zoho._request(
                         "get", url, env=env,
-                        params={"from": page_start, "limit": page_size},
+                        params={"from": page_start, "limit": page_size,
+                                "criteria": '(Status1=="Approved")'},
                         timeout=30,
                     )
                     resp.raise_for_status()
