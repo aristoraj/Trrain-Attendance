@@ -2211,6 +2211,8 @@ def verify():
                     "error":           "Liveness check failed. Please try again.",
                 }), 400
             logger.info(f"[FaceLiveness] {_sname}: passed — continuing to attendance")
+            liveness_score  = 1.0
+            liveness_reason = "face_liveness_passed"
 
         else:
             # First pass: MiniFASNet local passive check (free, instant).
