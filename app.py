@@ -2111,7 +2111,6 @@ def verify():
         _sid         = best_match["id"]
         _sname       = best_match["name"]
         _flag_key    = f"aws_flagged:{_today_date}:{_sid}"
-        _called_key  = f"aws_called:{_today_date}:{_sid}"
         _is_flagged  = bool(att_queue.get_daily_cache(_flag_key))
 
         if _is_flagged:
@@ -2139,38 +2138,32 @@ def verify():
                     f"trainee={_sname} ({_sid})"
                 )
 
-            # Flagged students → always call AWS (direct gate every time).
-            # Non-flagged → call AWS only on first MiniFASNet failure today (cost control).
-            _aws_already_called = bool(att_queue.get_daily_cache(_called_key))
-            _run_aws     = _is_flagged or not _aws_already_called
+            # Every MiniFASNet failure → call AWS (flagged students also always hit AWS).
+            # This ensures a real person in bad lighting isn't silently blocked on retry.
             _aws_override = False
-            _aws_reason   = "aws_skipped"
+            _aws_reason   = "aws_unavailable"
 
-            if _run_aws:
-                _aws = {"override": False, "reason": "aws_unavailable"}
-                try:
-                    from PIL import Image as _PIL
-                    _buf = io.BytesIO()
-                    _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=85)
-                    _aws = aws_check_face_quality(_buf.getvalue())
-                except Exception as _e:
-                    logger.warning(f"AWS quality check error: {_e}")
+            _aws = {"override": False, "reason": "aws_unavailable"}
+            try:
+                from PIL import Image as _PIL
+                _buf = io.BytesIO()
+                _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=85)
+                _aws = aws_check_face_quality(_buf.getvalue())
+            except Exception as _e:
+                logger.warning(f"AWS quality check error: {_e}")
 
-                _aws_override = _aws.get("override", False)
-                _aws_reason   = _aws.get("reason", "aws_unavailable")
-                logger.info(
-                    f"[AWS] {_sname}: override={_aws_override} reason={_aws_reason} "
-                    f"conf={_aws.get('confidence')} sharp={_aws.get('sharpness')} "
-                    f"bright={_aws.get('brightness')}"
-                )
-                att_queue.set_daily_cache(_called_key, True)
+            _aws_override = _aws.get("override", False)
+            _aws_reason   = _aws.get("reason", "aws_unavailable")
+            logger.info(
+                f"[AWS] {_sname}: override={_aws_override} reason={_aws_reason} "
+                f"conf={_aws.get('confidence')} sharp={_aws.get('sharpness')} "
+                f"bright={_aws.get('brightness')}"
+            )
 
-                # First confirmed spoof → flag student for direct AWS gate rest of today
-                if not _is_flagged and not _aws_override and _aws_reason not in ("aws_unavailable", "aws_error"):
-                    att_queue.set_daily_cache(_flag_key, True)
-                    logger.warning(f"[AWS] Spoof confirmed: {_sname} — flagged for direct AWS gate today")
-            else:
-                logger.info(f"[AWS] Already called today for {_sname} (not flagged) — blocking without AWS")
+            # First AWS confirmation of spoof → flag student for MiniFASNet bypass today
+            if not _is_flagged and not _aws_override and _aws_reason not in ("aws_unavailable", "aws_error"):
+                att_queue.set_daily_cache(_flag_key, True)
+                logger.warning(f"[AWS] Spoof confirmed: {_sname} — flagged for direct AWS gate today")
 
             if _aws_override:
                 logger.info(f"[AWS] {_sname} approved — MiniFASNet false reject, continuing to attendance")
@@ -2178,7 +2171,7 @@ def verify():
                 liveness_reason = "aws_override"
             else:
                 # Log spoof only when AWS explicitly confirmed it, or student is already flagged
-                _log_spoof  = _is_flagged or _aws_reason not in ("aws_unavailable", "aws_error", "aws_skipped")
+                _log_spoof  = _is_flagged or _aws_reason not in ("aws_unavailable", "aws_error")
                 _score_snap = liveness_score
                 def _handle_spoof(
                     _sid=_sid, _sname=_sname, _score=_score_snap,
