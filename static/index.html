@@ -2387,7 +2387,7 @@ async function runLivenessChallenge() {
     // Show modal and mount the AWS FaceLivenessDetector component.
     const modal = document.getElementById('liveness-modal');
     modal.style.display = 'flex';
-    setStatus('active', 'Follow the on-screen instructions…');
+    setStatus('active', 'Place your face in the circle and hold still…');
 
     await new Promise((resolve, reject) => {
       window.LivenessWidget.mount('liveness-container', {

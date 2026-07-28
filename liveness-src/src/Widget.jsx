@@ -4,6 +4,23 @@ import '@aws-amplify/ui-react/styles.css';
 
 let _root = null;
 
+const DISPLAY_TEXT = {
+  hintCenterFaceText:           'Place face in the circle',
+  hintFaceOffCenterText:        'Center your face',
+  hintTooFarText:               '📷 Move closer',
+  hintTooCloseText:             '↔ Move back a little',
+  hintHoldFaceForFreshnessText: 'Hold still',
+  hintConnectingText:           'Connecting…',
+  hintVerifyingText:            'Verifying…',
+  hintTooManyFacesText:         'One face only',
+  hintCanNotIdentifyText:       'Face not detected — try again',
+  hintIlluminationTooBrightText:'Too bright — move to shade',
+  hintIlluminationTooDarkText:  'Too dark — find better light',
+  hintFaceDetectedText:         'Hold still…',
+  cancelLivenessCheckText:      '✕',
+  recordingIndicatorText:       '● REC',
+};
+
 function LivenessChallenge({ sessionId, region, credentials, onSuccess, onError }) {
   return (
     <FaceLivenessDetector
@@ -14,6 +31,8 @@ function LivenessChallenge({ sessionId, region, credentials, onSuccess, onError 
         console.error('[AWS Liveness]', err);
         onError(err);
       }}
+      disableStartScreen={true}
+      displayText={DISPLAY_TEXT}
       config={{
         credentialProvider: async () => ({
           accessKeyId:     credentials.AccessKeyId,
