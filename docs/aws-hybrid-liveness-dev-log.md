@@ -38,27 +38,27 @@ Is student AWS-flagged today?
         │
    PASS → attendance marked (no AWS call, cost = $0)
         │
-   FAIL
-        │
-        ▼
-   AWS called today for this student?
-   YES → block silently (no AWS call, cost = $0)
-   NO  → Call AWS (first time only today)
+   FAIL → Call AWS (every failure, no daily limit)
               │
          AWS approves → pass (MiniFASNet false reject)
          AWS rejects  → flag student + block + log spoof
          AWS error    → block silently (benefit of doubt)
 ```
 
-**Daily reset:** All flags stored in `daily_cache` with date-stamped keys
-(`aws_flagged:YYYY-MM-DD:{student_id}`, `aws_called:YYYY-MM-DD:{student_id}`).
+**Daily reset:** `aws_flagged` stored in `daily_cache` with date-stamped keys
+(`aws_flagged:YYYY-MM-DD:{student_id}`).
 Keys from yesterday simply never match today's lookup — no scheduled job needed.
 
-**AWS API used:** `DetectFaces` with `Attributes=["QUALITY"]`
+**Note:** Earlier design had an `aws_called` once-per-day guard. Removed — AWS is now
+called on EVERY MiniFASNet failure so a student can't sneak through on a second attempt
+after an unavailable/error on the first.
+
+**AWS API used:** `DetectFaces` with `Attributes=["DEFAULT"]`
 - `Confidence` ≥ 90 → real face detected with high certainty
 - `Sharpness` ≥ 40 → not a blurry screen/photo
 - `Brightness` ≥ 15 → image is lit adequately
 - All three must pass for `override=True`
+- Quality (Sharpness, Brightness) is returned in FaceDetails by default — `"QUALITY"` is NOT a valid Attributes enum value (causes `ValidationException`)
 
 **Region:** `ap-south-1` (Mumbai)
 
@@ -100,27 +100,25 @@ AWS was implemented before (commits `cb4bda7` → `da13d55`) but removed on
 - Returns `{"override": bool, "reason": str, "confidence": float, "sharpness": float, "brightness": float}`
 - `reason` values: `aws_override`, `aws_low_quality`, `no_face`, `aws_unavailable`, `aws_error`
 - Timeouts: connect=5s, read=8s, max_attempts=1 (fail fast, don't retry)
-- Suppresses botocore/boto3 DEBUG log spam (`setLevel(WARNING)`)
+- Suppresses botocore/boto3/urllib3 DEBUG log spam (`setLevel(WARNING)` on all three)
 
 ### `app.py` — `verify()` function, Step 5
 
 ```
-_flag_key   = f"aws_flagged:{today}:{student_id}"   # daily_cache
-_called_key = f"aws_called:{today}:{student_id}"    # daily_cache
+_flag_key = f"aws_flagged:{today}:{student_id}"   # daily_cache
 
 if _is_flagged:
-    bypass MiniFASNet → _run_aws = True
+    bypass MiniFASNet → call AWS directly
+
 else:
     run MiniFASNet normally
-    if MiniFASNet fails and not already called today → _run_aws = True
+    if MiniFASNet fails → call AWS (every failure)
 
-if _run_aws:
-    call aws_check_face_quality()
-    set _called_key = True
-    if first-time + AWS confirms spoof → set _flag_key = True
+    if AWS confirms spoof (reason not aws_unavailable/aws_error):
+        set _flag_key = True  ← flagged for direct AWS tomorrow
 
-Spoof logged only when:
-  - AWS explicitly confirmed (reason not in unavailable/error/skipped), OR
+Spoof logged when:
+  - AWS explicitly confirmed (reason not in unavailable/error), OR
   - Student is already flagged (confirmed earlier today)
 ```
 
@@ -140,6 +138,9 @@ AWS_REGION             = ap-south-1
 |---|---|
 | `7f356df` | Feat: AWS Rekognition hybrid liveness gate (daily reset) |
 | `d527423` | Fix: suppress botocore/boto3 DEBUG log spam |
+| `2230f57` | Docs: AWS hybrid liveness development log |
+| `d3f4d99` | Fix: call AWS on every MiniFASNet failure (remove once-per-day guard) |
+| *(next)* | Fix: `Attributes=["QUALITY"]` → `["DEFAULT"]`; suppress urllib3 DEBUG logs |
 
 ---
 
@@ -157,13 +158,22 @@ ON CONFLICT (key) DO UPDATE SET value = 'true';
 ```
 Then restart the Render dev service (flag is read at startup only).
 
-### 2. Botocore DEBUG log flood
-**Cause:** botocore logs at DEBUG by default when app log level is DEBUG.
-**Fix (commit `d527423`):**
+### 2. Botocore/urllib3 DEBUG log flood
+**Cause:** botocore and urllib3 log at DEBUG by default when app log level is DEBUG.
+**Fix (commit `d527423` + next):**
 ```python
 logging.getLogger("boto3").setLevel(logging.WARNING)
 logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 ```
+
+### 3. `Attributes=["QUALITY"]` ValidationException — AWS never worked
+**Cause:** `"QUALITY"` is not a valid enum value for the `Attributes` parameter of `DetectFaces`.
+Valid values: `[GENDER, ALL, DEFAULT, MOUTH_OPEN, EYES_OPEN, SMILE, MUSTACHE, FACE_OCCLUDED, BEARD, EYE_DIRECTION, EMOTIONS, EYEGLASSES, AGE_RANGE, SUNGLASSES]`
+Quality (Sharpness, Brightness) is returned in `FaceDetails` by default — no special attribute needed.
+**Effect:** Every AWS call threw `ValidationException` → fell back to `aws_error` → benefit of doubt → spoofs blocked by MiniFASNet failure only, never AWS-confirmed.
+**Symptom:** Person held a printed photo in front of camera. MiniFASNet scored 0.581 (fail) → AWS called → ValidationException → blocked. Same person tried again, MiniFASNet scored 0.834 (pass) → attendance marked.
+**Fix:** `Attributes=["QUALITY"]` → `Attributes=["DEFAULT"]` in `aws_rekognition.py`
 
 ---
 

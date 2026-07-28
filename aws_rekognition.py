@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 # Suppress botocore/boto3 DEBUG noise — only show WARNING and above
 logging.getLogger("boto3").setLevel(logging.WARNING)
 logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 _client = None
 _client_lock = threading.Lock()
@@ -63,7 +64,7 @@ def check_face_quality(image_bytes: bytes) -> dict:
         return {"override": False, "detected": False, "reason": "aws_unavailable"}
 
     try:
-        resp  = client.detect_faces(Image={"Bytes": image_bytes}, Attributes=["QUALITY"])
+        resp  = client.detect_faces(Image={"Bytes": image_bytes}, Attributes=["DEFAULT"])
         faces = resp.get("FaceDetails", [])
         if not faces:
             logger.info("AWS Rekognition: no face detected")
