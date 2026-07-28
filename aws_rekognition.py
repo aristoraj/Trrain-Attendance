@@ -8,6 +8,10 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 logger = logging.getLogger(__name__)
 
+# Suppress botocore/boto3 DEBUG noise — only show WARNING and above
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+
 _client = None
 _client_lock = threading.Lock()
 
