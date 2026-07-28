@@ -1861,6 +1861,12 @@ async function captureAndVerify(cachedImage = null, livenessSessionId = null) {
 
     // Backend flagged MiniFASNet failure — escalate to AWS Face Liveness challenge.
     if (data.liveness_challenge) {
+      // Stop camera NOW so the hardware releases during the session API call +
+      // bundle load (~1-2 s). No artificial delay needed in runLivenessChallenge.
+      if (cameraInstance) { try { cameraInstance.stop(); } catch (_) {} }
+      if (_currentStream) { _currentStream.getTracks().forEach(t => t.stop()); _currentStream = null; }
+      faceMeshInstance = null;
+      cameraInstance   = null;
       await runLivenessChallenge();
       return;
     }
@@ -2401,27 +2407,16 @@ async function runLivenessChallenge() {
       });
     });
 
-    // Challenge complete — hide modal and re-verify with liveness session id.
+    // Challenge passed — hide modal and restart camera before re-verifying.
     modal.style.display = 'none';
     window.LivenessWidget.unmount();
 
     setStatus('active', 'Verifying identity…');
     showSpinner(true);
-
-    // Capture a fresh frame for face matching after the challenge.
-    let freshImage = null;
-    if (videoEl.videoWidth && videoEl.videoHeight) {
-      const cc  = document.createElement('canvas');
-      cc.width  = videoEl.videoWidth;
-      cc.height = videoEl.videoHeight;
-      const cCtx = cc.getContext('2d');
-      cCtx.translate(cc.width, 0); cCtx.scale(-1, 1);
-      cCtx.drawImage(videoEl, 0, 0);
-      freshImage = cc.toDataURL('image/jpeg', 0.92);
-    }
-
-    showSpinner(false);
-    await captureAndVerify(freshImage, session_id);
+    // Camera was stopped at detection time. Restart it so captureAndVerify
+    // can read a live frame (videoWidth = 0 while camera is off).
+    await startCamera();
+    await captureAndVerify(null, session_id);
 
   } catch (err) {
     const modal = document.getElementById('liveness-modal');
@@ -2430,6 +2425,10 @@ async function runLivenessChallenge() {
     console.error('[FaceLiveness]', err);
     showBanner('Liveness check did not complete. Please try again.', 'danger');
     resetForRetry();
+    // Restart camera so the user can see themselves and retry.
+    faceMeshInstance = null;
+    cameraInstance   = null;
+    startCamera();
   }
 }
 </script>
