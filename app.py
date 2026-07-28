@@ -62,6 +62,7 @@ from face_utils import (
     encode_face_with_bbox, find_best_match, embedding_to_json, json_to_embedding,
 )
 from liveness_utils import check_liveness, LIVENESS_THRESHOLD
+from aws_rekognition import check_face_quality as aws_check_face_quality
 from zoho_api import ZohoCreatorAPI
 from attendance_queue import AttendanceQueue
 
@@ -2104,28 +2105,85 @@ def verify():
                 "message": "Face not recognised. Please try again or contact admin.",
             })
 
-        # ── 5. Passive liveness check (MiniFASNet) ────────────────────────────
-        _today_date = datetime.now(_IST).strftime("%Y-%m-%d")
-        is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
-        if liveness_reason == "model_unavailable" and not DEBUG:
-            logger.critical(
-                "Liveness model (MiniFASNetV2.onnx) is missing in production. "
-                "Anti-spoofing is disabled. Rebuild the Docker image to re-download the model."
-            )
-            return jsonify({
-                "success": False,
-                "error":   "Anti-spoofing model unavailable. Contact your administrator.",
-            }), 503
-        if not is_live:
-            logger.warning(
-                f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason} "
-                f"trainee={best_match['name']} ({best_match['id']})"
-            )
-            _sid   = best_match["id"]
-            _sname = best_match["name"]
+        # ── 5. Liveness — MiniFASNet + AWS hybrid gate ────────────────────────
+        # Date-stamped keys reset automatically each morning (new date = new key).
+        _today_date  = datetime.now(_IST).strftime("%Y-%m-%d")
+        _sid         = best_match["id"]
+        _sname       = best_match["name"]
+        _flag_key    = f"aws_flagged:{_today_date}:{_sid}"
+        _called_key  = f"aws_called:{_today_date}:{_sid}"
+        _is_flagged  = bool(att_queue.get_daily_cache(_flag_key))
 
-            if True:
-                def _handle_spoof():
+        if _is_flagged:
+            # Confirmed spoof earlier today — bypass MiniFASNet, route directly to AWS.
+            logger.info(f"[AWS-gate] {_sname} flagged today — bypassing MiniFASNet")
+            is_live        = False
+            liveness_score  = 0.0
+            liveness_reason = "aws_flagged_bypass"
+        else:
+            is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
+            if liveness_reason == "model_unavailable" and not DEBUG:
+                logger.critical(
+                    "Liveness model (MiniFASNetV2.onnx) is missing in production. "
+                    "Anti-spoofing is disabled. Rebuild the Docker image to re-download the model."
+                )
+                return jsonify({
+                    "success": False,
+                    "error":   "Anti-spoofing model unavailable. Contact your administrator.",
+                }), 503
+
+        if not is_live:
+            if not _is_flagged:
+                logger.warning(
+                    f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason} "
+                    f"trainee={_sname} ({_sid})"
+                )
+
+            # Flagged students → always call AWS (direct gate every time).
+            # Non-flagged → call AWS only on first MiniFASNet failure today (cost control).
+            _aws_already_called = bool(att_queue.get_daily_cache(_called_key))
+            _run_aws     = _is_flagged or not _aws_already_called
+            _aws_override = False
+            _aws_reason   = "aws_skipped"
+
+            if _run_aws:
+                _aws = {"override": False, "reason": "aws_unavailable"}
+                try:
+                    from PIL import Image as _PIL
+                    _buf = io.BytesIO()
+                    _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=85)
+                    _aws = aws_check_face_quality(_buf.getvalue())
+                except Exception as _e:
+                    logger.warning(f"AWS quality check error: {_e}")
+
+                _aws_override = _aws.get("override", False)
+                _aws_reason   = _aws.get("reason", "aws_unavailable")
+                logger.info(
+                    f"[AWS] {_sname}: override={_aws_override} reason={_aws_reason} "
+                    f"conf={_aws.get('confidence')} sharp={_aws.get('sharpness')} "
+                    f"bright={_aws.get('brightness')}"
+                )
+                att_queue.set_daily_cache(_called_key, True)
+
+                # First confirmed spoof → flag student for direct AWS gate rest of today
+                if not _is_flagged and not _aws_override and _aws_reason not in ("aws_unavailable", "aws_error"):
+                    att_queue.set_daily_cache(_flag_key, True)
+                    logger.warning(f"[AWS] Spoof confirmed: {_sname} — flagged for direct AWS gate today")
+            else:
+                logger.info(f"[AWS] Already called today for {_sname} (not flagged) — blocking without AWS")
+
+            if _aws_override:
+                logger.info(f"[AWS] {_sname} approved — MiniFASNet false reject, continuing to attendance")
+                liveness_score  = LIVENESS_THRESHOLD
+                liveness_reason = "aws_override"
+            else:
+                # Log spoof only when AWS explicitly confirmed it, or student is already flagged
+                _log_spoof  = _is_flagged or _aws_reason not in ("aws_unavailable", "aws_error", "aws_skipped")
+                _score_snap = liveness_score
+                def _handle_spoof(
+                    _sid=_sid, _sname=_sname, _score=_score_snap,
+                    _log=_log_spoof, _dsid=device_session_id,
+                ):
                     try:
                         spoof_jpeg = None
                         try:
@@ -2135,22 +2193,25 @@ def verify():
                             spoof_jpeg = _buf.getvalue()
                         except Exception:
                             pass
-                        att_queue.log_spoof_attempt(
-                            student_id        = _sid,
-                            student_name      = _sname,
-                            liveness_score    = liveness_score,
-                            capture_jpeg      = spoof_jpeg,
-                            device_session_id = device_session_id,
-                        )
-                        logger.info(f"Spoof logged: {_sname} score={liveness_score:.3f}")
+                        if _log:
+                            att_queue.log_spoof_attempt(
+                                student_id        = _sid,
+                                student_name      = _sname,
+                                liveness_score    = _score,
+                                capture_jpeg      = spoof_jpeg,
+                                device_session_id = _dsid,
+                            )
+                            logger.info(f"Spoof logged: {_sname} score={_score:.3f}")
+                        else:
+                            logger.info(f"Spoof not logged for {_sname} (AWS unavailable/skipped — benefit of doubt)")
                     except Exception as _e:
                         logger.debug(f"Spoof handler error: {_e}")
                 threading.Thread(target=_handle_spoof, daemon=True).start()
 
-            return jsonify({
-                "success": False,
-                "error":   "Live face not detected. Please ensure you are in front of the camera.",
-            }), 400
+                return jsonify({
+                    "success": False,
+                    "error":   "Live face not detected. Please ensure you are in front of the camera.",
+                }), 400
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
