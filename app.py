@@ -2138,8 +2138,7 @@ def verify():
                     f"trainee={_sname} ({_sid})"
                 )
 
-            # Every MiniFASNet failure → call AWS (flagged students also always hit AWS).
-            # This ensures a real person in bad lighting isn't silently blocked on retry.
+            # AWS called on every failure — both first attempts and flagged-student AWS gate.
             _aws_override = False
             _aws_reason   = "aws_unavailable"
 
@@ -2160,17 +2159,20 @@ def verify():
                 f"bright={_aws.get('brightness')}"
             )
 
-            # First AWS confirmation of spoof → flag student for MiniFASNet bypass today
-            if not _is_flagged and not _aws_override and _aws_reason not in ("aws_unavailable", "aws_error"):
-                att_queue.set_daily_cache(_flag_key, True)
-                logger.warning(f"[AWS] Spoof confirmed: {_sname} — flagged for direct AWS gate today")
-
-            if _aws_override:
-                logger.info(f"[AWS] {_sname} approved — MiniFASNet false reject, continuing to attendance")
+            if _is_flagged and _aws_override:
+                # AWS gate: flagged student presents a high-quality image → assume real face now.
+                logger.info(f"[AWS-gate] {_sname} cleared gate — good image quality, allowing attendance")
                 liveness_score  = LIVENESS_THRESHOLD
                 liveness_reason = "aws_override"
             else:
-                # Log spoof only when AWS explicitly confirmed it, or student is already flagged
+                # First MiniFASNet failure: NEVER override regardless of AWS quality.
+                # AWS DetectFaces measures image sharpness/brightness, not liveness —
+                # a clear printed photo scores identically to a real face.
+                # Flag on any real AWS response so the next attempt hits the AWS gate directly.
+                if not _is_flagged and _aws_reason not in ("aws_unavailable", "aws_error"):
+                    att_queue.set_daily_cache(_flag_key, True)
+                    logger.warning(f"[AWS] Spoof flagged: {_sname} — direct AWS gate from next attempt")
+
                 _log_spoof  = _is_flagged or _aws_reason not in ("aws_unavailable", "aws_error")
                 _score_snap = liveness_score
                 def _handle_spoof(
