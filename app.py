@@ -1966,6 +1966,93 @@ def webhook_feature_access_changed():
         return jsonify({"success": True, "message": "Deletion started in background"}), 200
 
 
+# ─── AWS Face Liveness ───────────────────────────────────────────────────────
+
+def _validate_face_liveness_session(session_id: str, student_id: str) -> tuple:
+    """Call GetFaceLivenessSessionResults and return (passed, reason).
+    Marks the session as consumed so it cannot be replayed.
+    """
+    used_key = f"liveness_used:{session_id}"
+    if att_queue.get_daily_cache(used_key):
+        logger.warning(f"[FaceLiveness] Replay attempt: {session_id[:16]}…")
+        return False, "session_already_used"
+
+    try:
+        import boto3
+        from botocore.config import Config as _BotoCfg
+
+        region = os.environ.get("AWS_REGION", "ap-south-1")
+        key_id = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+        secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+        if not key_id or not secret:
+            return False, "aws_not_configured"
+
+        client = boto3.client(
+            "rekognition",
+            aws_access_key_id=key_id,
+            aws_secret_access_key=secret,
+            region_name=region,
+            config=_BotoCfg(connect_timeout=8, read_timeout=15, retries={"max_attempts": 1}),
+        )
+        result     = client.get_face_liveness_session_results(SessionId=session_id)
+        confidence = float(result.get("Confidence", 0))
+        status     = result.get("Status", "FAILED")
+
+        att_queue.set_daily_cache(used_key, True)  # consumed regardless of outcome
+
+        logger.info(f"[FaceLiveness] {session_id[:16]}…: status={status} confidence={confidence:.1f}")
+
+        if status == "SUCCEEDED" and confidence >= 75.0:
+            return True, "liveness_passed"
+
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
+        att_queue.set_daily_cache(f"aws_flagged:{today}:{student_id}", True)
+        logger.warning(f"[FaceLiveness] Spoof confirmed (conf={confidence:.0f}) — student {student_id} flagged")
+        return False, f"liveness_failed(conf={confidence:.0f})"
+
+    except Exception as e:
+        logger.error(f"[FaceLiveness] GetFaceLivenessSessionResults error: {e}")
+        return False, "liveness_error"
+
+
+@app.route("/api/liveness/session", methods=["POST"])
+@require_session
+def create_liveness_session():
+    """Create an AWS Face Liveness session and return short-lived STS credentials
+    so the browser can stream directly to AWS Rekognition."""
+    try:
+        import boto3
+        from botocore.config import Config as _BotoCfg
+
+        region = os.environ.get("AWS_REGION", "ap-south-1")
+        key_id = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+        secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+        if not key_id or not secret:
+            return jsonify({"error": "AWS not configured"}), 503
+
+        cfg = _BotoCfg(connect_timeout=8, read_timeout=12, retries={"max_attempts": 1})
+
+        rekog       = boto3.client("rekognition", aws_access_key_id=key_id, aws_secret_access_key=secret, region_name=region, config=cfg)
+        session_id  = rekog.create_face_liveness_session()["SessionId"]
+
+        sts   = boto3.client("sts", aws_access_key_id=key_id, aws_secret_access_key=secret, region_name=region, config=cfg)
+        creds = sts.get_session_token(DurationSeconds=900)["Credentials"]  # 15 min
+
+        logger.info(f"[FaceLiveness] Session created: {session_id[:16]}…")
+        return jsonify({
+            "session_id": session_id,
+            "region":     region,
+            "credentials": {
+                "AccessKeyId":     creds["AccessKeyId"],
+                "SecretAccessKey": creds["SecretAccessKey"],
+                "SessionToken":    creds["SessionToken"],
+            },
+        })
+    except Exception as e:
+        logger.error(f"[FaceLiveness] Create session error: {e}")
+        return jsonify({"error": "Failed to create liveness session"}), 500
+
+
 # ─── Main verify endpoint ─────────────────────────────────────────────────────
 
 @app.route("/api/verify", methods=["POST"])
@@ -2105,108 +2192,55 @@ def verify():
                 "message": "Face not recognised. Please try again or contact admin.",
             })
 
-        # ── 5. Liveness — MiniFASNet + AWS hybrid gate ────────────────────────
-        # Date-stamped keys reset automatically each morning (new date = new key).
-        _today_date  = datetime.now(_IST).strftime("%Y-%m-%d")
-        _sid         = best_match["id"]
-        _sname       = best_match["name"]
-        _flag_key    = f"aws_flagged:{_today_date}:{_sid}"
-        _is_flagged  = bool(att_queue.get_daily_cache(_flag_key))
+        # ── 5. Liveness — MiniFASNet → AWS Face Liveness challenge ──────────────
+        _today_date = datetime.now(_IST).strftime("%Y-%m-%d")
+        _sid        = best_match["id"]
+        _sname      = best_match["name"]
 
-        if _is_flagged:
-            # Confirmed spoof earlier today — bypass MiniFASNet, route directly to AWS.
-            logger.info(f"[AWS-gate] {_sname} flagged today — bypassing MiniFASNet")
-            is_live        = False
-            liveness_score  = 0.0
-            liveness_reason = "aws_flagged_bypass"
+        _liveness_session_id = (data.get("liveness_session_id") or "").strip()
+
+        if _liveness_session_id:
+            # Second pass: user completed the AWS Face Liveness oval challenge.
+            # Validate the session result server-side.
+            _fl_passed, _fl_reason = _validate_face_liveness_session(_liveness_session_id, _sid)
+            if not _fl_passed:
+                logger.warning(f"[FaceLiveness] {_sname}: {_fl_reason} — blocked")
+                return jsonify({
+                    "success":         False,
+                    "liveness_failed": True,
+                    "error":           "Liveness check failed. Please try again.",
+                }), 400
+            logger.info(f"[FaceLiveness] {_sname}: passed — continuing to attendance")
+
         else:
+            # First pass: MiniFASNet local passive check (free, instant).
+            _flag_key   = f"aws_flagged:{_today_date}:{_sid}"
+            _is_flagged = bool(att_queue.get_daily_cache(_flag_key))
+
+            if _is_flagged:
+                # Previously confirmed spoof today — skip MiniFASNet, go straight to Face Liveness.
+                logger.info(f"[AWS-gate] {_sname} flagged today — requiring Face Liveness challenge")
+                return jsonify({"success": False, "liveness_challenge": True}), 200
+
             is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
             if liveness_reason == "model_unavailable" and not DEBUG:
                 logger.critical(
                     "Liveness model (MiniFASNetV2.onnx) is missing in production. "
-                    "Anti-spoofing is disabled. Rebuild the Docker image to re-download the model."
+                    "Rebuild the Docker image."
                 )
                 return jsonify({
                     "success": False,
                     "error":   "Anti-spoofing model unavailable. Contact your administrator.",
                 }), 503
 
-        if not is_live:
-            if not _is_flagged:
+            if not is_live:
                 logger.warning(
                     f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason} "
                     f"trainee={_sname} ({_sid})"
                 )
-
-            # AWS called on every failure — both first attempts and flagged-student AWS gate.
-            _aws_override = False
-            _aws_reason   = "aws_unavailable"
-
-            _aws = {"override": False, "reason": "aws_unavailable"}
-            try:
-                from PIL import Image as _PIL
-                _buf = io.BytesIO()
-                _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=85)
-                _aws = aws_check_face_quality(_buf.getvalue())
-            except Exception as _e:
-                logger.warning(f"AWS quality check error: {_e}")
-
-            _aws_override = _aws.get("override", False)
-            _aws_reason   = _aws.get("reason", "aws_unavailable")
-            logger.info(
-                f"[AWS] {_sname}: override={_aws_override} reason={_aws_reason} "
-                f"conf={_aws.get('confidence')} sharp={_aws.get('sharpness')} "
-                f"bright={_aws.get('brightness')}"
-            )
-
-            if _is_flagged and _aws_override:
-                # AWS gate: flagged student presents a high-quality image → assume real face now.
-                logger.info(f"[AWS-gate] {_sname} cleared gate — good image quality, allowing attendance")
-                liveness_score  = LIVENESS_THRESHOLD
-                liveness_reason = "aws_override"
-            else:
-                # First MiniFASNet failure: NEVER override regardless of AWS quality.
-                # AWS DetectFaces measures image sharpness/brightness, not liveness —
-                # a clear printed photo scores identically to a real face.
-                # Flag on any real AWS response so the next attempt hits the AWS gate directly.
-                if not _is_flagged and _aws_reason not in ("aws_unavailable", "aws_error"):
-                    att_queue.set_daily_cache(_flag_key, True)
-                    logger.warning(f"[AWS] Spoof flagged: {_sname} — direct AWS gate from next attempt")
-
-                _log_spoof  = _is_flagged or _aws_reason not in ("aws_unavailable", "aws_error")
-                _score_snap = liveness_score
-                def _handle_spoof(
-                    _sid=_sid, _sname=_sname, _score=_score_snap,
-                    _log=_log_spoof, _dsid=device_session_id,
-                ):
-                    try:
-                        spoof_jpeg = None
-                        try:
-                            from PIL import Image as _PIL
-                            _buf = io.BytesIO()
-                            _PIL.fromarray(image_array).save(_buf, format="JPEG", quality=70)
-                            spoof_jpeg = _buf.getvalue()
-                        except Exception:
-                            pass
-                        if _log:
-                            att_queue.log_spoof_attempt(
-                                student_id        = _sid,
-                                student_name      = _sname,
-                                liveness_score    = _score,
-                                capture_jpeg      = spoof_jpeg,
-                                device_session_id = _dsid,
-                            )
-                            logger.info(f"Spoof logged: {_sname} score={_score:.3f}")
-                        else:
-                            logger.info(f"Spoof not logged for {_sname} (AWS unavailable/skipped — benefit of doubt)")
-                    except Exception as _e:
-                        logger.debug(f"Spoof handler error: {_e}")
-                threading.Thread(target=_handle_spoof, daemon=True).start()
-
-                return jsonify({
-                    "success": False,
-                    "error":   "Live face not detected. Please ensure you are in front of the camera.",
-                }), 400
+                # MiniFASNet suspects spoof — escalate to AWS Face Liveness challenge.
+                # The frontend will stream a live oval challenge directly to AWS.
+                return jsonify({"success": False, "liveness_challenge": True}), 200
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
