@@ -2003,16 +2003,16 @@ def _validate_face_liveness_session(session_id: str, student_id: str) -> tuple:
         logger.info(f"[FaceLiveness] {session_id[:16]}…: status={status} confidence={confidence:.1f}")
 
         if status == "SUCCEEDED" and confidence >= 75.0:
-            return True, "liveness_passed"
+            return True, "liveness_passed", confidence
 
         today = datetime.now(_IST).strftime("%Y-%m-%d")
         att_queue.set_daily_cache(f"aws_flagged:{today}:{student_id}", True)
         logger.warning(f"[FaceLiveness] Spoof confirmed (conf={confidence:.0f}) — student {student_id} flagged")
-        return False, f"liveness_failed(conf={confidence:.0f})"
+        return False, f"liveness_failed(conf={confidence:.0f})", confidence
 
     except Exception as e:
         logger.error(f"[FaceLiveness] GetFaceLivenessSessionResults error: {e}")
-        return False, "liveness_error"
+        return False, "liveness_error", 0.0
 
 
 @app.route("/api/liveness/session", methods=["POST"])
@@ -2202,9 +2202,22 @@ def verify():
         if _liveness_session_id:
             # Second pass: user completed the AWS Face Liveness oval challenge.
             # Validate the session result server-side.
-            _fl_passed, _fl_reason = _validate_face_liveness_session(_liveness_session_id, _sid)
+            _fl_passed, _fl_reason, _fl_conf = _validate_face_liveness_session(_liveness_session_id, _sid)
             if not _fl_passed:
                 logger.warning(f"[FaceLiveness] {_sname}: {_fl_reason} — blocked")
+                try:
+                    import base64 as _b64
+                    _raw = (data.get("image") or "")
+                    _jpeg = _b64.b64decode(_raw.split(",")[-1]) if _raw else None
+                except Exception:
+                    _jpeg = None
+                att_queue.log_spoof_attempt(
+                    student_id=_sid,
+                    student_name=_sname,
+                    liveness_score=round(_fl_conf / 100.0, 4),
+                    capture_jpeg=_jpeg,
+                    device_session_id=device_session_id,
+                )
                 return jsonify({
                     "success":         False,
                     "liveness_failed": True,
