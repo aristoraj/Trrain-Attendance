@@ -1433,21 +1433,26 @@ class ZohoCreatorAPI:
             f"Live capture upload starting — record_id={record_id} | "
             f"student={student_name} | size={len(jpeg_bytes)}B | env='{env}'"
         )
-        try:
-            headers = self._headers(env=env, include_content_type=False)
-            files   = {"file": ("capture.jpg", jpeg_bytes, "image/jpeg")}
-            resp    = requests.post(upload_url, headers=headers, files=files, timeout=20)
-            resp.raise_for_status()
-            result  = resp.json()
-            if result.get("code") == 3000:
-                logger.info(f"Live capture uploaded for {student_name} (record {record_id})")
-            else:
+        import time as _time
+        for attempt in range(1, 4):
+            try:
+                headers = self._headers(env=env, include_content_type=False)
+                files   = {"file": ("capture.jpg", jpeg_bytes, "image/jpeg")}
+                resp    = requests.post(upload_url, headers=headers, files=files, timeout=45)
+                resp.raise_for_status()
+                result  = resp.json()
+                if result.get("code") == 3000:
+                    logger.info(f"Live capture uploaded for {student_name} (record {record_id}) attempt={attempt}")
+                    return
                 logger.warning(
                     f"Live capture upload unexpected code={result.get('code')} "
-                    f"msg={result.get('message', '')!r} for {student_name}"
+                    f"msg={result.get('message', '')!r} for {student_name} attempt={attempt}"
                 )
-        except Exception as e:
-            logger.warning(f"Live capture upload failed for {student_name} ({record_id}): {e}")
+                return
+            except Exception as e:
+                logger.warning(f"Live capture upload failed for {student_name} ({record_id}) attempt={attempt}: {e}")
+                if attempt < 3:
+                    _time.sleep(5 * attempt)
 
     # ─── 10 PM Auto-Checkout Sweep ────────────────────────────────────────────
 
