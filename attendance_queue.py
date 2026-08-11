@@ -2479,18 +2479,21 @@ class AttendanceQueue:
     def add_verified_embedding(self, student_id: str, embedding_json: str) -> None:
         """
         Persist a live-capture embedding for future angle-variant matching.
-        Rotates through verified_1 → verified_2 → verified_3, then wraps back to verified_1.
-        Called after every successful attendance mark so the system self-improves.
+        Fills verified_1 → verified_2 → verified_3, then overwrites whichever of
+        the three has the oldest updated_at — a real rotation, so no single slot
+        (verified_1) ends up being the only one that ever changes.
+        Called after every successful high-confidence attendance mark (see
+        VERIFIED_EMBEDDING_MIN_CONFIDENCE) so the system self-improves.
         """
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT source FROM face_embeddings "
+                    "SELECT source, updated_at FROM face_embeddings "
                     "WHERE student_id=? AND source IN ('verified_1','verified_2','verified_3')"
                 ),
                 (student_id,),
             ).fetchall()
-        existing = {r["source"] for r in rows}
+        existing = {r["source"]: r["updated_at"] for r in rows}
 
         # Fill empty slot first
         for i in range(1, 4):
@@ -2500,9 +2503,10 @@ class AttendanceQueue:
                 logger.debug(f"Saved live capture as {slot} for student {student_id}")
                 return
 
-        # All 3 full — rotate: overwrite verified_1 (oldest, by convention)
-        self.save_local_embedding(student_id, embedding_json, source="verified_1")
-        logger.debug(f"Rotated verified_1 embedding for student {student_id}")
+        # All 3 full — overwrite the oldest slot so rotation actually rotates
+        oldest_slot = min(existing, key=lambda s: existing[s])
+        self.save_local_embedding(student_id, embedding_json, source=oldest_slot)
+        logger.debug(f"Rotated {oldest_slot} embedding for student {student_id}")
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
