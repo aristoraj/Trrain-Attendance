@@ -614,10 +614,15 @@ class AttendanceQueue:
         if not valid_ids:
             return {"students": 0, "embeddings": 0}
         with self._db() as conn:
-            # Hardcode LIKE pattern in SQL — avoids psycopg2 % parameter confusion.
+            # Bind the LIKE pattern as a parameter — _ConnWrapper.execute() always
+            # passes a params tuple through to psycopg2, which then tries to
+            # %-substitute the query string. A literal '%C:%' inlined into the SQL
+            # text collides with that and raises "tuple index out of range" before
+            # ever reaching the DELETE below (this silently broke every run).
             # '%C:%' matches both 'C:id1,id2' and 'production:C:id1,id2'.
             rows = conn.execute(
-                "SELECT DISTINCT student_id FROM student_cache WHERE scope_key LIKE '%C:%'"
+                self._q("SELECT DISTINCT student_id FROM student_cache WHERE scope_key LIKE ?"),
+                ('%C:%',),
             ).fetchall()
             stale_ids = [r["student_id"] for r in rows if r["student_id"] not in valid_ids]
             if not stale_ids:
