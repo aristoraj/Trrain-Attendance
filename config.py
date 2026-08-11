@@ -83,6 +83,23 @@ except (ValueError, TypeError):
     FACE_MATCH_TOLERANCE = 0.40
 
 try:
+    # Minimum match confidence (see find_best_match's 0-100 scale) required before
+    # a live capture is trusted as a future reference embedding (verified_1/2/3).
+    # Low-confidence matches are exactly the ones most likely to be a mismatch —
+    # trusting them here is what let one bad frame permanently poison a trainee's
+    # embedding set (self-reinforcing false-match loop).
+    VERIFIED_EMBEDDING_MIN_CONFIDENCE = float(os.environ.get("VERIFIED_EMBEDDING_MIN_CONFIDENCE", "70.0"))
+    if not (0.0 <= VERIFIED_EMBEDDING_MIN_CONFIDENCE <= 99.9):
+        _cfg_logger.critical(
+            f"VERIFIED_EMBEDDING_MIN_CONFIDENCE={VERIFIED_EMBEDDING_MIN_CONFIDENCE} is outside "
+            "safe range [0.0, 99.9]. Clamping to 70.0."
+        )
+        VERIFIED_EMBEDDING_MIN_CONFIDENCE = 70.0
+except (ValueError, TypeError):
+    _cfg_logger.critical("VERIFIED_EMBEDDING_MIN_CONFIDENCE is not a valid float — using default 70.0.")
+    VERIFIED_EMBEDDING_MIN_CONFIDENCE = 70.0
+
+try:
     CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "86400"))
 except (ValueError, TypeError):
     _cfg_logger.critical("CACHE_TTL_SECONDS is not a valid integer — using default 86400.")

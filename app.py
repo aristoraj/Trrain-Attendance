@@ -56,6 +56,7 @@ from config import (
     FIELD_STUDENT_CENTER,
     ZOHO_USER_MGMT_REPORT, FIELD_USER_MGMT_EMAIL, FIELD_USER_FACE_FEATURE,
     CHECKIN_CUTOFF_TIME, ENABLE_LIVE_PHOTO_PATCH,
+    VERIFIED_EMBEDDING_MIN_CONFIDENCE,
 )
 from face_utils import (
     FaceCache, decode_base64_image,
@@ -2259,13 +2260,23 @@ def verify():
 
         logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
-        # Save verified live capture as angle-variant embedding (self-learning)
-        _emb_json = embedding_to_json(submitted_encoding)
-        threading.Thread(
-            target=att_queue.add_verified_embedding,
-            args=(best_match["id"], _emb_json),
-            daemon=True,
-        ).start()
+        # Save verified live capture as angle-variant embedding (self-learning) —
+        # only from high-confidence matches. A low-confidence match is exactly the
+        # kind that's most likely to be the wrong person; trusting it here would
+        # bake a mismatch into the student's reference set and reinforce itself
+        # on every future attempt.
+        if confidence >= VERIFIED_EMBEDDING_MIN_CONFIDENCE:
+            _emb_json = embedding_to_json(submitted_encoding)
+            threading.Thread(
+                target=att_queue.add_verified_embedding,
+                args=(best_match["id"], _emb_json),
+                daemon=True,
+            ).start()
+        else:
+            logger.debug(
+                f"Skipping verified-embedding save for {best_match['name']} — "
+                f"confidence {confidence:.1f}% below {VERIFIED_EMBEDDING_MIN_CONFIDENCE}% threshold"
+            )
 
         # Store JPEG frame for checkout photo upload (best-effort, non-blocking)
         try:

@@ -1170,10 +1170,15 @@ class AttendanceQueue:
         Atomic dedup-check + enqueue in one call.
         Returns (queue_id, is_duplicate).
 
-        Memory is claimed for same-process TOCTOU prevention; DB is the authoritative
-        source. The in-memory fast-path early return is intentionally omitted: the
-        admin-clear endpoint only clears one Gunicorn worker's memory, leaving other
-        workers with stale marks — the DB check handles that case correctly.
+        record_checkin()'s UNIQUE(student_id, date_str) constraint on checkin_state
+        is the real dedup gate — it's enforced atomically by the DB, so two requests
+        racing to check in the same student at nearly the same instant can't both
+        win it (whichever commits first wins; the second gets the constraint
+        violation). The in-memory claim and the attendance_queue COUNT check below
+        are only a fast path to skip the work early in the common case — a
+        SELECT-then-INSERT check like that can still race, so it must never be
+        trusted as the final word (that's what let two frames from one blink-check
+        both slip through and post duplicate Zoho records).
         """
         with self._lock:
             in_memory = student_id in self._global_marked.get(date_str, set())
@@ -1182,7 +1187,7 @@ class AttendanceQueue:
                 # see it as marked before this request writes to the DB.
                 self._mark_in_memory(student_id, date_str)
 
-        # DB is authoritative (covers cross-process dups AND stale in-memory after admin-clear)
+        # Fast path only — not atomic, just avoids needless work in the common case.
         with self._db() as conn:
             count = conn.execute(
                 self._q(
@@ -1197,27 +1202,22 @@ class AttendanceQueue:
             logger.info(f"DB dedup blocked duplicate for {student_name} ({date_str})")
             return None, True
 
-        # Also check checkin_state — catches cases where queue record was drained/deleted
-        # by another instance but checkin_state was written (or vice versa: queue FAILED
-        # but a later successful drain wrote checkin_state).
-        with self._db() as conn:
-            already_in = conn.execute(
-                self._q(
-                    "SELECT COUNT(*) AS cnt FROM checkin_state "
-                    "WHERE student_id=? AND date_str=?"
-                ),
-                (student_id, date_str),
-            ).fetchone()["cnt"]
-
-        if already_in > 0:
-            logger.info(f"checkin_state dedup blocked duplicate for {student_name} ({date_str})")
-            return None, True
-
         if in_memory:
             # Stale in-memory entry from admin-clear on a different worker — re-claim.
             with self._lock:
                 self._mark_in_memory(student_id, date_str)
             logger.debug(f"Stale in-memory dedup for {student_name} ({date_str}) — allowing fresh check-in")
+
+        # Authoritative gate: attempt the checkin_state insert BEFORE touching
+        # attendance_queue. If another request already recorded this student+date
+        # (even microseconds ago), the UNIQUE constraint makes record_checkin()
+        # return False here and we bail out — no attendance_queue row is ever
+        # created for the duplicate, so nothing is left to drain/post twice.
+        checked_in = self.record_checkin(student_id, student_name, date_str, environment,
+                                         zoho_record_id='', checkin_time_hhmm=checkin_time)
+        if not checked_in:
+            logger.info(f"checkin_state dedup blocked duplicate for {student_name} ({date_str})")
+            return None, True
 
         now = datetime.now().isoformat()
         sql = self._q("""
@@ -1237,12 +1237,6 @@ class AttendanceQueue:
                 checkin_lat, checkin_lng,
             ))
             rec_id = cur.fetchone()["id"] if self._is_postgres else cur.lastrowid
-
-        # Write provisional checkin_state immediately so dedup and checkout routing
-        # always work, even if the drain is delayed or fails permanently.
-        # The drain will update zoho_record_id once the Zoho record is created.
-        self.record_checkin(student_id, student_name, date_str, environment,
-                            zoho_record_id='', checkin_time_hhmm=checkin_time)
 
         # Wake the drain thread immediately — don't wait for the 2-second poll interval.
         self._drain_event.set()
@@ -2479,18 +2473,21 @@ class AttendanceQueue:
     def add_verified_embedding(self, student_id: str, embedding_json: str) -> None:
         """
         Persist a live-capture embedding for future angle-variant matching.
-        Rotates through verified_1 → verified_2 → verified_3, then wraps back to verified_1.
-        Called after every successful attendance mark so the system self-improves.
+        Fills verified_1 → verified_2 → verified_3, then overwrites whichever of
+        the three has the oldest updated_at — a real rotation, so no single slot
+        (verified_1) ends up being the only one that ever changes.
+        Called after every successful high-confidence attendance mark (see
+        VERIFIED_EMBEDDING_MIN_CONFIDENCE) so the system self-improves.
         """
         with self._db() as conn:
             rows = conn.execute(
                 self._q(
-                    "SELECT source FROM face_embeddings "
+                    "SELECT source, updated_at FROM face_embeddings "
                     "WHERE student_id=? AND source IN ('verified_1','verified_2','verified_3')"
                 ),
                 (student_id,),
             ).fetchall()
-        existing = {r["source"] for r in rows}
+        existing = {r["source"]: r["updated_at"] for r in rows}
 
         # Fill empty slot first
         for i in range(1, 4):
@@ -2500,9 +2497,10 @@ class AttendanceQueue:
                 logger.debug(f"Saved live capture as {slot} for student {student_id}")
                 return
 
-        # All 3 full — rotate: overwrite verified_1 (oldest, by convention)
-        self.save_local_embedding(student_id, embedding_json, source="verified_1")
-        logger.debug(f"Rotated verified_1 embedding for student {student_id}")
+        # All 3 full — overwrite the oldest slot so rotation actually rotates
+        oldest_slot = min(existing, key=lambda s: existing[s])
+        self.save_local_embedding(student_id, embedding_json, source=oldest_slot)
+        logger.debug(f"Rotated {oldest_slot} embedding for student {student_id}")
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
