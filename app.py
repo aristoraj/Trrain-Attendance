@@ -2134,6 +2134,12 @@ def verify():
             with _scope_caches_lock:
                 cache = _scope_caches.get(scope_key_in)
             if cache is None:
+                if _scope_has_no_ongoing_batches(user_email, env):
+                    return jsonify({
+                        "success":    False,
+                        "no_batches": True,
+                        "error":      _NO_BATCHES_MSG,
+                    }), 409
                 return jsonify({
                     "success":     False,
                     "loading":     True,
@@ -2161,6 +2167,12 @@ def verify():
                     }), 403
             students = get_students_cached(centers=centers, env=env)
             if students is None:
+                if _scope_has_no_ongoing_batches(user_email, env):
+                    return jsonify({
+                        "success":    False,
+                        "no_batches": True,
+                        "error":      _NO_BATCHES_MSG,
+                    }), 409
                 key = _build_scope_key(centers, env)
                 with _preloading_lock:
                     if key not in _preloading_keys:
@@ -2571,6 +2583,28 @@ def checkout():
         "checkout_time": checkout_time,
         "zoho_synced":   True,
     })
+
+
+def _scope_has_no_ongoing_batches(user_email: str, env: str = "") -> bool:
+    """
+    True only when we can positively tell the user's centres have zero Ongoing
+    batches. Lookup failures return False so callers keep their normal
+    'still loading' behaviour instead of showing a wrong 'no batches' screen.
+    """
+    if not user_email:
+        return False
+    try:
+        centres = get_user_centers_cached(user_email, env=env)
+        if not centres:
+            return False
+        batch_ids, batch_names = get_batch_ids_cached(centres, env=env)
+        return not batch_ids and not batch_names
+    except Exception as e:
+        logger.warning(f"No-batches check failed for {user_email}: {e}")
+        return False
+
+
+_NO_BATCHES_MSG = "There are no ongoing batches assigned to your centre right now."
 
 
 # ─── Get-context endpoint (centres + batch IDs from 24h DB cache) ──────────────

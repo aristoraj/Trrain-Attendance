@@ -1192,19 +1192,10 @@ async function initDataLoadingScreen() {
     }
   } catch (_) {}
 
-  // 1. Immediate cache check — if the enable webhook pre-loaded data, go straight
-  //    to camera without waiting for a full poll cycle.
-  //    Only skip loading if data is fully loaded (is_loading=false) — avoids
-  //    dismissing the screen while a background Zoho fetch is still in progress.
-  try {
-    const st          = await authFetch('/api/cache/status').then(r => r.json());
-    const cached      = Object.values(st).reduce((s, v) => s + (v.students_cached || 0), 0);
-    const stillLoading = Object.values(st).some(v => v.is_loading);
-    if (cached > 0 && !stillLoading) { _finishLoading(); return; }
-  } catch (_) {}
-
-  // 2. Context check — are there any ongoing batches at all?
-  //    If not, show the dedicated no-batches screen instead of a spinning wait.
+  // 1. Context check — are there any ongoing batches at all?
+  //    Runs BEFORE the cache shortcut below: /api/cache/status covers every
+  //    scope on the server, so another centre's warm cache would otherwise let a
+  //    user with no batches straight through to the camera.
   try {
     const params = new URLSearchParams({ user_email: USER_EMAIL });
     if (ZOHO_ENV) params.set('zoho_environment', ZOHO_ENV);
@@ -1213,10 +1204,20 @@ async function initDataLoadingScreen() {
     const hasBatches = (ctx.batch_ids   && ctx.batch_ids.length   > 0) ||
                        (ctx.batch_names && ctx.batch_names.length > 0);
     if (!hasBatches) {
-      dlScreen.style.display = 'none';
-      document.getElementById('no-batches-screen').style.display = 'flex';
+      _showNoBatches();
       return;
     }
+  } catch (_) {}
+
+  // 2. Immediate cache check — if the enable webhook pre-loaded data, go straight
+  //    to camera without waiting for a full poll cycle.
+  //    Only skip loading if data is fully loaded (is_loading=false) — avoids
+  //    dismissing the screen while a background Zoho fetch is still in progress.
+  try {
+    const st          = await authFetch('/api/cache/status').then(r => r.json());
+    const cached      = Object.values(st).reduce((s, v) => s + (v.students_cached || 0), 0);
+    const stillLoading = Object.values(st).some(v => v.is_loading);
+    if (cached > 0 && !stillLoading) { _finishLoading(); return; }
   } catch (_) {}
 
   // 3. Kick off the student load and start polling.
@@ -1247,6 +1248,16 @@ async function _pollCacheReady() {
     return;
   }
   _scheduleLoadingPoll();
+}
+
+// Replace any loading/camera state with the dedicated "no ongoing batches" screen.
+function _showNoBatches() {
+  clearTimeout(_loadingPollTimer);
+  if (cameraInstance) { try { cameraInstance.stop(); } catch (_) {} }
+  if (_currentStream) { _currentStream.getTracks().forEach(t => t.stop()); _currentStream = null; }
+  showSpinner(false);
+  document.getElementById('data-loading-screen').style.display = 'none';
+  document.getElementById('no-batches-screen').style.display = 'flex';
 }
 
 function _finishLoading() {
@@ -1828,7 +1839,9 @@ async function captureAndVerify(cachedImage = null, livenessSessionId = null) {
     const body = { image: imageData, blink_verified: true, device_session_id: DEVICE_SESSION_ID };
     if (livenessSessionId) body.liveness_session_id = livenessSessionId;
     if (_SDK_MODE)       body.scope_key = _SCOPE_KEY;
-    else if (USER_EMAIL) body.user_email = USER_EMAIL;
+    // Always send the email: the server uses it to tell "no ongoing batches"
+    // apart from "data still loading" when the scope cache is empty.
+    if (USER_EMAIL)      body.user_email = USER_EMAIL;
     if (ZOHO_ENV) body.zoho_environment = ZOHO_ENV;
 
     const resp = await authFetch('/api/verify', {
@@ -1851,6 +1864,12 @@ async function captureAndVerify(cachedImage = null, livenessSessionId = null) {
     }
 
     showSpinner(false);
+
+    // Server confirmed this centre has no Ongoing batches — stop, don't wait.
+    if (data.no_batches) {
+      _showNoBatches();
+      return;
+    }
 
     // 503: cache not ready — show full loading screen until data is ready,
     // then reset the whole verification flow back to step 1.
